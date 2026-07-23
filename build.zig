@@ -12,8 +12,6 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const cjson = b.dependency("cjson", .{});
-
     const exe = b.addExecutable(.{ .name = "parse_photon_jsonl_dump", .root_module = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -21,20 +19,15 @@ pub fn build(b: *std.Build) !void {
 
     exe.linkLibC();
 
-    // Projektquellen
+    // Project sources
     try addDirSources(exe, b, "src", c_flags);
 
-    // cJSON
-    exe.addIncludePath(cjson.path(""));
+    // tiny-json
+    exe.addIncludePath(b.path("third_party/yyjson/src"));
     exe.addCSourceFiles(.{
-        .root = .{
-            .dependency = .{
-                .dependency = cjson,
-                .sub_path = "",
-            },
-        },
+        .root = b.path("third_party/yyjson/src"),
         .files = &.{
-            "cJSON.c",
+            "yyjson.c",
         },
         .flags = c_flags,
     });
@@ -52,7 +45,7 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
 
-    // Platzhalter für spätere Tests
+    // Placeholder for future tests
     _ = b.step("test", "Run unit tests");
 }
 
@@ -68,7 +61,7 @@ fn addDirSources(
     var walker = try dir.walk(b.allocator);
     defer walker.deinit();
 
-    var files = try std.ArrayList([]const u8).initCapacity(b.allocator, 0);
+    var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(b.allocator);
 
     while (try walker.next()) |entry| {
@@ -78,16 +71,19 @@ fn addDirSources(
         if (!std.mem.endsWith(u8, entry.path, ".c"))
             continue;
 
-        try files.append(b.allocator, try b.allocator.dupe(u8, entry.path));
+        try files.append(
+            b.allocator,
+            b.fmt("{s}", .{entry.path}),
+        );
     }
 
-    std.mem.sort(
+    std.sort.block(
         []const u8,
         files.items,
         {},
         struct {
-            fn less(_: void, a: []const u8, bLocal: []const u8) bool {
-                return std.mem.order(u8, a, bLocal) == .lt;
+            fn less(_: void, left: []const u8, right: []const u8) bool {
+                return std.mem.order(u8, left, right) == .lt;
             }
         }.less,
     );
