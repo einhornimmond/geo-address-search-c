@@ -2,7 +2,7 @@ const std = @import("std");
 
 const c_flags = &.{
     "-std=c23",
-    "-O3",
+    "-march=native",
     "-Wall",
     "-Wextra",
     "-Wpedantic",
@@ -12,6 +12,8 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
+
     const exe = b.addExecutable(.{ .name = "parse_photon_jsonl_dump", .root_module = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -19,11 +21,17 @@ pub fn build(b: *std.Build) !void {
 
     exe.linkLibC();
 
+    // zstd
+    exe.linkLibrary(zstd.artifact("zstd"));
+
     // Project sources
     try addDirSources(exe, b, "src", c_flags);
 
-    // tiny-json
+    // yyjson
     exe.addIncludePath(b.path("third_party/yyjson/src"));
+
+    // stb
+    exe.addIncludePath(b.path("third_party/stb"));
     exe.addCSourceFiles(.{
         .root = b.path("third_party/yyjson/src"),
         .files = &.{

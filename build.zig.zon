@@ -31,15 +31,12 @@
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
-    .dependencies = .{},
-    // Specifies the set of files and directories that are included in this package.
-    // Only files and directories listed here are included in the `hash` that
-    // is computed for this package. Only files listed here will remain on disk
-    // when using the zig package manager. As a rule of thumb, one should list
-    // files required for compilation plus any license(s).
-    // Paths are relative to the build root. Use the empty string (`""`) to refer to
-    // the build root itself.
-    // A directory listed here means that all files within, recursively, are included.
+    .dependencies = .{
+        .zstd = .{
+            .url = "git+https://github.com/muhammad-fiaz/zstd.zig.git#92127e8294e6fd352450dd4a3e3f4ed4048b8874",
+            .hash = "zstd-1.6.0-biH4jPHXMgByS-WuwAUII5ZFigXUcBX8kMeqMsP_oIVl",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
