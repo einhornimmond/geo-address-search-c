@@ -1,11 +1,25 @@
 #include "error.h"
 #include "progress.h"
+#include "line_buffer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <zstd.h>
+#include <yyjson.h>
+
+static void process_json_line(const char* line, size_t len)
+{
+    yyjson_doc* doc = yyjson_read(line, len, 0);
+    if (doc) {
+        yyjson_val* root = yyjson_doc_get_root(doc);
+        // TODO: Process JSON object
+        yyjson_doc_free(doc);
+    } else {
+        fatal(ERROR_JSON, "Failed to parse JSON line: %s", line);
+    }
+}
 
 int main(int argc, char* argv[]) 
 {
@@ -33,12 +47,14 @@ int main(int argc, char* argv[])
 
     char* inputBuffer = malloc(inputSize);
     void* outputBuffer = malloc(outputSize);
+    LineBuffer* lineBuffer = line_buffer_create(outputSize * 2);
+    
     char inputSizeBuf[32], outputSizeBuf[32];
     formatHumanReadableSize(inputSize, inputSizeBuf, 32);
     formatHumanReadableSize(outputSize, outputSizeBuf, 32);
     printf("inputSize: %s, outputSize: %s\n", inputSizeBuf, outputSizeBuf);
 
-    if (!inputBuffer || !outputBuffer) {
+    if (!inputBuffer || !outputBuffer || !lineBuffer) {
         fatal(ERROR_MEMORY, "Failed to allocate streaming buffers.");
     }
 
@@ -77,15 +93,23 @@ int main(int argc, char* argv[])
           if (ZSTD_isError(ret)) {
               fatal(ERROR_ZSTD, "%s", ZSTD_getErrorName(ret));
           }
+          
+          // Process decompressed data
+          char* data = (char*)output.dst;
+          size_t dataSize = output.pos;
+          
+          line_buffer_append(lineBuffer, data, dataSize);
+          line_buffer_process(lineBuffer, process_json_line);
 
-          // fwrite(outputBuffer, 1, output.pos, stdout);
-
-          // later:
-          //  line_reader_push(outputBuffer, output.pos);
       }      
     }
+    
+    // Flush remaining data in line buffer
+    line_buffer_flush(lineBuffer, process_json_line);
+    
     progress_finish();
 
+    line_buffer_destroy(lineBuffer);
     free(outputBuffer);
     free(inputBuffer);
 
