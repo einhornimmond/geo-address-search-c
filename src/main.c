@@ -1,6 +1,97 @@
-#include <stdio.h>
+#include "error.h"
+#include "progress.h"
 
-int main(void) {
-    printf("Hello, World!\n");
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <zstd.h>
+
+int main(int argc, char* argv[]) 
+{
+    if (argc != 2) {
+        fatal(ERROR_USAGE,"Usage: %s <photon_dump.jsonl.zst>", argv[0]);
+    }
+
+    FILE* fp = fopen(argv[1], "rb");
+    if (!fp) {
+        fatal(ERROR_IO, "Cannot open '%s'.", argv[1]);
+    }
+
+    ZSTD_DStream* dstream = ZSTD_createDStream();
+    if (!dstream) {
+        fatal(ERROR_MEMORY, "Failed to create ZSTD_DStream.");
+    }
+
+    size_t ret = ZSTD_initDStream(dstream);
+    if (ZSTD_isError(ret)) {
+        fatal(ERROR_ZSTD, "%s", ZSTD_getErrorName(ret));
+    }
+
+    const size_t inputSize = ZSTD_DStreamInSize();
+    const size_t outputSize = ZSTD_DStreamOutSize();
+
+    char* inputBuffer = malloc(inputSize);
+    void* outputBuffer = malloc(outputSize);
+    char inputSizeBuf[32], outputSizeBuf[32];
+    formatHumanReadableSize(inputSize, inputSizeBuf, 32);
+    formatHumanReadableSize(outputSize, outputSizeBuf, 32);
+    printf("inputSize: %s, outputSize: %s\n", inputSizeBuf, outputSizeBuf);
+
+    if (!inputBuffer || !outputBuffer) {
+        fatal(ERROR_MEMORY, "Failed to allocate streaming buffers.");
+    }
+
+    fseek(fp, 0, SEEK_END);
+    uint64_t totalBytes = ftell(fp);
+    rewind(fp);
+
+    progress_init(totalBytes);
+
+    while (1) 
+    {
+      size_t read = fread(inputBuffer, 1, inputSize, fp);
+      progress_update(ftell(fp));
+      if (read == 0) { break; }
+
+      ZSTD_inBuffer input = {
+          .src = inputBuffer,
+          .size = read,
+          .pos = 0,
+      };
+      
+      while (input.pos < input.size) 
+      {
+          ZSTD_outBuffer output = {
+              .dst = outputBuffer,
+              .size = outputSize,
+              .pos = 0,
+          };
+
+          ret = ZSTD_decompressStream(
+              dstream,
+              &output,
+              &input
+          );
+
+          if (ZSTD_isError(ret)) {
+              fatal(ERROR_ZSTD, "%s", ZSTD_getErrorName(ret));
+          }
+
+          // fwrite(outputBuffer, 1, output.pos, stdout);
+
+          // later:
+          //  line_reader_push(outputBuffer, output.pos);
+      }      
+    }
+    progress_finish();
+
+    free(outputBuffer);
+    free(inputBuffer);
+
+    ZSTD_freeDStream(dstream);
+
+    fclose(fp);
+
     return 0;
 }

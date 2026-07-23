@@ -2,6 +2,7 @@ const std = @import("std");
 
 const c_flags = &.{
     "-std=c23",
+    "-D_POSIX_C_SOURCE=199309L",
     "-march=native",
     "-Wall",
     "-Wextra",
