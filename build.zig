@@ -3,6 +3,7 @@ const std = @import("std");
 const c_flags = &.{
     "-std=c23",
     "-D_POSIX_C_SOURCE=199309L",
+    "-pthread",
     "-march=native",
     "-Wall",
     "-Wextra",
@@ -21,6 +22,7 @@ pub fn build(b: *std.Build) !void {
     }) });
 
     exe.linkLibC();
+    exe.linkSystemLibrary("pthread");
 
     // zstd
     exe.linkLibrary(zstd.artifact("zstd"));

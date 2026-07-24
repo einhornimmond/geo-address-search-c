@@ -59,29 +59,41 @@ void line_buffer_append(LineBuffer* lb, const char* data, size_t len)
     lb->position += len;
 }
 
+void line_buffer_reset(LineBuffer* lb)
+{
+    lb->position = 0;
+}
+
 void line_buffer_process(LineBuffer* lb, void (*process_line)(const char* line, size_t len))
 {
-    size_t line_start = 0;
+    char* begin = lb->buffer;
+    char* end = lb->buffer + lb->position;
+    char* line = begin;
 
-    for (size_t i = 0; i < lb->position; i++) {
-        if (lb->buffer[i] == '\n') {
-            lb->buffer[i] = '\0';
-            
-            if (i > line_start) {
-                process_line(lb->buffer + line_start, i - line_start);
-            }
-            
-            line_start = i + 1;
-        }
+    while (line < end) {
+
+        char* newline = memchr(line, '\n', (size_t)(end - line));
+
+        if (!newline)
+            break;
+
+        size_t length = (size_t)(newline - line);
+
+        if (length > 0 && newline[-1] == '\r')
+            length--;
+
+        process_line(line, length);
+
+        line = newline + 1;
     }
 
-    // Move remaining data to beginning of buffer
-    if (line_start > 0 && line_start < lb->position) {
-        memmove(lb->buffer, lb->buffer + line_start, lb->position - line_start);
-        lb->position -= line_start;
-    } else if (line_start >= lb->position) {
-        lb->position = 0;
+    size_t remaining = (size_t)(end - line);
+
+    if (remaining) {
+        memmove(lb->buffer, line, remaining);
     }
+
+    lb->position = remaining;
 }
 
 void line_buffer_flush(LineBuffer* lb, void (*process_line)(const char* line, size_t len))
