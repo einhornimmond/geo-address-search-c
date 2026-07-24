@@ -1,5 +1,7 @@
 # parse_photon_jsonl_dump
 
+Most of the code was written by chatgpt and deepseek!
+
 A high-performance, multi-threaded pipeline that reads a compressed [Photon](https://github.com/komoot/photon)
 geocoder JSONL dump, extracts and deduplicates the full address hierarchy, and
 writes it as a self-contained PostgreSQL script with PostGIS geometry and
