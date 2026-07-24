@@ -8,6 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct HashKey {
+    uint64_t first;
+    uint64_t second;
+} HashKey;
+
 typedef struct Entity {
     char* key;
     uint64_t name_bytes;
@@ -23,46 +28,56 @@ struct StorageStats {
     uint64_t unsupported_addresslines;
 };
 
-static const char* localized(yyjson_val* object, const char* key)
+static const char* localized(yyjson_val* object, const char* german_key, const char* fallback_key)
 {
-    char localized_key[64];
-    int written = snprintf(localized_key, sizeof(localized_key), "%s:de", key);
-    yyjson_val* value = written > 0 && (size_t)written < sizeof(localized_key)
-        ? yyjson_obj_get(object, localized_key) : NULL;
-    if (!yyjson_is_str(value)) value = yyjson_obj_get(object, key);
+    yyjson_val* value = yyjson_obj_get(object, german_key);
+    if (!yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
     return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
 }
 
 static const char* place_name(yyjson_val* place)
 {
     yyjson_val* names = yyjson_obj_get(place, "name");
-    return yyjson_is_obj(names) ? localized(names, "name") : NULL;
+    return yyjson_is_obj(names) ? localized(names, "name:de", "name") : NULL;
 }
 
-static char* make_key(const char* const* values, size_t count)
+static void hash_bytes(uint64_t* hash, const void* data, size_t length)
 {
-    size_t length = 1;
-    for (size_t i = 0; i < count; ++i) length += strlen(values[i]) + 24;
-    char* key = malloc(length);
-    if (!key) return NULL;
-    char* cursor = key;
-    for (size_t i = 0; i < count; ++i) {
-        size_t value_length = strlen(values[i]);
-        cursor += sprintf(cursor, "%zu:", value_length);
-        memcpy(cursor, values[i], value_length);
-        cursor += value_length;
-        *cursor++ = ';';
+    const unsigned char* bytes = data;
+    for (size_t i = 0; i < length; ++i) {
+        *hash ^= bytes[i];
+        *hash *= UINT64_C(1099511628211);
     }
-    *cursor = '\0';
+}
+
+static HashKey hash_key(const char* const* values, size_t count)
+{
+    HashKey key = {
+        .first = UINT64_C(14695981039346656037),
+        .second = UINT64_C(1099511628211),
+    };
+    for (size_t i = 0; i < count; ++i) {
+        uint64_t length = strlen(values[i]);
+        hash_bytes(&key.first, &length, sizeof(length));
+        hash_bytes(&key.first, values[i], (size_t)length);
+        hash_bytes(&key.second, values[i], (size_t)length);
+        hash_bytes(&key.second, &length, sizeof(length));
+    }
     return key;
+}
+
+static void hash_key_string(char out[33], const char* const* values, size_t count)
+{
+    HashKey key = hash_key(values, count);
+    snprintf(out, 33, "%016" PRIx64 "%016" PRIx64, key.first, key.second);
 }
 
 static void key_set_add(KeySet* set, const char* const* values, size_t count,
                         const char* name, int has_point)
 {
     if (!name) return;
-    char* key = make_key(values, count);
-    if (!key) return;
+    char key[33];
+    hash_key_string(key, values, count);
     if (!set->entries) sh_new_strdup(set->entries);
     ptrdiff_t index = shgeti(set->entries, key);
     if (index < 0) {
@@ -70,7 +85,6 @@ static void key_set_add(KeySet* set, const char* const* values, size_t count,
     } else if (has_point) {
         set->entries[index].has_point = 1;
     }
-    free(key);
 }
 
 static int has_centroid(yyjson_val* place)
@@ -100,14 +114,14 @@ void storage_stats_record(StorageStats* stats, yyjson_val* place)
         if (yyjson_is_arr(yyjson_obj_get(place, "addresslines"))) ++stats->unsupported_addresslines;
         address = NULL;
     }
-    const char* type = localized(place, "address_type");
+    const char* type = localized(place, "address_type", "address_type");
     const char* own_name = place_name(place);
-    const char* country_code = localized(place, "country_code");
-    const char* country = address ? localized(address, "country") : NULL;
-    const char* state = address ? localized(address, "state") : NULL;
-    const char* county = address ? localized(address, "county") : NULL;
-    const char* city = address ? localized(address, "city") : NULL;
-    const char* street = address ? localized(address, "street") : NULL;
+    const char* country_code = localized(place, "country_code", "country_code");
+    const char* country = address ? localized(address, "country:de", "country") : NULL;
+    const char* state = address ? localized(address, "state:de", "state") : NULL;
+    const char* county = address ? localized(address, "county:de", "county") : NULL;
+    const char* city = address ? localized(address, "city:de", "city") : NULL;
+    const char* street = address ? localized(address, "street:de", "street") : NULL;
     if (type && strcmp(type, "country") == 0) country = own_name;
     if (type && strcmp(type, "state") == 0) state = own_name;
     if (type && strcmp(type, "county") == 0) county = own_name;

@@ -144,7 +144,7 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...)
 
 void info(const char* fmt, ...)
 {
-    printInfo();
+    // printInfo();
     fprintf(stdout, "Info: ");
 
     va_list args;

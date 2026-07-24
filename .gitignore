@@ -1,2 +1,6 @@
 .zig-cache
 zig-out
+compile_commands.json
+perf.data
+perf.data.*
+perf.map

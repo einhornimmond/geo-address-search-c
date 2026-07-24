@@ -36,6 +36,14 @@
             .url = "git+https://github.com/muhammad-fiaz/zstd.zig.git#92127e8294e6fd352450dd4a3e3f4ed4048b8874",
             .hash = "zstd-1.6.0-biH4jPHXMgByS-WuwAUII5ZFigXUcBX8kMeqMsP_oIVl",
         },
+        .blockchain_core = .{
+            .url = "https://github.com/gradido/gradido-blockchain-core/archive/refs/tags/v0.2.2.tar.gz",
+            .hash = "blockchain_core-0.15.2-r94upiD8DQCdCR6QJPas_ofeb-kiZGcSNg1nwHJr1gmd",
+        },
+        .zig_compile_commands = .{
+            .url = "https://github.com/the-argus/zig-compile-commands/archive/9400cd1963ea6bb58fe47ba7d9700075b808cdd2.tar.gz",
+            .hash = "zig_compile_commands-0.0.1-OZg5-e_JAAAGg1WHAePtq4l4Uvjs34BexnFFCZk63EaG",
+        },
     },
     .paths = .{
         "build.zig",

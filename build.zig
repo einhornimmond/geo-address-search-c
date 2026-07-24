@@ -1,4 +1,5 @@
 const std = @import("std");
+const zcc = @import("zig_compile_commands");
 
 const c_flags = &.{
     "-std=c23",
@@ -13,8 +14,11 @@ const c_flags = &.{
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    // make a list of targets that have include files and c source files
+    var cdbTargets: std.ArrayList(*std.Build.Step.Compile) = .empty;
 
     const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
+    const blockchain_core = b.dependency("blockchain_core", .{ .target = target, .optimize = optimize });
 
     const exe = b.addExecutable(.{ .name = "parse_photon_jsonl_dump", .root_module = b.createModule(.{
         .target = target,
@@ -26,9 +30,13 @@ pub fn build(b: *std.Build) !void {
 
     // zstd
     exe.linkLibrary(zstd.artifact("zstd"));
+    exe.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
 
     // Project sources
     try addDirSources(exe, b, "src", c_flags);
+
+    // gradido blockchain core
+    exe.addIncludePath(blockchain_core.path("include"));
 
     // yyjson
     exe.addIncludePath(b.path("third_party/yyjson/src"));
@@ -42,6 +50,7 @@ pub fn build(b: *std.Build) !void {
         },
         .flags = c_flags,
     });
+    cdbTargets.append(b.allocator, exe) catch @panic("OOM");
 
     b.installArtifact(exe);
 
@@ -55,6 +64,12 @@ pub fn build(b: *std.Build) !void {
 
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
+
+    const cdbTargetsSlice = cdbTargets.toOwnedSlice(b.allocator) catch @panic("OOM");
+    const buildStep = zcc.createStep(b, "cdb", cdbTargetsSlice);
+
+    buildStep.dependOn(&exe.step);
+    b.getInstallStep().dependOn(buildStep);
 
     // Placeholder for future tests
     _ = b.step("test", "Run unit tests");
