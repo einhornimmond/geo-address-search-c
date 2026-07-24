@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zstd.h>
+
 #include "gradido_blockchain_core/utils/mono_timer.h"
 #include "gradido_blockchain_core/utils/converter.h"
 
@@ -205,12 +207,76 @@ static void write_copy_section(
  *  Public API
  * ========================================================================= */
 
+/* =========================================================================
+ *  zstd-on-the-fly writer via fopencookie
+ * ========================================================================= */
+
+typedef struct {
+    ZSTD_CCtx *cctx;
+    FILE      *dst;
+    void      *outBuf;
+    size_t     outSize;
+    int        closed;
+} ZstdCookie;
+
+static ssize_t zstd_write(void *cookie, const char *buf, size_t size)
+{
+    ZstdCookie *zc = cookie;
+    if (zc->closed) return -1;
+    ZSTD_inBuffer input = {buf, size, 0};
+    while (input.pos < input.size) {
+        ZSTD_outBuffer output = {zc->outBuf, zc->outSize, 0};
+        size_t ret = ZSTD_compressStream2(zc->cctx, &output, &input, ZSTD_e_continue);
+        if (ZSTD_isError(ret)) return -1;
+        fwrite(zc->outBuf, 1, output.pos, zc->dst);
+    }
+    return (ssize_t)size;
+}
+
+static int zstd_close(void *cookie)
+{
+    ZstdCookie *zc = cookie;
+    if (zc->closed) return 0;
+    zc->closed = 1;
+
+    ZSTD_inBuffer input = {NULL, 0, 0};
+    for (;;) {
+        ZSTD_outBuffer output = {zc->outBuf, zc->outSize, 0};
+        size_t ret = ZSTD_compressStream2(zc->cctx, &output, &input, ZSTD_e_end);
+        if (ZSTD_isError(ret)) return -1;
+        fwrite(zc->outBuf, 1, output.pos, zc->dst);
+        if (ret == 0) break;
+    }
+
+    ZSTD_freeCCtx(zc->cctx);
+    free(zc->outBuf);
+    fclose(zc->dst);
+    free(zc);
+    return 0;
+}
+
 void storage_stats_write_sql(const StorageStats *stats, const char *filename)
 {
-    FILE *f = fopen(filename, "w");
-    if (!f) {
-        fatal(ERROR_IO, "Cannot open output file '%s' for writing.", filename);
-    }
+    /* --- open destination file --- */
+    FILE *dst = fopen(filename, "wb");
+    if (!dst) fatal(ERROR_IO, "Cannot open output file '%s' for writing.", filename);
+
+    /* --- build zstd cookie --- */
+    ZstdCookie *zc = malloc(sizeof(*zc));
+    if (!zc) fatal(ERROR_MEMORY, "zstd cookie allocation failed.");
+    zc->cctx = ZSTD_createCCtx();
+    if (!zc->cctx) fatal(ERROR_MEMORY, "ZSTD_createCCtx failed.");
+    ZSTD_CCtx_setParameter(zc->cctx, ZSTD_c_compressionLevel, 3);
+    ZSTD_CCtx_setParameter(zc->cctx, ZSTD_c_checksumFlag, 1);
+    zc->dst      = dst;
+    zc->outSize  = ZSTD_CStreamOutSize();
+    zc->outBuf   = malloc(zc->outSize);
+    zc->closed   = 0;
+    if (!zc->outBuf) fatal(ERROR_MEMORY, "zstd output buffer allocation failed.");
+
+    cookie_io_functions_t io = {NULL, zstd_write, NULL, zstd_close};
+    FILE *f = fopencookie(zc, "w", io);
+    if (!f) fatal(ERROR_MEMORY, "fopencookie failed.");
 
     /* --- DDL --- */
     fputs(
@@ -332,8 +398,8 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
         "VACUUM ANALYZE;\n"
         , f);
     
-    fclose(f);
+    fclose(f);  /* triggers zstd_close → flush, free, fclose(dst) */
 
-    info("PostgreSQL script written to '%s'.", filename);
+    info("Compressed PostgreSQL script written to '%s'.", filename);
 }
 
