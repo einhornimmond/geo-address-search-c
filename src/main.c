@@ -5,6 +5,7 @@
 #include "parse_queue.h"
 #include "progress.h"
 #include "storage_stats.h"
+#include "sql_export.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -159,18 +160,23 @@ static void enqueue_complete_lines(
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 2 || argc > 3) {
-    fatal(ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> [parser_threads: 1-2]", argv[0]);
+  grdu_mono_timer timeUsedAll;
+  grdu_mono_timer_reset(&timeUsedAll);
+
+  if (argc < 3 || argc > 4) {
+    fatal(ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> <output.sql> [parser_threads: 1-2]", argv[0]);
   }
 
   grdu_mono_timer_init();
 
-  unsigned parser_thread_count = 2;
-  if (argc == 3) {
+  const char *output_filename = argv[2];
+
+  unsigned parser_thread_count = 4;
+  if (argc == 4) {
     char *end;
-    unsigned long value = strtoul(argv[2], &end, 10);
-    if (*argv[2] == '\0' || *end != '\0' || value < 1 || value > 2) {
-      fatal(ERROR_USAGE, "parser_threads must be 1 or 2.");
+    unsigned long value = strtoul(argv[3], &end, 10);
+    if (*argv[3] == '\0' || *end != '\0' || value < 1 || value > 10) {
+      fatal(ERROR_USAGE, "parser_threads must between 1 and 10.");
     }
     parser_thread_count = (unsigned)value;
   }
@@ -190,8 +196,8 @@ int main(int argc, char *argv[]) {
   char *inputBuffer = malloc(inputSize);
   void *outputBuffer = malloc(outputSize);
   ParseQueue *parse_queue = parse_queue_create();
-  pthread_t parser_threads[2];
-  ParserThreadArgs parser_args[2] = {0};
+  pthread_t parser_threads[10];
+  ParserThreadArgs parser_args[10] = {0};
   BufferPool buffer_pool;
 
   char inputSizeBuf[32], outputSizeBuf[32];
@@ -260,7 +266,11 @@ int main(int argc, char *argv[]) {
     }
   }
   printf("\n");
+  progress_finish();
   printf("Reading and decompress file finished, wait for parser threads to finish...\n");
+  grdu_mono_timer timeUsed;
+  grdu_mono_timer_reset(&timeUsed);
+  char timeUsedBuffer[32];
 
   if (lineBuffer->position > 0) {
     parse_queue_push(parse_queue, (ParseBatch){.buffer = lineBuffer, .len = lineBuffer->position});
@@ -269,7 +279,10 @@ int main(int argc, char *argv[]) {
   }
   parse_queue_close(parse_queue);
   for (unsigned i = 0; i < parser_thread_count; ++i) { pthread_join(parser_threads[i], NULL); }
-  printf("All parser threads have finished. Joining stats...\n");
+
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf("All parser threads have finished in %s. Joining stats...\n", timeUsedBuffer);
+  grdu_mono_timer_reset(&timeUsed);
 
   JsonStats stats = {0};
   StorageStats *storage_stats = storage_stats_create();
@@ -279,10 +292,20 @@ int main(int argc, char *argv[]) {
     storage_stats_merge(storage_stats, parser_args[i].storage_stats);
     storage_stats_destroy(parser_args[i].storage_stats);
   }
-
-  progress_finish();
+  
   json_stats_print(&stats);
   storage_stats_print(storage_stats);
+
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf("Joining stats finished in %s, writing SQL file...\n", timeUsedBuffer);
+  grdu_mono_timer_reset(&timeUsed);
+
+  storage_stats_write_sql(storage_stats, output_filename);
+
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf("Writing SQL file finished in %s.\n", timeUsedBuffer);
+  grdu_mono_timer_reset(&timeUsed);
+  
   printf("Cleaning up...\n");
   storage_stats_destroy(storage_stats);
 
@@ -294,6 +317,8 @@ int main(int argc, char *argv[]) {
   ZSTD_freeDStream(dstream);
 
   fclose(fp);
-  printf("All finished.\n");
+  
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsedAll);
+  printf("All finished in %s.\n", timeUsedBuffer);
   return 0;
 }

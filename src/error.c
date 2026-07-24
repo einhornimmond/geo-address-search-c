@@ -21,7 +21,7 @@ static void printUsage(void) {
   printHeader("Luna is confused...");
 
   fputs(
-      "      /\\_/\\\\\n"
+      "      /\\_/\\\n"
       "     ( >_< )\n"
       "     /  ^  \\\n"
       "\n"

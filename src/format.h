@@ -1,12 +1,24 @@
-#pragma once
+/** @defgroup format Formatting
+  *  @brief Human-readable representations for bytes and durations that emerge
+  *         from the raw count.
+  *
+  *  Leaf module — no children. Provides the final layer of legibility.
+  */
 
+/** @defgroup format_byte_units Byte-unit formatting
+  *  @ingroup format
+  *  @brief Render a raw byte count into its most natural human scale.
+  *  @{
+  */
+
+#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
 /**
  * @brief Format a size in bytes into a human-readable string, letting the most
- * natural unit emerge.
+ *        natural unit emerge.
  *
  * Takes a size in bytes and flows it into the most natural scale:
  * B, KB, MB, GB, TB. The precision parameter shapes how many decimal places
@@ -30,3 +42,5 @@
  * @whisper Size settles into the scale it needs
  */
 int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t precision);
+
+/** @} */
