@@ -159,16 +159,10 @@ static void enqueue_complete_lines(ParseQueue* queue, BufferPool* pool, LineBuff
 {
     LineBuffer* current = *active_buffer;
     size_t complete_len = 0;
-    for (size_t i = current->position; i > 0; --i) {
-        if (current->buffer[i - 1] == '\n') {
-            complete_len = i;
-            break;
-        }
-    }
-    if (complete_len == 0) {
-        return;
-    }
-
+    char* nl = memrchr(current->buffer, '\n', current->position);
+    if (!nl) return;
+    complete_len = nl - current->buffer + 1;
+    
     LineBuffer* next = buffer_pool_acquire(pool);
     size_t remaining = current->position - complete_len;
     if (remaining) {

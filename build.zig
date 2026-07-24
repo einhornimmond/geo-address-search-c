@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) !void {
 
     exe.linkLibC();
     exe.linkSystemLibrary("pthread");
+    exe.root_module.addCMacro("_GNU_SOURCE", "1");
 
     // zstd
     exe.linkLibrary(zstd.artifact("zstd"));
