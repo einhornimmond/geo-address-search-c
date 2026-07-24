@@ -4,12 +4,12 @@
 #include "sql_export.h"
 #include "error.h"
 
-#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "gradido_blockchain_core/utils/mono_timer.h"
+#include "gradido_blockchain_core/utils/converter.h"
 
 /* =========================================================================
  *  Helpers
@@ -18,16 +18,48 @@
 /** stb_ds string→int64 map — wrapper required for shgeti/shput on scalar values. */
 typedef struct { int64_t key; int64_t value; } KeyToId;
 
-/** Format a centroid as WKT POINT, or \N if no point. */
+/** Write an int64_t to file — no printf format-string overhead. */
+static void fput_int64(FILE *f, int64_t val)
+{
+    char buf[21];
+    size_t n = grdu_int64_to_string(buf, sizeof(buf), val);
+    fwrite(buf, 1, n, f);
+}
+
+/** Format a centroid as WKT POINT, or \N if no point.
+ *
+ *  Converts int32_t × 10⁷ directly to "xx.xxxxxxx" without floating-point.
+ *  Fractional part uses the +10⁷ trick: 3456789 → "13456789" → overwrite
+ *  leading '1' with '.', yielding ".3456789".
+ */
 static void format_centroid(char *buf, size_t buf_size, const Entity *e)
 {
     if (!e->has_point) {
-        snprintf(buf, buf_size, "\\N");
-    } else {
-        double lon = (double)e->centroid_lon_e7 / 1.0e7;
-        double lat = (double)e->centroid_lat_e7 / 1.0e7;
-        snprintf(buf, buf_size, "POINT(%.7f %.7f)", lon, lat);
+        memcpy(buf, "\\N", 3);
+        return;
     }
+
+    char *p = buf;
+    size_t rem = buf_size;
+
+    memcpy(p, "POINT(", 6); p += 6; rem -= 6;
+
+    for (int c = 0; c < 2; ++c) {
+        if (c == 1) { *p++ = ' '; --rem; }
+        int32_t val = c == 0 ? e->centroid_lon_e7 : e->centroid_lat_e7;
+        size_t n;
+        if (val < 0) { *p++ = '-'; --rem; val = -val; }
+        n = grdu_int64_to_string(p, rem, (int64_t)(val / 10000000));
+        p += n; rem -= n;
+        *p++ = '.'; --rem;
+        uint32_t frac = (uint32_t)(val % 10000000) + 10000000u;
+        n = grdu_uint64_to_string(p, rem, (uint64_t)frac);
+        *p = '.';  /* overwrite leading '1' of "1xxxxxxx" */
+        p += n; rem -= n;
+    }
+    *p++ = ')';
+    *p = '\0';
+    (void)rem;
 }
 
 /** Escape a string for tab-separated COPY (backslash, tab, newline). */
@@ -76,8 +108,11 @@ static void sql_progress_tick(SqlProgress *sp, const char *table, uint64_t row_c
     double secs = grdu_mono_timer_seconds(sp->start);
     uint64_t rate = secs > 0.0 ? (uint64_t)((double)sp->written / secs) : 0;
 
-    printf("\r  SQL-Export: %6.2f%%  %s (%" PRIu64 " Zeilen, %" PRIu64 " Zeilen/s)  ",
-           pct, table, sp->written, rate);
+    char wr_buf[21], rt_buf[21];
+    grdu_uint64_to_string(wr_buf, sizeof(wr_buf), sp->written);
+    grdu_uint64_to_string(rt_buf, sizeof(rt_buf), rate);
+    printf("\r  SQL-Export: %6.2f%%  %s (%s Zeilen, %s Zeilen/s)  ",
+           pct, table, wr_buf, rt_buf);
     fflush(stdout);
 }
 
@@ -85,8 +120,11 @@ static void sql_progress_finish(SqlProgress *sp)
 {
     double secs = grdu_mono_timer_seconds(sp->start);
     uint64_t rate = secs > 0.0 ? (uint64_t)((double)sp->written / secs) : 0;
-    printf("\r  SQL-Export: 100.00%%  %" PRIu64 " Zeilen in %.1f s (%" PRIu64 " Zeilen/s)    \n",
-           sp->written, secs, rate);
+    char wr_buf[21], rt_buf[21];
+    grdu_uint64_to_string(wr_buf, sizeof(wr_buf), sp->written);
+    grdu_uint64_to_string(rt_buf, sizeof(rt_buf), rate);
+    printf("\r  SQL-Export: 100.00%%  %s Zeilen in %.1f s (%s Zeilen/s)    \n",
+           wr_buf, secs, rt_buf);
     fflush(stdout);
 }
 
@@ -106,9 +144,15 @@ static void write_copy_section(
     SqlProgress *sp)           /* optional progress tracker            */
 {
     KeyToId *key_to_id = NULL;
-    sh_new_strdup(key_to_id);
+    if (out_map) {
+        sh_new_strdup(key_to_id);
+    }
 
-    fprintf(f, "\nCOPY %s %s FROM stdin;\n", table_name, column_list);
+    fputs("\nCOPY ", f);
+    fputs(table_name, f);
+    fputs(" ", f);
+    fputs(column_list, f);
+    fputs(" FROM stdin;\n", f);
 
     for (ptrdiff_t i = 0; i < shlen(set->entries); ++i) {
         const Entity *e = &set->entries[i];
@@ -128,26 +172,36 @@ static void write_copy_section(
 
         if (table_name[0] == 'c' && table_name[1] == 'o') {
             /* countries: id, code, name, centroid */
-            fprintf(f, "%" PRId64 "\t%s\t%s\t%s\n",
-                id, e->code ? e->code : "", name_buf, centroid_buf);
+            fput_int64(f, id);                fputc('\t', f);
+            fputs(e->code ? e->code : "", f); fputc('\t', f);
+            fputs(name_buf, f);               fputc('\t', f);
+            fputs(centroid_buf, f);           fputc('\n', f);
         } else if (table_name[0] == 'h') {
             /* houses: id, street_id, housenumber, postcode, centroid */
-            fprintf(f, "%" PRId64 "\t%" PRId64 "\t%s\t%s\t%s\n",
-                id, parent_id, name_buf,
-                e->postcode ? e->postcode : "\\N", centroid_buf);
+            fput_int64(f, id);                fputc('\t', f);
+            fput_int64(f, parent_id);         fputc('\t', f);
+            fputs(name_buf, f);               fputc('\t', f);
+            fputs(e->postcode ? e->postcode : "\\N", f); fputc('\t', f);
+            fputs(centroid_buf, f);           fputc('\n', f);
         } else {
             /* states, counties, cities, streets: id, parent_id, name, centroid */
-            fprintf(f, "%" PRId64 "\t%" PRId64 "\t%s\t%s\n",
-                id, parent_id, name_buf, centroid_buf);
+            fput_int64(f, id);                fputc('\t', f);
+            fput_int64(f, parent_id);         fputc('\t', f);
+            fputs(name_buf, f);               fputc('\t', f);
+            fputs(centroid_buf, f);           fputc('\n', f);
         }
 
         /* register in this level's map */
-        shput(key_to_id, e->key, id);
+        if (out_map) {
+            shput(key_to_id, e->key, id);
+        }
         if (sp) sql_progress_tick(sp, table_name, 1);
     }
 
-    fprintf(f, "\\.\n");
-    *out_map = key_to_id;    
+    fputs("\\.\n", f);
+    if (out_map) {
+        *out_map = key_to_id;    
+    }
 }
 
 /* =========================================================================
@@ -219,7 +273,7 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
 
     /* --- COPY sections --- */
     KeyToId *country_map = NULL, *state_map = NULL, *county_map = NULL;
-    KeyToId *city_map    = NULL, *street_map = NULL, *house_map   = NULL;
+    KeyToId *city_map    = NULL, *street_map = NULL;
     int next_id = 1;
 
     uint64_t total_rows = (uint64_t)shlen(stats->countries.entries)
@@ -240,21 +294,31 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
         "(id, country_id, name, centroid)",
         &country_map, &next_id, &state_map, &sp);
 
+    shfree(country_map);
+
     write_copy_section(f, &stats->counties, "counties",
         "(id, state_id, name, centroid)",
         &state_map, &next_id, &county_map, &sp);
+    
+    shfree(state_map);
 
     write_copy_section(f, &stats->cities, "cities",
         "(id, county_id, name, centroid)",
         &county_map, &next_id, &city_map, &sp);
 
+    shfree(county_map);
+
     write_copy_section(f, &stats->streets, "streets",
         "(id, city_id, name, centroid)",
         &city_map, &next_id, &street_map, &sp);
 
+    shfree(city_map);
+
     write_copy_section(f, &stats->houses, "houses",
         "(id, street_id, housenumber, postcode, centroid)",
-        &street_map, &next_id, &house_map, &sp);
+        &street_map, &next_id, NULL, &sp);
+
+    shfree(street_map); 
 
     sql_progress_finish(&sp);
 
@@ -270,11 +334,7 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
         "COMMIT;\n"
         "VACUUM ANALYZE;\n"
         , f);
-
-    /* cleanup temporary maps */
-    shfree(country_map); shfree(state_map); shfree(county_map);
-    shfree(city_map);    shfree(street_map); shfree(house_map);
-
+    
     fclose(f);
 
     info("PostgreSQL script written to '%s'.", filename);

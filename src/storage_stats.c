@@ -193,25 +193,61 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         while ((key = yyjson_obj_iter_next(&iter))) {
             val = yyjson_obj_iter_get_val(key);
             if (!yyjson_is_str(val)) continue;
-            const char *k = yyjson_get_str(key), *v = yyjson_get_str(val);
-            if      (strcmp(k, "country:de") == 0) country    = v;
-            else if (strcmp(k, "country")    == 0 && !country)    country    = v;
-            else if (strcmp(k, "state:de")   == 0) state_str  = v;
-            else if (strcmp(k, "state")      == 0 && !state_str)  state_str  = v;
-            else if (strcmp(k, "county:de")  == 0) county_str = v;
-            else if (strcmp(k, "county")     == 0 && !county_str) county_str = v;
-            else if (strcmp(k, "city:de")    == 0) city_str   = v;
-            else if (strcmp(k, "city")       == 0 && !city_str)   city_str   = v;
-            else if (strcmp(k, "street:de")  == 0) street_str = v;
-            else if (strcmp(k, "street")     == 0 && !street_str) street_str = v;
+            const char *k = yyjson_get_str(key);
+            size_t      kl = yyjson_get_len(key);
+            const char *v  = yyjson_get_str(val);
+
+            /* length-first dispatch — no strcmp on known Photon keys */
+            switch (kl) {
+            case 4: /* "city" — only set when no German key seen */
+                if (!city_str && k[0]=='c') city_str = v;
+                break;
+            case 5: /* "state" */
+                if (!state_str && k[0]=='s') state_str = v;
+                break;
+            case 6: /* "county" (c) | "street" (s) */
+                if      (k[0]=='c' && !county_str) county_str = v;
+                else if (k[0]=='s' && !street_str) street_str = v;
+                break;
+            case 7: /* "country" (co, guarded) | "city:de" (ci, always) */
+                if (k[0]=='c') {
+                    if      (k[1]=='o' && !memcmp(k,"country",7) && !country) country = v;
+                    else if (k[1]=='i' && !memcmp(k,"city:de",7)) city_str = v;
+                }
+                break;
+            case 8: /* "state:de" — always overwrites */
+                if (!memcmp(k,"state:de",8)) state_str = v;
+                break;
+            case 9: /* "county:de" (c) | "street:de" (s) — always overwrite */
+                if      (k[0]=='c' && !memcmp(k,"county:de",9)) county_str = v;
+                else if (k[0]=='s' && !memcmp(k,"street:de",9)) street_str = v;
+                break;
+            case 10: /* "country:de" — always overwrites */
+                if (!memcmp(k,"country:de",10)) country = v;
+                break;
+            }
         }
     }
 
-    if (type && strcmp(type, "country") == 0)  country    = own_name;
-    if (type && strcmp(type, "state")   == 0)  state_str  = own_name;
-    if (type && strcmp(type, "county")  == 0)  county_str = own_name;
-    if (type && strcmp(type, "city")    == 0)  city_str   = own_name;
-    if (type && strcmp(type, "street")  == 0)  street_str = own_name;
+    /* --- resolve type category once (replaces 10 strcmp below) --- */
+    enum { TC_NONE, TC_COUNTRY, TC_STATE, TC_COUNTY, TC_CITY, TC_STREET } tc = TC_NONE;
+    if (type) {
+        switch (strlen(type)) {
+        case 7: if (type[0]=='c') tc = TC_COUNTRY; break;
+        case 5: if (type[0]=='s') tc = TC_STATE;   break;
+        case 6:
+            if      (type[0]=='c') tc = TC_COUNTY;
+            else if (type[0]=='s') tc = TC_STREET;
+            break;
+        case 4: if (type[0]=='c') tc = TC_CITY;    break;
+        }
+    }
+
+    if (tc == TC_COUNTRY) country    = own_name;
+    if (tc == TC_STATE)   state_str  = own_name;
+    if (tc == TC_COUNTY)  county_str = own_name;
+    if (tc == TC_CITY)    city_str   = own_name;
+    if (tc == TC_STREET)  street_str = own_name;
 
     if (!country_code) country_code = country;
     if (!country_code) return;
@@ -254,14 +290,14 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         NULL,                   /* no parent */
         country_code,           /* code  */
         country ? country : country_code,  /* name */
-        lon_e7, lat_e7, has_pt && (type && strcmp(type, "country") == 0), NULL);
+        lon_e7, lat_e7, has_pt && (tc == TC_COUNTRY), NULL);
 
     if (state_str) {
         const char *k2[] = {country_code, state_str};
         hash_key_hex(parent_state, k2, 2);
         key_set_add(&stats->states, parent_state,
             parent_country, NULL, state_str,
-            lon_e7, lat_e7, has_pt && (type && strcmp(type, "state") == 0), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_STATE), NULL);
     }
     if (county_str) {
         const char *k3[] = {country_code, state_str ? state_str : "", county_str};
@@ -269,7 +305,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         key_set_add(&stats->counties, parent_county,
             parent_state[0] ? parent_state : parent_country,
             NULL, county_str,
-            lon_e7, lat_e7, has_pt && (type && strcmp(type, "county") == 0), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_COUNTY), NULL);
     }
     if (city_str) {
         const char *k4[] = {country_code, state_str ? state_str : "",
@@ -278,7 +314,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         key_set_add(&stats->cities, parent_city,
             parent_county[0] ? parent_county : (parent_state[0] ? parent_state : parent_country),
             NULL, city_str,
-            lon_e7, lat_e7, has_pt && (type && strcmp(type, "city") == 0), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_CITY), NULL);
     }
     if (street_str) {
         const char *k5[] = {country_code, state_str ? state_str : "",
@@ -288,7 +324,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         key_set_add(&stats->streets, parent_street,
             parent_city[0] ? parent_city : (parent_county[0] ? parent_county : (parent_state[0] ? parent_state : parent_country)),
             NULL, street_str,
-            lon_e7, lat_e7, has_pt && (type && strcmp(type, "street") == 0), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_STREET), NULL);
     }
     yyjson_val *house_number = yyjson_obj_get(place, "housenumber");
     if (street_str && yyjson_is_str(house_number)) {
