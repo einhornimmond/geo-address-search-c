@@ -1,83 +1,44 @@
 #include "progress.h"
 
+#include "gradido_blockchain_core/utils/mono_timer.h"
+
 #include <inttypes.h>
 #include <stdio.h>
-#include <time.h>
+
+#include "format.h"
 
 static uint64_t g_totalBytes;
-static struct timespec g_start;
-static struct timespec g_last;
-
-static double nowSeconds(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-}
-
-
-void formatHumanReadableSize(uint64_t bytes, char *buf, size_t len)
-{
-    static const char *units[] = {
-        "B",
-        "KB",
-        "MB",
-        "GB",
-        "TB"
-    };
-
-    double value = (double)bytes;
-    int unit = 0;
-
-    while (value >= 1024.0 && unit < 4) {
-        value /= 1024.0;
-        ++unit;
-    }
-
-    if (unit == 0)
-        snprintf(buf, len, "%" PRIu64 " %s", bytes, units[unit]);
-    else
-        snprintf(buf, len, "%.2f %s", value, units[unit]);
-}
+static grdu_mono_timer g_start;
+static grdu_mono_timer g_since_last;
 
 void progress_init(uint64_t totalBytes)
 {
     g_totalBytes = totalBytes;
-    clock_gettime(CLOCK_MONOTONIC, &g_start);
-    g_last = g_start;
+    grdu_mono_timer_reset(&g_start);
+    g_since_last = g_start;
 }
 
 void progress_update(uint64_t currentBytes)
 {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-
-    double sinceLast =
-        (now.tv_sec - g_last.tv_sec) +
-        (now.tv_nsec - g_last.tv_nsec) / 1e9;
-
-    if (sinceLast < 0.1)
+    double elapsed_since_last_call = grdu_mono_timer_millis(g_since_last);
+    if (elapsed_since_last_call < 200.0) {
         return;
-
-    g_last = now;
-
-    double elapsed =
-        (now.tv_sec - g_start.tv_sec) +
-        (now.tv_nsec - g_start.tv_nsec) / 1e9;
-
+    }
+    grdu_mono_timer_reset(&g_since_last);
+    
     char current[32];
     char total[32];
     char speed[32];
 
-    formatHumanReadableSize(currentBytes, current, sizeof(current));
-    formatHumanReadableSize(g_totalBytes, total, sizeof(total));
+    format_byte_units(current, sizeof(current), currentBytes, 2);
+    format_byte_units(total, sizeof(total), g_totalBytes, 2);
 
+    double elapsed = grdu_mono_timer_seconds(g_start);
     uint64_t bytesPerSecond = elapsed > 0.0
         ? (uint64_t)(currentBytes / elapsed)
         : 0;
 
-    formatHumanReadableSize(bytesPerSecond, speed, sizeof(speed));
+    format_byte_units(speed, sizeof(speed), bytesPerSecond, 2);
 
     printf(
         "\rProgress: %6.2f%%   %s / %s   (%s/s)",
@@ -92,25 +53,8 @@ void progress_update(uint64_t currentBytes)
 
 void progress_finish(void)
 {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    char elapsed_str[32];
+    grdu_mono_timer_string(elapsed_str, sizeof(elapsed_str), g_start);
 
-    double elapsed =
-        (now.tv_sec - g_start.tv_sec) +
-        (now.tv_nsec - g_start.tv_nsec) / 1e9;
-
-    putchar('\n');
-
-    if (elapsed < 60.0) {
-        printf("Total time: %.3f s\n", elapsed);
-    } else {
-        unsigned hours   = (unsigned)(elapsed / 3600.0);
-        unsigned minutes = ((unsigned)elapsed % 3600) / 60;
-        unsigned seconds = (unsigned)elapsed % 60;
-
-        printf("Total time: %02u:%02u:%02u\n",
-               hours,
-               minutes,
-               seconds);
-    }
+    printf("Total time: %s\n", elapsed_str);
 }

@@ -4,6 +4,7 @@
 #include "parse_queue.h"
 #include "json_stats.h"
 #include "storage_stats.h"
+#include "format.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -12,6 +13,8 @@
 
 #include <zstd.h>
 #include <yyjson.h>
+
+#include "gradido_blockchain_core/utils/mono_timer.h"
 
 enum { BUFFER_POOL_CAPACITY = PARSE_QUEUE_CAPACITY + 4 };
 
@@ -80,12 +83,12 @@ static void process_json_line(const char* line, size_t len, JsonStats* stats, St
         alc_buf = malloc(buf_size);
         if (!alc_buf) {
           char buf_size_buf[32];
-          formatHumanReadableSize(buf_size, buf_size_buf, sizeof(buf_size_buf));
+          format_byte_units(buf_size_buf, sizeof(buf_size_buf), buf_size, 2);
           fatal(ERROR_MEMORY, "Failed to allocate %s for JSON parsing.", buf_size_buf);
         } else {
           char oldBuf[32], newBuf[32];
-          formatHumanReadableSize(alc_buf_size, oldBuf, sizeof(oldBuf));
-          formatHumanReadableSize(buf_size, newBuf, sizeof(newBuf));
+          format_byte_units(oldBuf, sizeof(oldBuf), alc_buf_size, 2);
+          format_byte_units(newBuf, sizeof(newBuf), buf_size, 2);
           info("Json buffer reallocated from %s to %s", oldBuf, newBuf);
         }
         alc_buf_size = buf_size;
@@ -181,6 +184,8 @@ int main(int argc, char* argv[])
         fatal(ERROR_USAGE,"Usage: %s <photon_dump.jsonl.zst> [parser_threads: 1-2]", argv[0]);
     }
 
+    grdu_mono_timer_init();
+
     unsigned parser_thread_count = 2;
     if (argc == 3) {
         char* end;
@@ -217,8 +222,8 @@ int main(int argc, char* argv[])
     BufferPool buffer_pool;
     
     char inputSizeBuf[32], outputSizeBuf[32];
-    formatHumanReadableSize(inputSize, inputSizeBuf, 32);
-    formatHumanReadableSize(outputSize, outputSizeBuf, 32);
+    format_byte_units(inputSizeBuf, sizeof(inputSizeBuf), inputSize, 2);
+    format_byte_units(outputSizeBuf, sizeof(outputSizeBuf), outputSize, 2);
     printf("inputSize: %s, outputSize: %s\n", inputSizeBuf, outputSizeBuf);
 
     if (!inputBuffer || !outputBuffer) {
@@ -292,6 +297,8 @@ int main(int argc, char* argv[])
 
       }      
     }
+    printf("\n");
+    printf("Reading and decompress file finished, wait for parser threads to finish...\n");
     
     if (lineBuffer->position > 0) {
         parse_queue_push(parse_queue, (ParseBatch){ .buffer = lineBuffer, .len = lineBuffer->position });
@@ -302,6 +309,7 @@ int main(int argc, char* argv[])
     for (unsigned i = 0; i < parser_thread_count; ++i) {
         pthread_join(parser_threads[i], NULL);
     }
+    printf("All parser threads have finished. Joining stats...\n");
 
     JsonStats stats = { 0 };
     StorageStats* storage_stats = storage_stats_create();
@@ -315,6 +323,7 @@ int main(int argc, char* argv[])
     progress_finish();
     json_stats_print(&stats);
     storage_stats_print(storage_stats);
+    printf("Cleaning up...\n");
     storage_stats_destroy(storage_stats);
 
     parse_queue_destroy(parse_queue);
@@ -325,6 +334,6 @@ int main(int argc, char* argv[])
     ZSTD_freeDStream(dstream);
 
     fclose(fp);
-
+    printf("All finished.\n");
     return 0;
 }

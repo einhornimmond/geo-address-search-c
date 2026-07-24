@@ -144,6 +144,7 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...)
 
 void info(const char* fmt, ...)
 {
+    return;
     // printInfo();
     fprintf(stdout, "Info: ");
 

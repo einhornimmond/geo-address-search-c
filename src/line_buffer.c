@@ -1,10 +1,12 @@
 #include "line_buffer.h"
-#include "error.h"
-#include "progress.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+#include "error.h"
+#include "format.h"
+#include "progress.h"
 
 LineBuffer* line_buffer_create(size_t capacity)
 {
@@ -50,8 +52,8 @@ void line_buffer_append(LineBuffer* lb, const char* data, size_t len)
         lb->capacity = new_capacity;
 
         char oldBuf[32], newBuf[32];
-        formatHumanReadableSize(old_capacity, oldBuf, sizeof(oldBuf));
-        formatHumanReadableSize(new_capacity, newBuf, sizeof(newBuf));
+        format_byte_units(oldBuf, sizeof(oldBuf), old_capacity, 2);
+        format_byte_units(newBuf, sizeof(newBuf), new_capacity, 2);
         info("Line buffer reallocated from %s to %s", oldBuf, newBuf);
     }
 
