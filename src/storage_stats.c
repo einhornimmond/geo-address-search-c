@@ -47,25 +47,26 @@ static const char *place_name(yyjson_val *place)
  *
  *  @whisper One walk, two streams — the shape condenses into 32 hex
  */
-static void hash_key_hex(char out[33], const char *const *values, size_t count)
+static BinKey hash_key_bin(const char *const *values, size_t count, uint32_t *fp_out)
 {
     uint64_t h1 = UINT64_C(14695981039346656037);
     uint64_t h2 = UINT64_C(1099511628211);
     const uint64_t prime = UINT64_C(1099511628211);
+    uint32_t djb = 5381;  /* independent djb2 fingerprint for collision guard */
     for (size_t i = 0; i < count; ++i) {
         const char *s = values[i];
         uint64_t len = 0;
         uint8_t c;
-        while ((c = (uint8_t)*s++) != 0) { h1 ^= c; h1 *= prime; h2 ^= c; h2 *= prime; ++len; }
+        while ((c = (uint8_t)*s++) != 0) {
+            h1 ^= c; h1 *= prime; h2 ^= c; h2 *= prime; ++len;
+            djb = ((djb << 5) + djb) + (uint32_t)c;
+        }
         for (int b = 0; b < 8; ++b) { uint8_t lb = (uint8_t)(len >> (b * 8)); h1 ^= lb; h1 *= prime; }
         for (int b = 0; b < 8; ++b) { uint8_t lb = (uint8_t)(len >> (b * 8)); h2 ^= lb; h2 *= prime; }
+        djb = ((djb << 5) + djb) + (uint32_t)len;
     }
-    static const char nibble[] = "0123456789abcdef";
-    for (int i = 0; i < 16; ++i) {
-        out[i]      = nibble[(h1 >> (60 - i * 4)) & 0xF];
-        out[16 + i] = nibble[(h2 >> (60 - i * 4)) & 0xF];
-    }
-    out[32] = '\0';
+    if (fp_out) *fp_out = djb;
+    return (BinKey){h1, h2};
 }
 
 /* =========================================================================
@@ -75,51 +76,43 @@ static void hash_key_hex(char out[33], const char *const *values, size_t count)
 /**
  * @brief Insert or update an entity in a key set.
  *
- *  Accepts a pre-computed 32-char hex @p key_hex, then either allocates
- *  a new Entity (strdup'ing parent_hex, code, name, postcode) or updates
- *  an existing entity's centroid / postcode when new data is richer.
- *
- *  @param set        Target key set.
- *  @param key_hex    32-char hex key (pre-computed by caller).
- *  @param parent_hex Parent hash as 32-char hex string (NULL for root level).
- *  @param code       Country code (NULL unless this is a country entry).
- *  @param name       Display name (must be non-NULL).
- *  @param lon_e7     Longitude × 10⁷.
- *  @param lat_e7     Latitude  × 10⁷.
- *  @param has_point  Whether centroid data is present.
- *  @param postcode   Postcode string (NULL unless this is a house).
+ *  Accepts pre-computed binary @p key and @p parent_key, then either
+ *  allocates a new Entity or enriches an existing one.
  */
 static void key_set_add(
     KeySet *set,
-    const char *key_hex,
-    const char *parent_hex,
+    BinKey key,
+    BinKey parent_key,
+    uint32_t fingerprint,
     const char *code,
     const char *name,
     int32_t lon_e7, int32_t lat_e7,
     int has_point,
     const char *postcode)
 {
-    if (!name || !key_hex) return;
-
-    if (!set->entries) sh_new_strdup(set->entries);
-    ptrdiff_t index = shgeti(set->entries, key_hex);
+    if (!name) return;
+    ptrdiff_t index = hmgeti(set->entries, key);
 
     if (index < 0) {
-        /* --- new entity: allocate all strings --- */
         Entity e = {
-            .key             = key_hex,         /* hash key — stb_ds copies & stores internally */
-            .parent_key      = parent_hex ? strdup(parent_hex) : NULL,
+            .key             = key,
+            .parent_key      = parent_key,
             .code            = code      ? strdup(code)       : NULL,
             .name            = strdup(name),
             .centroid_lon_e7 = lon_e7,
             .centroid_lat_e7 = lat_e7,
             .has_point       = (uint8_t)has_point,
             .postcode        = postcode  ? strdup(postcode)   : NULL,
+            .fingerprint     = fingerprint,
         };
-        shputs(set->entries, e);
+        hmputs(set->entries, e);
     } else {
-        /* --- existing entity: enrich with new information --- */
         Entity *e = &set->entries[index];
+        if (e->fingerprint != fingerprint) {
+            fatal(ERROR_HASH_COLLISION,
+                  "BinKey collision: existing fp=%" PRIu32 " new fp=%" PRIu32 " name=\"%s\"",
+                  e->fingerprint, fingerprint, name);
+        }
         if (has_point && !e->has_point) {
             e->centroid_lon_e7 = lon_e7;
             e->centroid_lat_e7 = lat_e7;
@@ -143,14 +136,13 @@ StorageStats *storage_stats_create(void)
 static void key_set_destroy(KeySet *set)
 {
     if (!set->entries) return;
-    for (ptrdiff_t i = 0; i < shlen(set->entries); ++i) {
+    for (ptrdiff_t i = 0; i < hmlen(set->entries); ++i) {
         Entity *e = &set->entries[i];
-        free((void *)e->parent_key);
         free(e->code);
         free(e->name);
         free(e->postcode);
     }
-    shfree(set->entries);
+    hmfree(set->entries);
     set->entries = NULL;
 }
 
@@ -273,46 +265,51 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
     if (yyjson_is_str(pc)) postcode = yyjson_get_str(pc);
 
     /* --- parent hashes (pre-compute on the stack) --- */
-    char parent_country[33]  = {0};
-    char parent_state[33]    = {0};
-    char parent_county[33]   = {0};
-    char parent_city[33]     = {0};
-    char parent_street[33]   = {0};
-    char parent_house[33]    = {0};
+    BinKey parent_country = BINKEY_NULL;
+    uint32_t fp_country = 0, fp_state = 0, fp_county = 0, fp_city = 0, fp_street = 0, fp_house = 0;
+    BinKey parent_state   = BINKEY_NULL;
+    BinKey parent_county  = BINKEY_NULL;
+    BinKey parent_city    = BINKEY_NULL;
+    BinKey parent_street  = BINKEY_NULL;
+    BinKey parent_house   = BINKEY_NULL;
 
     {
         const char *k1[] = {country_code};
-        hash_key_hex(parent_country, k1, 1);
+        parent_country = hash_key_bin(k1, 1, &fp_country);
     }
 
     /* --- insert into each level --- */
     key_set_add(&stats->countries, parent_country,
-        NULL,                   /* no parent */
+        BINKEY_NULL,            /* no parent */
+        fp_country,
         country_code,           /* code  */
         country ? country : country_code,  /* name */
         lon_e7, lat_e7, has_pt && (tc == TC_COUNTRY), NULL);
 
     if (state_str) {
         const char *k2[] = {country_code, state_str};
-        hash_key_hex(parent_state, k2, 2);
+        parent_state = hash_key_bin(k2, 2, &fp_state);
         key_set_add(&stats->states, parent_state,
-            parent_country, NULL, state_str,
+            parent_country,
+        fp_state, NULL, state_str,
             lon_e7, lat_e7, has_pt && (tc == TC_STATE), NULL);
     }
     if (county_str) {
         const char *k3[] = {country_code, state_str ? state_str : "", county_str};
-        hash_key_hex(parent_county, k3, 3);
+        parent_county = hash_key_bin(k3, 3, &fp_county);
         key_set_add(&stats->counties, parent_county,
-            parent_state[0] ? parent_state : parent_country,
+            memcmp(&parent_state, &BINKEY_NULL,            /* no parent */ 16) ? parent_state : parent_country,
+        fp_county,
             NULL, county_str,
             lon_e7, lat_e7, has_pt && (tc == TC_COUNTY), NULL);
     }
     if (city_str) {
         const char *k4[] = {country_code, state_str ? state_str : "",
                             county_str ? county_str : "", city_str};
-        hash_key_hex(parent_city, k4, 4);
+        parent_city = hash_key_bin(k4, 4, &fp_city);
         key_set_add(&stats->cities, parent_city,
-            parent_county[0] ? parent_county : (parent_state[0] ? parent_state : parent_country),
+            memcmp(&parent_county, &BINKEY_NULL,            /* no parent */ 16) ? parent_county : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country),
+        fp_city,
             NULL, city_str,
             lon_e7, lat_e7, has_pt && (tc == TC_CITY), NULL);
     }
@@ -320,9 +317,10 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         const char *k5[] = {country_code, state_str ? state_str : "",
                             county_str ? county_str : "",
                             city_str ? city_str : "", street_str};
-        hash_key_hex(parent_street, k5, 5);
+        parent_street = hash_key_bin(k5, 5, &fp_street);
         key_set_add(&stats->streets, parent_street,
-            parent_city[0] ? parent_city : (parent_county[0] ? parent_county : (parent_state[0] ? parent_state : parent_country)),
+            memcmp(&parent_city, &BINKEY_NULL,            /* no parent */ 16) ? parent_city : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country)),
+        fp_street,
             NULL, street_str,
             lon_e7, lat_e7, has_pt && (tc == TC_STREET), NULL);
     }
@@ -332,9 +330,10 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         const char *k6[] = {country_code, state_str ? state_str : "",
                             county_str ? county_str : "",
                             city_str ? city_str : "", street_str, hn};
-        hash_key_hex(parent_house, k6, 6);
+        parent_house = hash_key_bin(k6, 6, &fp_house);
         key_set_add(&stats->houses, parent_house,
-            parent_street[0] ? parent_street : (parent_city[0] ? parent_city : (parent_county[0] ? parent_county : (parent_state[0] ? parent_state : parent_country))),
+            memcmp(&parent_street, &BINKEY_NULL,            /* no parent */ 16) ? parent_street : (memcmp(&parent_city, &BINKEY_NULL, 16) ? parent_city : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country))),
+        fp_house,
             NULL, hn,
             lon_e7, lat_e7, has_pt, postcode);
     }
@@ -346,23 +345,22 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
 
 static void key_set_merge(KeySet *dst, const KeySet *src)
 {
-    for (ptrdiff_t i = 0; i < shlen(src->entries); ++i) {
+    for (ptrdiff_t i = 0; i < hmlen(src->entries); ++i) {
         Entity *se = &src->entries[i];
-        if (!dst->entries) sh_new_strdup(dst->entries);
-        ptrdiff_t found = shgeti(dst->entries, se->key);
+        ptrdiff_t found = hmgeti(dst->entries, se->key);
         if (found < 0) {
-            /* clone the entity — strings must be duplicated for dst ownership */
             Entity e = {
-                .key             = se->key,    /* reuse source key — stb_ds copies internally */
-                .parent_key      = se->parent_key ? strdup(se->parent_key) : NULL,
+                .key             = se->key,
+                .parent_key      = se->parent_key,
                 .code            = se->code       ? strdup(se->code)       : NULL,
                 .name            = strdup(se->name),
                 .centroid_lon_e7 = se->centroid_lon_e7,
                 .centroid_lat_e7 = se->centroid_lat_e7,
                 .has_point       = se->has_point,
                 .postcode        = se->postcode   ? strdup(se->postcode)   : NULL,
+                .fingerprint     = se->fingerprint,
             };
-            shputs(dst->entries, e);
+            hmputs(dst->entries, e);
         } else {
             Entity *de = &dst->entries[found];
             if (se->has_point && !de->has_point) {
@@ -400,7 +398,7 @@ static uint64_t align8(uint64_t value)
 static uint64_t estimated_table_bytes(const KeySet *set, unsigned parent_count)
 {
     uint64_t bytes = 0;
-    for (ptrdiff_t i = 0; i < shlen(set->entries); ++i) {
+    for (ptrdiff_t i = 0; i < hmlen(set->entries); ++i) {
         const Entity *e = &set->entries[i];
         size_t name_len = e->name ? strlen(e->name) : 0;
         bytes += align8(24 + parent_count * 4 + 4 + name_len + (e->has_point ? 16 : 0));
@@ -411,7 +409,7 @@ static uint64_t estimated_table_bytes(const KeySet *set, unsigned parent_count)
 static uint64_t estimated_index_bytes(const KeySet *set, unsigned parent_count)
 {
     uint64_t bytes = 0;
-    for (ptrdiff_t i = 0; i < shlen(set->entries); ++i) {
+    for (ptrdiff_t i = 0; i < hmlen(set->entries); ++i) {
         size_t name_len = set->entries[i].name ? strlen(set->entries[i].name) : 0;
         bytes += align8(16 + parent_count * 4 + 4 + name_len);
     }
@@ -427,7 +425,7 @@ void storage_stats_print(const StorageStats *stats)
     uint64_t heap = 0, indexes = 0;
     printf("\nNormalisierte deutsche Adressdaten (weltweit):\n");
     for (size_t i = 0; i < 6; ++i) {
-        uint64_t rows = (uint64_t)shlen(sets[i]->entries);
+        uint64_t rows = (uint64_t)hmlen(sets[i]->entries);
         printf("  %-14s %" PRIu64 "\n", labels[i], rows);
         heap    += estimated_table_bytes(sets[i], (unsigned)i);
         indexes += estimated_index_bytes(sets[i], (unsigned)i) + rows * 16;

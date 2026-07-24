@@ -105,6 +105,24 @@ static void printAssert(void) {
   );
 }
 
+static void printHashCollision(void) {
+  printHeader("Luna witnessed a hash collision...");
+
+  fputs(
+      "      /\\_/\\     /\\_/\\\n"
+      "     ( o.o )   ( O.O )\n"
+      "      \\   /     \\   /\n"
+      "       \\ /_______\\ /\n"
+      "        X         X\n"
+      "\n"
+      " Two different places folded into one key.\n"
+      " The hash space has betrayed its promise.\n"
+      " Call a mathematician. Or check your data.\n"
+      "\n",
+      stderr
+  );
+}
+
 static void printInfo(void) {
   printHeader("Luna has an update...");
 
@@ -138,6 +156,9 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...) {
     break;
   case ERROR_ASSERT:
     printAssert();
+    break;
+  case ERROR_HASH_COLLISION:
+    printHashCollision();
     break;
   case ERROR_INFO:
     printInfo();

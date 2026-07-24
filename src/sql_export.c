@@ -15,8 +15,8 @@
  *  Helpers
  * ========================================================================= */
 
-/** stb_ds string→int64 map — wrapper required for shgeti/shput on scalar values. */
-typedef struct { int64_t key; int64_t value; } KeyToId;
+/** stb_ds string→int64 map — wrapper required for hmgeti/hmput on scalar values. */
+typedef struct { BinKey key; int64_t value; } KeyToId;
 
 /** Write an int64_t to file — no printf format-string overhead. */
 static void fput_int64(FILE *f, int64_t val)
@@ -144,9 +144,6 @@ static void write_copy_section(
     SqlProgress *sp)           /* optional progress tracker            */
 {
     KeyToId *key_to_id = NULL;
-    if (out_map) {
-        sh_new_strdup(key_to_id);
-    }
 
     fputs("\nCOPY ", f);
     fputs(table_name, f);
@@ -154,14 +151,14 @@ static void write_copy_section(
     fputs(column_list, f);
     fputs(" FROM stdin;\n", f);
 
-    for (ptrdiff_t i = 0; i < shlen(set->entries); ++i) {
+    for (ptrdiff_t i = 0; i < hmlen(set->entries); ++i) {
         const Entity *e = &set->entries[i];
         int64_t id = (*next_id)++;
 
         /* resolve FK */
         int64_t parent_id = 0;
-        if (parent_map && *parent_map && e->parent_key) {
-            ptrdiff_t pi = shgeti(*parent_map, e->parent_key);
+        if (parent_map && *parent_map && memcmp(&e->parent_key, &BINKEY_NULL, 16) != 0) {
+            ptrdiff_t pi = hmgeti(*parent_map, e->parent_key);
             if (pi >= 0) parent_id = (*parent_map)[pi].value;
         }
 
@@ -193,7 +190,7 @@ static void write_copy_section(
 
         /* register in this level's map */
         if (out_map) {
-            shput(key_to_id, e->key, id);
+            hmput(key_to_id, e->key, id);
         }
         if (sp) sql_progress_tick(sp, table_name, 1);
     }
@@ -276,12 +273,12 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
     KeyToId *city_map    = NULL, *street_map = NULL;
     int next_id = 1;
 
-    uint64_t total_rows = (uint64_t)shlen(stats->countries.entries)
-                        + (uint64_t)shlen(stats->states.entries)
-                        + (uint64_t)shlen(stats->counties.entries)
-                        + (uint64_t)shlen(stats->cities.entries)
-                        + (uint64_t)shlen(stats->streets.entries)
-                        + (uint64_t)shlen(stats->houses.entries);
+    uint64_t total_rows = (uint64_t)hmlen(stats->countries.entries)
+                        + (uint64_t)hmlen(stats->states.entries)
+                        + (uint64_t)hmlen(stats->counties.entries)
+                        + (uint64_t)hmlen(stats->cities.entries)
+                        + (uint64_t)hmlen(stats->streets.entries)
+                        + (uint64_t)hmlen(stats->houses.entries);
 
     SqlProgress sp;
     sql_progress_init(&sp, total_rows);
@@ -294,31 +291,31 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
         "(id, country_id, name, centroid)",
         &country_map, &next_id, &state_map, &sp);
 
-    shfree(country_map);
+    hmfree(country_map);
 
     write_copy_section(f, &stats->counties, "counties",
         "(id, state_id, name, centroid)",
         &state_map, &next_id, &county_map, &sp);
     
-    shfree(state_map);
+    hmfree(state_map);
 
     write_copy_section(f, &stats->cities, "cities",
         "(id, county_id, name, centroid)",
         &county_map, &next_id, &city_map, &sp);
 
-    shfree(county_map);
+    hmfree(county_map);
 
     write_copy_section(f, &stats->streets, "streets",
         "(id, city_id, name, centroid)",
         &city_map, &next_id, &street_map, &sp);
 
-    shfree(city_map);
+    hmfree(city_map);
 
     write_copy_section(f, &stats->houses, "houses",
         "(id, street_id, housenumber, postcode, centroid)",
         &street_map, &next_id, NULL, &sp);
 
-    shfree(street_map); 
+    hmfree(street_map); 
 
     sql_progress_finish(&sp);
 
