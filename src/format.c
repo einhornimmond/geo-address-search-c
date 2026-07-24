@@ -1,19 +1,16 @@
 #include "format.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdint.h>
 
 #include "gradido_blockchain_core/utils/converter.h"
 
-int format_byte_units(char* buffer, size_t buffer_size, uint64_t bytes, uint8_t precision)
-{
+int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t precision) {
   uint64_t divisor;
-  const char* suffix;
+  const char *suffix;
 
-  if (precision > 15) {
-    precision = 15;
-  }
+  if (precision > 15) { precision = 15; }
 
   // --- unit selection (branch tree, kein array) ---
   if (bytes < 1024ULL) {
@@ -39,9 +36,8 @@ int format_byte_units(char* buffer, size_t buffer_size, uint64_t bytes, uint8_t 
 
   size_t int_size = grdu_uint64_to_string_size(integerPart);
   size_t suffix_len = strlen(suffix);
-  if (buffer_size <
-      int_size + 2 + precision +
-          suffix_len) { // +2 for possible '.' and +precision for fractional part
+  if (buffer_size < int_size + 2 + precision +
+                        suffix_len) { // +2 for possible '.' and +precision for fractional part
     return int_size + 1 + precision + suffix_len;
   }
 
