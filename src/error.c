@@ -36,7 +36,7 @@ static void printIo(void)
     printHeader("Luna searched everywhere...");
 
     fputs(
-"        /\\   /\\\n"
+"       /\\   /\\\n"
 "       { ;_; }\n"
 "      /|     |\\\n"
 "     /_|_____|_\\\n"
@@ -104,6 +104,20 @@ static void printAssert(void)
     stderr);
 }
 
+static void printInfo(void)
+{
+    printHeader("Luna has an update...");
+
+    fputs(
+"      /\\_/\\\n"
+"     ( ^_^ )\n"
+"     /  !  \\\n"
+"\n"
+" Here's something you should know.\n"
+"\n",
+    stdout);
+}
+
 _Noreturn void fatal(ErrorArt art, const char *fmt, ...)
 {
     switch (art) {
@@ -113,6 +127,7 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...)
         case ERROR_ZSTD:   printZstd();   break;
         case ERROR_MEMORY: printMemory(); break;
         case ERROR_ASSERT: printAssert(); break;
+        case ERROR_INFO:   printInfo();   break;
     }
 
     fprintf(stderr, "Error: ");
@@ -125,4 +140,17 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...)
     fputc('\n', stderr);
 
     exit(EXIT_FAILURE);
+}
+
+void info(const char* fmt, ...)
+{
+    printInfo();
+    fprintf(stdout, "Info: ");
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stdout, fmt, args);
+    va_end(args);
+
+    fputc('\n', stdout);
 }

@@ -11,11 +11,38 @@
 
 static void process_json_line(const char* line, size_t len)
 {
-    yyjson_doc* doc = yyjson_read(line, len, 0);
+    return;
+    // Roughly estimate size: yyjson needs about len to 2*len for value storage
+    // depending on nesting depth. Better to dimension generously.
+    size_t buf_size = yyjson_read_max_memory_usage(len, 0); // yyjson helper, if available
+    static __thread char* alc_buf = NULL;
+    static __thread size_t alc_buf_size = 0;
+
+    if (alc_buf_size < buf_size) {
+        free(alc_buf);
+        alc_buf = malloc(buf_size);
+        if (!alc_buf) {
+          char buf_size_buf[32];
+          formatHumanReadableSize(buf_size, buf_size_buf, sizeof(buf_size_buf));
+          fatal(ERROR_MEMORY, "Failed to allocate %s for JSON parsing.", buf_size_buf);
+        } else {
+          char oldBuf[32], newBuf[32];
+          formatHumanReadableSize(alc_buf_size, oldBuf, sizeof(oldBuf));
+          formatHumanReadableSize(buf_size, newBuf, sizeof(newBuf));
+          info("Json buffer reallocated from %s to %s", oldBuf, newBuf);
+        }
+        alc_buf_size = buf_size;
+    }
+    return;
+
+    yyjson_alc alc;
+    yyjson_alc_pool_init(&alc, alc_buf, alc_buf_size);
+
+    yyjson_doc* doc = yyjson_read_opts((char*)line, len, 0, &alc, NULL);
     if (doc) {
         yyjson_val* root = yyjson_doc_get_root(doc);
         // TODO: Process JSON object
-        yyjson_doc_free(doc);
+        yyjson_doc_free(doc); // returns NOTHING to malloc internally, since alc_buf remains static
     } else {
         fatal(ERROR_JSON, "Failed to parse JSON line: %s", line);
     }
@@ -64,26 +91,28 @@ int main(int argc, char* argv[])
 
     progress_init(totalBytes);
 
+    ZSTD_inBuffer input = {
+        .src = inputBuffer,
+        .size = 0,
+        .pos = 0,
+    };
+
+    ZSTD_outBuffer output = {
+       .dst = outputBuffer,
+       .size = outputSize,
+       .pos = 0,
+    };
+
     while (1) 
     {
       size_t read = fread(inputBuffer, 1, inputSize, fp);
       progress_update(ftell(fp));
       if (read == 0) { break; }
-
-      ZSTD_inBuffer input = {
-          .src = inputBuffer,
-          .size = read,
-          .pos = 0,
-      };
+      input.size = read;
+      input.pos = 0;
       
-      while (input.pos < input.size) 
+      while (input.pos < input.size || output.pos == output.size) 
       {
-          ZSTD_outBuffer output = {
-              .dst = outputBuffer,
-              .size = outputSize,
-              .pos = 0,
-          };
-
           ret = ZSTD_decompressStream(
               dstream,
               &output,
@@ -98,8 +127,13 @@ int main(int argc, char* argv[])
           char* data = (char*)output.dst;
           size_t dataSize = output.pos;
           
-          line_buffer_append(lineBuffer, data, dataSize);
+          
+          line_buffer_append(lineBuffer, data, dataSize + YYJSON_PADDING_SIZE);
           line_buffer_process(lineBuffer, process_json_line);
+          output.pos = 0;
+
+          // if fully flushed
+          if (0 == ret) { break;}
 
       }      
     }

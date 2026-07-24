@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 LineBuffer* line_buffer_create(size_t capacity)
 {
@@ -20,7 +21,6 @@ LineBuffer* line_buffer_create(size_t capacity)
 
     lb->capacity = capacity;
     lb->position = 0;
-    lb->dropped_bytes = 0;
 
     return lb;
 }
@@ -35,22 +35,28 @@ void line_buffer_destroy(LineBuffer* lb)
 
 void line_buffer_append(LineBuffer* lb, const char* data, size_t len)
 {
-    for (size_t i = 0; i < len; i++) {
-        if (lb->position >= lb->capacity - 1) {
-            lb->dropped_bytes++;
-        } else {
-            lb->buffer[lb->position++] = data[i];
+    // Ensure enough space (including space for trailing '\0' during flush)
+    while (lb->position + len >= lb->capacity) {
+        size_t old_capacity = lb->capacity;
+        size_t new_capacity = lb->capacity * 3 / 2;
+        while (new_capacity <= lb->position + len) {
+            new_capacity = new_capacity * 3 / 2;
         }
-        
-        // If we dropped bytes and hit a newline, the line is corrupted
-        if (data[i] == '\n' && lb->dropped_bytes > 0) {
-            char sizeBuf[32];
-            char sizeBufCapacity[32];
-            formatHumanReadableSize(lb->capacity, sizeBufCapacity, 32);
-            formatHumanReadableSize(lb->dropped_bytes + lb->capacity, sizeBuf, sizeof(sizeBuf));
-            fatal(ERROR_JSON, "Line buffer (%s) used with %s", sizeBufCapacity, sizeBuf);
+        char* new_buffer = realloc(lb->buffer, new_capacity);
+        if (!new_buffer) {
+            fatal(ERROR_MEMORY, "Failed to reallocate line buffer to %zu bytes", new_capacity);
         }
+        lb->buffer = new_buffer;
+        lb->capacity = new_capacity;
+
+        char oldBuf[32], newBuf[32];
+        formatHumanReadableSize(old_capacity, oldBuf, sizeof(oldBuf));
+        formatHumanReadableSize(new_capacity, newBuf, sizeof(newBuf));
+        info("Line buffer reallocated from %s to %s", oldBuf, newBuf);
     }
+
+    memcpy(lb->buffer + lb->position, data, len);
+    lb->position += len;
 }
 
 void line_buffer_process(LineBuffer* lb, void (*process_line)(const char* line, size_t len))

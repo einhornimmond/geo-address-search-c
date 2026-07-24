@@ -7,7 +7,6 @@ typedef struct LineBuffer {
     char* buffer;
     size_t capacity;
     size_t position;
-    size_t dropped_bytes;
 } LineBuffer;
 
 LineBuffer* line_buffer_create(size_t capacity);
