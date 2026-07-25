@@ -87,8 +87,7 @@ static void key_set_add(
     const char *code,
     const char *name,
     int32_t lon_e7, int32_t lat_e7,
-    int has_point,
-    const char *postcode)
+    int has_point)
 {
     if (!name) return;
     ptrdiff_t index = hmgeti(set->entries, key);
@@ -102,7 +101,6 @@ static void key_set_add(
             .centroid_lon_e7 = lon_e7,
             .centroid_lat_e7 = lat_e7,
             .has_point       = (uint8_t)has_point,
-            .postcode        = postcode  ? strdup(postcode)   : NULL,
             .fingerprint     = fingerprint,
         };
         hmputs(set->entries, e);
@@ -117,9 +115,6 @@ static void key_set_add(
             e->centroid_lon_e7 = lon_e7;
             e->centroid_lat_e7 = lat_e7;
             e->has_point = 1;
-        }
-        if (postcode && !e->postcode) {
-            e->postcode = strdup(postcode);
         }
     }
 }
@@ -140,7 +135,6 @@ static void key_set_destroy(KeySet *set)
         Entity *e = &set->entries[i];
         free(e->code);
         free(e->name);
-        free(e->postcode);
     }
     hmfree(set->entries);
     set->entries = NULL;
@@ -153,6 +147,7 @@ void storage_stats_destroy(StorageStats *stats)
     key_set_destroy(&stats->states);
     key_set_destroy(&stats->counties);
     key_set_destroy(&stats->cities);
+    key_set_destroy(&stats->postcodes);
     key_set_destroy(&stats->streets);
     key_set_destroy(&stats->houses);
     free(stats);
@@ -266,12 +261,13 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
 
     /* --- parent hashes (pre-compute on the stack) --- */
     BinKey parent_country = BINKEY_NULL;
-    uint32_t fp_country = 0, fp_state = 0, fp_county = 0, fp_city = 0, fp_street = 0, fp_house = 0;
+    uint32_t fp_country = 0, fp_state = 0, fp_county = 0, fp_city = 0;
+    uint32_t fp_postcode = 0, fp_street = 0, fp_house = 0;
     BinKey parent_state   = BINKEY_NULL;
     BinKey parent_county  = BINKEY_NULL;
     BinKey parent_city    = BINKEY_NULL;
+    BinKey parent_postcode = BINKEY_NULL;
     BinKey parent_street  = BINKEY_NULL;
-    BinKey parent_house   = BINKEY_NULL;
 
     {
         const char *k1[] = {country_code};
@@ -284,7 +280,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         fp_country,
         country_code,           /* code  */
         country ? country : country_code,  /* name */
-        lon_e7, lat_e7, has_pt && (tc == TC_COUNTRY), NULL);
+        lon_e7, lat_e7, has_pt && (tc == TC_COUNTRY));
 
     if (state_str) {
         const char *k2[] = {country_code, state_str};
@@ -292,50 +288,90 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         key_set_add(&stats->states, parent_state,
             parent_country,
         fp_state, NULL, state_str,
-            lon_e7, lat_e7, has_pt && (tc == TC_STATE), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_STATE));
     }
     if (county_str) {
         const char *k3[] = {country_code, state_str ? state_str : "", county_str};
         parent_county = hash_key_bin(k3, 3, &fp_county);
         key_set_add(&stats->counties, parent_county,
-            memcmp(&parent_state, &BINKEY_NULL,            /* no parent */ 16) ? parent_state : parent_country,
+            memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country,
         fp_county,
             NULL, county_str,
-            lon_e7, lat_e7, has_pt && (tc == TC_COUNTY), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_COUNTY));
     }
     if (city_str) {
         const char *k4[] = {country_code, state_str ? state_str : "",
                             county_str ? county_str : "", city_str};
         parent_city = hash_key_bin(k4, 4, &fp_city);
         key_set_add(&stats->cities, parent_city,
-            memcmp(&parent_county, &BINKEY_NULL,            /* no parent */ 16) ? parent_county : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country),
+            memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county
+                : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country),
         fp_city,
             NULL, city_str,
-            lon_e7, lat_e7, has_pt && (tc == TC_CITY), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_CITY));
     }
-    if (street_str) {
+    /* --- postcode level (new: between city and street) --- */
+    if (postcode && city_str) {
         const char *k5[] = {country_code, state_str ? state_str : "",
                             county_str ? county_str : "",
-                            city_str ? city_str : "", street_str};
-        parent_street = hash_key_bin(k5, 5, &fp_street);
+                            city_str, postcode};
+        parent_postcode = hash_key_bin(k5, 5, &fp_postcode);
+        key_set_add(&stats->postcodes, parent_postcode,
+            memcmp(&parent_city, &BINKEY_NULL, 16) ? parent_city
+                : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county
+                    : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country)),
+        fp_postcode,
+            NULL, postcode,
+            lon_e7, lat_e7, has_pt && (tc == TC_NONE) /* postcode has no own address_type */);
+    }
+    if (street_str) {
+        /* street key now includes postcode (6 elements) */
+        BinKey street_parent;
+        if (postcode) {
+            const char *k6[] = {country_code, state_str ? state_str : "",
+                                county_str ? county_str : "",
+                                city_str ? city_str : "", postcode, street_str};
+            parent_street = hash_key_bin(k6, 6, &fp_street);
+            street_parent = parent_postcode;
+        } else {
+            const char *k6[] = {country_code, state_str ? state_str : "",
+                                county_str ? county_str : "",
+                                city_str ? city_str : "", "", street_str};
+            parent_street = hash_key_bin(k6, 6, &fp_street);
+            street_parent = memcmp(&parent_city, &BINKEY_NULL, 16) ? parent_city
+                : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county
+                    : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country));
+        }
         key_set_add(&stats->streets, parent_street,
-            memcmp(&parent_city, &BINKEY_NULL,            /* no parent */ 16) ? parent_city : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country)),
+            street_parent,
         fp_street,
             NULL, street_str,
-            lon_e7, lat_e7, has_pt && (tc == TC_STREET), NULL);
+            lon_e7, lat_e7, has_pt && (tc == TC_STREET));
     }
     yyjson_val *house_number = yyjson_obj_get(place, "housenumber");
     if (street_str && yyjson_is_str(house_number)) {
         const char *hn = yyjson_get_str(house_number);
-        const char *k6[] = {country_code, state_str ? state_str : "",
-                            county_str ? county_str : "",
-                            city_str ? city_str : "", street_str, hn};
-        parent_house = hash_key_bin(k6, 6, &fp_house);
-        key_set_add(&stats->houses, parent_house,
-            memcmp(&parent_street, &BINKEY_NULL,            /* no parent */ 16) ? parent_street : (memcmp(&parent_city, &BINKEY_NULL, 16) ? parent_city : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country))),
+        BinKey house_key;
+        if (postcode) {
+            const char *k7[] = {country_code, state_str ? state_str : "",
+                                county_str ? county_str : "",
+                                city_str ? city_str : "", postcode, street_str, hn};
+            house_key = hash_key_bin(k7, 7, &fp_house);
+        } else {
+            const char *k7[] = {country_code, state_str ? state_str : "",
+                                county_str ? county_str : "",
+                                city_str ? city_str : "", "", street_str, hn};
+            house_key = hash_key_bin(k7, 7, &fp_house);
+        }
+        key_set_add(&stats->houses, house_key,
+            memcmp(&parent_street, &BINKEY_NULL, 16) ? parent_street
+                : (memcmp(&parent_postcode, &BINKEY_NULL, 16) ? parent_postcode
+                    : (memcmp(&parent_city, &BINKEY_NULL, 16) ? parent_city
+                        : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county
+                            : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country)))),
         fp_house,
             NULL, hn,
-            lon_e7, lat_e7, has_pt, postcode);
+            lon_e7, lat_e7, has_pt);
     }
 }
 
@@ -357,7 +393,6 @@ static void key_set_merge(KeySet *dst, const KeySet *src)
                 .centroid_lon_e7 = se->centroid_lon_e7,
                 .centroid_lat_e7 = se->centroid_lat_e7,
                 .has_point       = se->has_point,
-                .postcode        = se->postcode   ? strdup(se->postcode)   : NULL,
                 .fingerprint     = se->fingerprint,
             };
             hmputs(dst->entries, e);
@@ -367,9 +402,6 @@ static void key_set_merge(KeySet *dst, const KeySet *src)
                 de->centroid_lon_e7 = se->centroid_lon_e7;
                 de->centroid_lat_e7 = se->centroid_lat_e7;
                 de->has_point = 1;
-            }
-            if (se->postcode && !de->postcode) {
-                de->postcode = strdup(se->postcode);
             }
         }
     }
@@ -381,6 +413,7 @@ void storage_stats_merge(StorageStats *dst, const StorageStats *src)
     key_set_merge(&dst->states,    &src->states);
     key_set_merge(&dst->counties,  &src->counties);
     key_set_merge(&dst->cities,    &src->cities);
+    key_set_merge(&dst->postcodes, &src->postcodes);
     key_set_merge(&dst->streets,   &src->streets);
     key_set_merge(&dst->houses,    &src->houses);
     dst->unsupported_addresslines += src->unsupported_addresslines;
@@ -419,12 +452,12 @@ static uint64_t estimated_index_bytes(const KeySet *set, unsigned parent_count)
 void storage_stats_print(const StorageStats *stats)
 {
     const KeySet *sets[] = {&stats->countries, &stats->states,  &stats->counties,
-                            &stats->cities,    &stats->streets, &stats->houses};
+                             &stats->cities,    &stats->postcodes, &stats->streets, &stats->houses};
     const char *labels[] = {"Länder", "Bundesländer", "Landkreise",
-                            "Städte", "Straßen",      "Adressen"};
+                             "Städte", "Postleitzahlen", "Straßen", "Adressen"};
     uint64_t heap = 0, indexes = 0;
     printf("\nNormalisierte deutsche Adressdaten (weltweit):\n");
-    for (size_t i = 0; i < 6; ++i) {
+    for (size_t i = 0; i < 7; ++i) {
         uint64_t rows = (uint64_t)hmlen(sets[i]->entries);
         printf("  %-14s %" PRIu64 "\n", labels[i], rows);
         heap    += estimated_table_bytes(sets[i], (unsigned)i);

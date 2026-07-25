@@ -94,12 +94,12 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
 
 void json_stats_print(const JsonStats *stats) {
   printf("\nGespeicherte Adresshierarchie:\n");
-  printf("  Länder:     %" PRIu64 "\n", stats->countries);
-  printf("  Bundesländer: %" PRIu64 "\n", stats->states);
-  printf("  Landkreise: %" PRIu64 "\n", stats->counties);
-  printf("  Städte:     %" PRIu64 "\n", stats->cities);
-  printf("  Straßen:    %" PRIu64 "\n", stats->streets);
-  printf("  Adressen:  %" PRIu64 "\n", stats->houses);
+  printf("  Länder:         %" PRIu64 "\n", stats->countries);
+  printf("  Bundesländer:   %" PRIu64 "\n", stats->states);
+  printf("  Landkreise:     %" PRIu64 "\n", stats->counties);
+  printf("  Städte:         %" PRIu64 "\n", stats->cities);
+  printf("  Straßen:        %" PRIu64 "\n", stats->streets);
+  printf("  Adressen:       %" PRIu64 "\n", stats->houses);
   printf("  Sonstige:  %" PRIu64 "\n", stats->other);
   printf(
       "\nPlace-Objekte: %" PRIu64 ", gespeicherte Einträge: %" PRIu64 ", JSON-Datensätze: %" PRIu64

@@ -11,13 +11,13 @@
 
 #include <yyjson.h>
 
-/** Opaque handle for the deduplicated, six-level address store. */
+/** Opaque handle for the deduplicated, seven-level address store. */
 typedef struct StorageStats StorageStats;
 
 /**
  * @brief Create an empty storage statistics collector.
  *
- *  Allocates and zero-initialises the internal key sets for all six
+ *  Allocates and zero-initialises the internal key sets for all seven
  *  hierarchy levels (country through house).
  *
  *  @return   New StorageStats pointer, or NULL on allocation failure.
@@ -37,8 +37,8 @@ void storage_stats_destroy(StorageStats* stats);
  * @brief Register one Photon place entry in the deduplicated store.
  *
  *  Extracts the hierarchical key (country → state → county → city →
- *  street → housenumber), the display name, centroid coordinates,
- *  postcode, and country code from the JSON value. Inserts a unique
+ *  postcode → street → housenumber), the display name, centroid
+ *  coordinates, and country code from the JSON value. Inserts a unique
  *  entry into each relevant level, preserving all fields for later
  *  SQL export.
  *
@@ -54,8 +54,7 @@ void storage_stats_record(StorageStats* stats, yyjson_val* place);
  * @brief Combine two collectors into one.
  *
  *  Merges every key set from @p source into @p destination,
- *  preserving centroid coordinates and postcode when either side
- *  carries them. Used to consolidate per-thread tallies.
+ *  preserving centroid coordinates when either side carries them. Used to consolidate per-thread tallies.
  *
  *  @param[in,out] destination   Accumulator receiving the merge.
  *  @param[in]     source        Partial collector to fold in.

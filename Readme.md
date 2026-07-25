@@ -16,11 +16,11 @@ photon_dump.jsonl.zst  ──►  parse_photon_jsonl_dump  ──►  output.sql
 1. **Streams & decompresses** a zstd-compressed Photon dump file.
 2. **Parses** each JSON line with [yyjson](https://github.com/ibireme/yyjson),
    counting document types and address components along the way.
-3. **Deduplicates** the six-level address hierarchy (country → state →
-   county → city → street → house) using binary-keyed hash tables backed by
-   [stb_ds](https://github.com/nothings/stb).
+3. **Deduplicates** the seven-level address hierarchy (country → state →
+   county → city → postcode → street → house) using binary-keyed hash tables
+   backed by [stb_ds](https://github.com/nothings/stb).
 4. **Exports** a normalized PostgreSQL script containing:
-   - DDL for six hierarchy tables with foreign keys
+   - DDL for seven hierarchy tables with foreign keys
    - `COPY` data sections with resolved references
    - PostGIS `GEOMETRY(POINT, 4326)` columns
    - pg_trgm GIN indexes for fuzzy text search
@@ -111,7 +111,7 @@ can be run against an empty or existing database (tables are dropped with
 | `parse_queue`   | Bounded, thread-safe producer-consumer queue          |
 | `line_buffer`   | Resizable byte buffer with line-aware append/reset    |
 | `json_stats`    | Census of address types found in the dump             |
-| `storage_stats` | Deduplicated six-level address store                  |
+| `storage_stats` | Deduplicated seven-level address store                |
 | `sql_export`    | PostgreSQL DDL + COPY + PostGIS output                |
 | `progress`      | Terminal progress bar for decompression               |
 | `format`        | Human-readable byte-unit formatting                   |

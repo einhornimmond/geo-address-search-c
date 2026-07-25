@@ -28,7 +28,6 @@ typedef struct Entity {
     int32_t     centroid_lon_e7;  /**< longitude × 10⁷                               */
     int32_t     centroid_lat_e7;  /**< latitude  × 10⁷                               */
     uint8_t     has_point;        /**< centroid data is present                       */
-    char       *postcode;         /**< strdup'd, only for houses                      */
     uint32_t    fingerprint;      /**< djb2 over value strings — collision guard     */
 } Entity;
 
@@ -41,14 +40,14 @@ typedef struct KeySet {
     Entity *entries;              /**< stb_ds binary-keyed hash: BinKey → Entity     */
 } KeySet;
 
-/** Six-level deduplicated address store.
+/** Seven-level deduplicated address store.
  *
  *  The hierarchy flows: countries → states → counties → cities →
- *  streets → houses. Each level is a KeySet with parent references
- *  linking entries together.
+ *  postcodes → streets → houses. Each level is a KeySet with parent
+ *  references linking entries together.
  */
 struct StorageStats {
-    KeySet   countries, states, counties, cities, streets, houses;
+    KeySet   countries, states, counties, cities, postcodes, streets, houses;
     uint64_t unsupported_addresslines;
 };
 
