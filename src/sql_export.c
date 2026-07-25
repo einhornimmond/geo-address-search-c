@@ -175,15 +175,8 @@ static void write_copy_section(
             fputs(e->code ? e->code : "", f); fputc('\t', f);
             fputs(name_buf, f);               fputc('\t', f);
             fputs(centroid_buf, f);           fputc('\n', f);
-        } else if (table_name[0] == 'h') {
-            /* houses: id, street_id, housenumber, postcode, centroid */
-            fput_int64(f, id);                fputc('\t', f);
-            fput_int64(f, parent_id);         fputc('\t', f);
-            fputs(name_buf, f);               fputc('\t', f);
-            fputs(e->postcode ? e->postcode : "\\N", f); fputc('\t', f);
-            fputs(centroid_buf, f);           fputc('\n', f);
         } else {
-            /* states, counties, cities, streets: id, parent_id, name, centroid */
+            /* states, counties, cities, postcodes, streets, houses: id, parent_id, name, centroid */
             fput_int64(f, id);                fputc('\t', f);
             fput_int64(f, parent_id);         fputc('\t', f);
             fputs(name_buf, f);               fputc('\t', f);
@@ -316,7 +309,7 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
         "    UNIQUE(county_id, name)\n"
         ");\n"
         "\n"
-        "CREATE TABLE streets (\n"
+        "CREATE TABLE postcodes (\n"
         "    id       BIGINT PRIMARY KEY,\n"
         "    city_id  BIGINT NOT NULL REFERENCES cities(id),\n"
         "    name     TEXT NOT NULL,\n"
@@ -324,11 +317,18 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
         "    UNIQUE(city_id, name)\n"
         ");\n"
         "\n"
+        "CREATE TABLE streets (\n"
+        "    id          BIGINT PRIMARY KEY,\n"
+        "    postcode_id BIGINT NOT NULL REFERENCES postcodes(id),\n"
+        "    name        TEXT NOT NULL,\n"
+        "    centroid    GEOMETRY(Point, 4326),\n"
+        "    UNIQUE(postcode_id, name)\n"
+        ");\n"
+        "\n"
         "CREATE TABLE houses (\n"
         "    id          BIGINT PRIMARY KEY,\n"
         "    street_id   BIGINT NOT NULL REFERENCES streets(id),\n"
         "    housenumber TEXT NOT NULL,\n"
-        "    postcode    TEXT,\n"
         "    centroid    GEOMETRY(Point, 4326),\n"
         "    UNIQUE(street_id, housenumber)\n"
         ");\n"
@@ -336,13 +336,14 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
 
     /* --- COPY sections --- */
     KeyToId *country_map = NULL, *state_map = NULL, *county_map = NULL;
-    KeyToId *city_map    = NULL, *street_map = NULL;
+    KeyToId *city_map    = NULL, *postcode_map = NULL, *street_map = NULL;
     int next_id = 1;
 
     uint64_t total_rows = (uint64_t)hmlen(stats->countries.entries)
                         + (uint64_t)hmlen(stats->states.entries)
                         + (uint64_t)hmlen(stats->counties.entries)
                         + (uint64_t)hmlen(stats->cities.entries)
+                        + (uint64_t)hmlen(stats->postcodes.entries)
                         + (uint64_t)hmlen(stats->streets.entries)
                         + (uint64_t)hmlen(stats->houses.entries);
 
@@ -371,14 +372,20 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
 
     hmfree(county_map);
 
-    write_copy_section(f, &stats->streets, "streets",
+    write_copy_section(f, &stats->postcodes, "postcodes",
         "(id, city_id, name, centroid)",
-        &city_map, &next_id, &street_map, &sp);
+        &city_map, &next_id, &postcode_map, &sp);
 
     hmfree(city_map);
 
+    write_copy_section(f, &stats->streets, "streets",
+        "(id, postcode_id, name, centroid)",
+        &postcode_map, &next_id, &street_map, &sp);
+
+    hmfree(postcode_map);
+
     write_copy_section(f, &stats->houses, "houses",
-        "(id, street_id, housenumber, postcode, centroid)",
+        "(id, street_id, housenumber, centroid)",
         &street_map, &next_id, NULL, &sp);
 
     hmfree(street_map); 
@@ -388,11 +395,10 @@ void storage_stats_write_sql(const StorageStats *stats, const char *filename)
     /* --- indexes --- */
     fputs(
         "\n"
-        "CREATE INDEX ON cities   USING GIN (name gin_trgm_ops);\n"
-        "CREATE INDEX ON streets  USING GIN (name gin_trgm_ops);\n"
-        "CREATE INDEX ON houses   USING GIN (housenumber gin_trgm_ops);\n"
-        "CREATE INDEX ON houses   USING GIST (centroid);\n"
-        "CREATE INDEX ON houses   (postcode);\n"
+        "CREATE INDEX ON postcodes USING GIN (name gin_trgm_ops);\n"
+        "CREATE INDEX ON streets   USING GIN (name gin_trgm_ops);\n"
+        "CREATE INDEX ON houses    USING GIN (housenumber gin_trgm_ops);\n"
+        "CREATE INDEX ON houses    USING GIST (centroid);\n"
         "\n"
         "COMMIT;\n"
         "VACUUM ANALYZE;\n"

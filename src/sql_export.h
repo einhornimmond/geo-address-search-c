@@ -12,8 +12,8 @@
 /**
  * @brief Write the deduplicated store as a normalised PostgreSQL script.
  *
- *  Produces a self-contained .sql file with DDL for six hierarchy tables
- *  (countries, states, counties, cities, streets, houses), tab-separated
+ *  Produces a self-contained .sql file with DDL for seven hierarchy tables
+ *  (countries, states, counties, cities, postcodes, streets, houses), tab-separated
  *  COPY data sections with resolved foreign keys, PostGIS geometry columns,
  *  pg_trgm indexes for fuzzy search, and a final VACUUM ANALYZE.
  *
