@@ -172,7 +172,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
     const char *country_code = localized(place, "country_code", "country_code");
     /* --- single-pass address field extraction (replaces 5 localized calls) --- */
     const char *country = NULL, *state_str = NULL, *county_str = NULL,
-               *city_str = NULL, *street_str = NULL;
+               *city_str = NULL, *postcode_str = NULL, *street_str = NULL;
     if (address) {
         yyjson_obj_iter iter;
         yyjson_obj_iter_init(address, &iter);
@@ -202,8 +202,12 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
                     else if (k[1]=='i' && !memcmp(k,"city:de",7)) city_str = v;
                 }
                 break;
-            case 8: /* "state:de" — always overwrites */
-                if (!memcmp(k,"state:de",8)) state_str = v;
+            case 8: /* "state:de" | "postcode" (p)  */
+                if (k[0] == 'p' && !memcmp(k, "postcode", 8) && !postcode_str) {
+                  postcode_str = v;
+                } else {
+                  if (!memcmp(k,"state:de",8)) state_str = v;
+                }
                 break;
             case 9: /* "county:de" (c) | "street:de" (s) — always overwrite */
                 if      (k[0]=='c' && !memcmp(k,"county:de",9)) county_str = v;
@@ -217,9 +221,10 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
     }
 
     /* --- resolve type category once (replaces 10 strcmp below) --- */
-    enum { TC_NONE, TC_COUNTRY, TC_STATE, TC_COUNTY, TC_CITY, TC_STREET } tc = TC_NONE;
+    enum { TC_NONE, TC_COUNTRY, TC_STATE, TC_COUNTY, TC_CITY, TC_POSTCODE, TC_STREET } tc = TC_NONE;
     if (type) {
         switch (strlen(type)) {
+        case 8: if (type[0]=='p') tc = TC_POSTCODE; break;
         case 7: if (type[0]=='c') tc = TC_COUNTRY; break;
         case 5: if (type[0]=='s') tc = TC_STATE;   break;
         case 6:
@@ -234,6 +239,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
     if (tc == TC_STATE)   state_str  = own_name;
     if (tc == TC_COUNTY)  county_str = own_name;
     if (tc == TC_CITY)    city_str   = own_name;
+    if (tc == TC_POSTCODE) postcode_str = own_name;
     if (tc == TC_STREET)  street_str = own_name;
 
     if (!country_code) country_code = country;
@@ -250,14 +256,6 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
         lon_e7 = (int32_t)round(lon * 1.0e7);
         lat_e7 = (int32_t)round(lat * 1.0e7);
     }
-
-    /* --- postcode --- */
-    const char *postcode = NULL;
-    yyjson_val *pc = yyjson_obj_get(place, "postcode");
-    if (!yyjson_is_str(pc) && address) {
-        pc = yyjson_obj_get(address, "postcode");
-    }
-    if (yyjson_is_str(pc)) postcode = yyjson_get_str(pc);
 
     /* --- parent hashes (pre-compute on the stack) --- */
     BinKey parent_country = BINKEY_NULL;
@@ -311,26 +309,26 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
             lon_e7, lat_e7, has_pt && (tc == TC_CITY));
     }
     /* --- postcode level (new: between city and street) --- */
-    if (postcode && city_str) {
+    if (postcode_str && city_str) {
         const char *k5[] = {country_code, state_str ? state_str : "",
                             county_str ? county_str : "",
-                            city_str, postcode};
+                            city_str, postcode_str};
         parent_postcode = hash_key_bin(k5, 5, &fp_postcode);
         key_set_add(&stats->postcodes, parent_postcode,
             memcmp(&parent_city, &BINKEY_NULL, 16) ? parent_city
                 : (memcmp(&parent_county, &BINKEY_NULL, 16) ? parent_county
                     : (memcmp(&parent_state, &BINKEY_NULL, 16) ? parent_state : parent_country)),
         fp_postcode,
-            NULL, postcode,
+            NULL, postcode_str,
             lon_e7, lat_e7, has_pt && (tc == TC_NONE) /* postcode has no own address_type */);
     }
     if (street_str) {
         /* street key now includes postcode (6 elements) */
         BinKey street_parent;
-        if (postcode) {
+        if (postcode_str) {
             const char *k6[] = {country_code, state_str ? state_str : "",
                                 county_str ? county_str : "",
-                                city_str ? city_str : "", postcode, street_str};
+                                city_str ? city_str : "", postcode_str, street_str};
             parent_street = hash_key_bin(k6, 6, &fp_street);
             street_parent = parent_postcode;
         } else {
@@ -352,10 +350,10 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place)
     if (street_str && yyjson_is_str(house_number)) {
         const char *hn = yyjson_get_str(house_number);
         BinKey house_key;
-        if (postcode) {
+        if (postcode_str) {
             const char *k7[] = {country_code, state_str ? state_str : "",
                                 county_str ? county_str : "",
-                                city_str ? city_str : "", postcode, street_str, hn};
+                                city_str ? city_str : "", postcode_str, street_str, hn};
             house_key = hash_key_bin(k7, 7, &fp_house);
         } else {
             const char *k7[] = {country_code, state_str ? state_str : "",
