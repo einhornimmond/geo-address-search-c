@@ -1,9 +1,9 @@
 /** @defgroup storage_stats Storage statistics
-  *  @ingroup data
-  *  @brief Normalised German address data — counting unique entities and
-  *         estimating their PostgreSQL footprint.
-  *  @{
-  */
+ *  @ingroup data
+ *  @brief Normalised German address data — counting unique entities and
+ *         estimating their PostgreSQL footprint.
+ *  @{
+ */
 
 #pragma once
 
@@ -22,7 +22,7 @@ typedef struct StorageStats StorageStats;
  *
  *  @return   New StorageStats pointer, or NULL on allocation failure.
  */
-StorageStats* storage_stats_create(void);
+StorageStats *storage_stats_create(void);
 
 /**
  * @brief Release the collector and all its hash tables.
@@ -31,7 +31,7 @@ StorageStats* storage_stats_create(void);
  *
  *  @param[in] stats   Collector to destroy (NULL is a no-op).
  */
-void storage_stats_destroy(StorageStats* stats);
+void storage_stats_destroy(StorageStats *stats);
 
 /**
  * @brief Register one Photon place entry in the deduplicated store.
@@ -48,18 +48,19 @@ void storage_stats_destroy(StorageStats* stats);
  *
  *  @whisper One more place finds its home in the hierarchy
  */
-void storage_stats_record(StorageStats* stats, yyjson_val* place);
+void storage_stats_record(StorageStats *stats, yyjson_val *place);
 
 /**
  * @brief Combine two collectors into one.
  *
  *  Merges every key set from @p source into @p destination,
- *  preserving centroid coordinates when either side carries them. Used to consolidate per-thread tallies.
+ *  preserving centroid coordinates when either side carries them. Used to consolidate per-thread
+ * tallies.
  *
  *  @param[in,out] destination   Accumulator receiving the merge.
  *  @param[in]     source        Partial collector to fold in.
  */
-void storage_stats_merge(StorageStats* destination, const StorageStats* source);
+void storage_stats_merge(StorageStats *destination, const StorageStats *source);
 
 /**
  * @brief Print estimated row counts and PostgreSQL storage size.
@@ -70,7 +71,6 @@ void storage_stats_merge(StorageStats* destination, const StorageStats* source);
  *
  *  @param[in] stats   Collector to display.
  */
-void storage_stats_print(const StorageStats* stats);
-
+void storage_stats_print(const StorageStats *stats);
 
 /** @} */

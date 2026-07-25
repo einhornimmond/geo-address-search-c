@@ -4,8 +4,8 @@
 #include "line_buffer.h"
 #include "parse_queue.h"
 #include "progress.h"
-#include "storage_stats.h"
 #include "sql_export.h"
+#include "storage_stats.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -164,7 +164,9 @@ int main(int argc, char *argv[]) {
   grdu_mono_timer_reset(&timeUsedAll);
 
   if (argc < 3 || argc > 4) {
-    fatal(ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> <output.sql> [parser_threads: 1-2]", argv[0]);
+    fatal(
+        ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> <output.sql> [parser_threads: 1-2]", argv[0]
+    );
   }
 
   grdu_mono_timer_init();
@@ -292,7 +294,7 @@ int main(int argc, char *argv[]) {
     storage_stats_merge(storage_stats, parser_args[i].storage_stats);
     storage_stats_destroy(parser_args[i].storage_stats);
   }
-  
+
   json_stats_print(&stats);
   storage_stats_print(storage_stats);
 
@@ -305,7 +307,7 @@ int main(int argc, char *argv[]) {
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   printf("Writing SQL file finished in %s.\n", timeUsedBuffer);
   grdu_mono_timer_reset(&timeUsed);
-  
+
   printf("Cleaning up...\n");
   storage_stats_destroy(storage_stats);
 
@@ -317,7 +319,7 @@ int main(int argc, char *argv[]) {
   ZSTD_freeDStream(dstream);
 
   fclose(fp);
-  
+
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsedAll);
   printf("All finished in %s.\n", timeUsedBuffer);
   return 0;
