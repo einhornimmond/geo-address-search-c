@@ -15,8 +15,8 @@
 /** Capacity of a single arena — 32 MiB. */
 #define META_ARENA_CAPACITY ((size_t)32 * 1024 * 1024)
 
-/** Remaining threshold below which an arena is considered full — 16 KiB. */
-#define META_ARENA_FULL_REMAINING ((size_t)256)
+/** Remaining threshold below which an arena is considered full — 128 Byte. */
+#define META_ARENA_FULL_REMAINING ((size_t)128)
 
 /** log2 bucket size for the arena vector: 256 arenas per bucket. */
 #define META_ARENA_BUCKET_LOG2 8
@@ -83,7 +83,7 @@ static grd_result try_alloc_from(MetaAreaAllocator *m, size_t i, uint8_t **out, 
   if (result == GRD_SUCCESS) {
     m->total_alloc += size;
   } else {
-    if (arena->arena.out_of_memory_capacity) {
+    if (arena->arena.last_index + META_ARENA_FULL_REMAINING > arena->arena.capacity) {
       m->last_hint = i+1;
     }
   }
