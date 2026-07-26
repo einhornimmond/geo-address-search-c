@@ -1,11 +1,16 @@
 #include "json_stats.h"
 #include "error.h"
+#include "json_parse.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
 static void count_address_type(JsonStats *stats, const char *address_type) {
+  if (!address_type) {
+    ++stats->other;
+    return;
+  }
   if (strcmp(address_type, "country") == 0) {
     ++stats->countries;
   } else if (strcmp(address_type, "state") == 0) {
@@ -23,57 +28,32 @@ static void count_address_type(JsonStats *stats, const char *address_type) {
   }
 }
 
-void json_stats_record(JsonStats *stats, yyjson_val *root) {
-  static int postcode_found = 0;
-
+void json_stats_count_document(JsonStats *stats, const void *result) {
+  const JsonParseResult *r = result;
   ++stats->records;
-  if (!yyjson_is_obj(root)) {
+  if (!r->is_valid) {
     ++stats->invalid_records;
     return;
   }
-
-  yyjson_val *type = yyjson_obj_get(root, "type");
-  if (!yyjson_is_str(type) || strcmp(yyjson_get_str(type), "Place") != 0) { return; }
+  if (!r->is_place) return;
   ++stats->place_records;
+  stats->place_entries += r->entry_count;
+}
 
-  yyjson_val *content = yyjson_obj_get(root, "content");
-  if (!yyjson_is_arr(content)) {
-    ++stats->invalid_records;
-    return;
-  }
+void json_stats_count_place(JsonStats *stats, const PhotonPlace *place) {
+  count_address_type(stats, place->type);
 
-  size_t index, max;
-  yyjson_val *entry;
-  yyjson_arr_foreach(content, index, max, entry) {
-    if (!yyjson_is_obj(entry)) {
-      ++stats->invalid_records;
-      continue;
-    }
-    ++stats->place_entries;
-
-    yyjson_val *address_type = yyjson_obj_get(entry, "address_type");
-    if (!yyjson_is_str(address_type)) {
-      ++stats->other;
-      continue;
-    }
-    count_address_type(stats, yyjson_get_str(address_type));
-
-    if (!postcode_found) {
-      yyjson_val *postcode = yyjson_obj_get(entry, "postcode");
-      if (!yyjson_is_str(postcode)) {
-        yyjson_val *addr = yyjson_obj_get(entry, "address");
-        if (yyjson_is_obj(addr)) { postcode = yyjson_obj_get(addr, "postcode"); }
-      }
-      if (yyjson_is_str(postcode)) {
-        postcode_found = 1;
-      } else if (stats->place_entries > 50000) {
-        fatal(
-            ERROR_JSON,
-            "postcode field not found in Photon data after %" PRIu64
-            " entries – dataset may lack postcode information.",
-            stats->place_entries
-        );
-      }
+  /* --- postcode sanity check (fatal if missing after threshold) --- */
+  if (!stats->postcode_checked) {
+    if (place->postcode) {
+      stats->postcode_checked = 1;
+    } else if (stats->place_entries > 50000) {
+      /*fatal(
+          ERROR_JSON,
+          "postcode field not found in Photon data after %" PRIu64
+          " entries – dataset may lack postcode information.",
+          stats->place_entries
+          );*/
     }
   }
 }
@@ -90,6 +70,7 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
   total->houses += addend->houses;
   total->other += addend->other;
   total->invalid_records += addend->invalid_records;
+  if (addend->postcode_checked) total->postcode_checked = 1;
 }
 
 void json_stats_print(const JsonStats *stats) {

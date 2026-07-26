@@ -75,3 +75,5 @@ size_t meta_area_total_allocated(const MetaAreaAllocator *m);
 size_t meta_area_arena_count(const MetaAreaAllocator *m);
 
 /** @} */
+
+

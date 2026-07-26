@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 
+/** Opaque handle — owned by the meta-area allocator module. */
+typedef struct MetaAreaAllocator MetaAreaAllocator;
+
 /** 16-byte binary hash key — faster than 32-char hex strings. */
 typedef struct {
   uint64_t h1, h2;
@@ -68,6 +71,7 @@ typedef struct KeySet {
 struct StorageStats {
   KeySet countries, states, counties, cities, postcodes, streets, houses;
   uint64_t unsupported_addresslines;
+  MetaAreaAllocator *alloc; /**< Allocator for string copies — shared across all key sets */
 };
 
 typedef struct StorageStats StorageStats;

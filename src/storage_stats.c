@@ -6,28 +6,11 @@
 #include "storage_stats.h"
 
 #include <inttypes.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "storage_stats_internal.h"
-
-/* =========================================================================
- *  Localisation helpers  (unchanged)
- * ========================================================================= */
-
-static const char *localized(yyjson_val *object, const char *german_key, const char *fallback_key) {
-  yyjson_val *value = yyjson_obj_get(object, german_key);
-  if (!yyjson_is_str(value) && strcmp(german_key, fallback_key) != 0)
-    value = yyjson_obj_get(object, fallback_key);
-  return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
-}
-
-static const char *place_name(yyjson_val *place) {
-  yyjson_val *names = yyjson_obj_get(place, "name");
-  return yyjson_is_obj(names) ? localized(names, "name:de", "name") : NULL;
-}
 
 /* =========================================================================
  *  Hashing — fused strlen + FNV-1a, one pass per string
@@ -83,6 +66,22 @@ static BinKey hash_key_bin(const char *const *values, size_t count, uint32_t *fp
  * ========================================================================= */
 
 /**
+ * @brief Arena-safe string copy — like @c strdup but from a MetaAreaAllocator.
+ *
+ *  Returns NULL when @p s is NULL or the allocator is exhausted.
+ */
+static char *meta_strdup(MetaAreaAllocator *alloc, const char *s) {
+  if (!s) return NULL;
+  if (!alloc) fatal(ERROR_MEMORY, "Missing Area alloc in %s:%d", __FILE__, __LINE__);
+  size_t len = strlen(s) + 1;
+  uint8_t *buf = NULL;
+  grd_result r = meta_area_alloc(alloc, &buf, len);
+  if (r != GRD_SUCCESS) fatal(ERROR_MEMORY, "Couldn't get memory from Area alloc in %s:%d", __FILE__, __LINE__);
+  memcpy(buf, s, len);
+  return (char *)buf;
+}
+
+/**
  * @brief Insert or update an entity in a key set.
  *
  *  Accepts pre-computed binary @p key and @p parent_key.  Routes the
@@ -102,7 +101,8 @@ static void key_set_add(
     const char *name,
     int32_t lon_e7,
     int32_t lat_e7,
-    int has_point
+    int has_point,
+    MetaAreaAllocator *alloc
 ) {
   if (!name) return;
 
@@ -119,8 +119,8 @@ static void key_set_add(
     Entity e = {
         .key = key,
         .parent_key = parent_key,
-        .code = code ? strdup(code) : NULL,
-        .name = strdup(name_suffix),
+        .code = meta_strdup(alloc, code),
+        .name = meta_strdup(alloc, name_suffix),
         .centroid_lon_e7 = lon_e7,
         .centroid_lat_e7 = lat_e7,
         .has_point = (uint8_t)has_point,
@@ -148,25 +148,25 @@ static void key_set_add(
  *  Lifecycle
  * ========================================================================= */
 
-StorageStats *storage_stats_create(void) {
-  return calloc(1, sizeof(StorageStats));
+StorageStats *storage_stats_create(MetaAreaAllocator *alloc) {
+  StorageStats *stats = calloc(1, sizeof(StorageStats));
+  if (stats) stats->alloc = alloc;
+  return stats;
 }
 
 /**
  * @brief Release all entries across all prefix buckets of one key set.
  *
- *  Walks the 65536 buckets, freeing entity strings and hash tables.
+ *  Walks the 65536 buckets, releasing hash tables.  String payloads
+ *  (@c code, @c name) live in the arena and are reclaimed with it —
+ *  no individual @c free calls.
+ *
  *  Buckets that were never populated remain NULL and cost nothing.
  */
 static void key_set_destroy(KeySet *set) {
   for (unsigned i = 0; i < PREFIX_BUCKET_COUNT; ++i) {
     Entity *entries = set->buckets[i].entries;
     if (!entries) continue;
-    for (ptrdiff_t j = 0; j < hmlen(entries); ++j) {
-      Entity *e = &entries[j];
-      free(e->code);
-      free(e->name);
-    }
     hmfree(entries);
     set->buckets[i].entries = NULL;
   }
@@ -188,119 +188,51 @@ void storage_stats_destroy(StorageStats *stats) {
  *  Record one place entry (HOT PATH — minimise work per call)
  * ========================================================================= */
 
-void storage_stats_record(StorageStats *stats, yyjson_val *place) {
-  /* --- address sub-object --- */
-  yyjson_val *address = yyjson_obj_get(place, "address");
-  if (!yyjson_is_obj(address)) {
-    if (yyjson_is_arr(yyjson_obj_get(place, "addresslines"))) ++stats->unsupported_addresslines;
-    address = NULL;
-  }
+void storage_stats_record(StorageStats *stats, const PhotonPlace *place) {
+  MetaAreaAllocator *alloc = stats->alloc;
+  if (place->unsupported) ++stats->unsupported_addresslines;
 
-  const char *type = localized(place, "address_type", "address_type");
-  const char *own_name = place_name(place);
-  const char *country_code = localized(place, "country_code", "country_code");
-  /* --- single-pass address field extraction (replaces 5 localized calls) --- */
-  const char *country = NULL, *state_str = NULL, *county_str = NULL, *city_str = NULL,
-             *postcode_str = NULL, *street_str = NULL;
-  if (address) {
-    yyjson_obj_iter iter;
-    yyjson_obj_iter_init(address, &iter);
-    yyjson_val *key, *val;
-    while ((key = yyjson_obj_iter_next(&iter))) {
-      val = yyjson_obj_iter_get_val(key);
-      if (!yyjson_is_str(val)) continue;
-      const char *k = yyjson_get_str(key);
-      size_t kl = yyjson_get_len(key);
-      const char *v = yyjson_get_str(val);
+  /* --- country code fallback --- */
+  const char *country_code = place->country_code;
+  if (!country_code) country_code = place->country;
+  if (!country_code) return;
 
-      /* length-first dispatch — no strcmp on known Photon keys */
-      switch (kl) {
-      case 4: /* "city" — only set when no German key seen */
-        if (!city_str && k[0] == 'c') city_str = v;
-        break;
-      case 5: /* "state" */
-        if (!state_str && k[0] == 's') state_str = v;
-        break;
-      case 6: /* "county" (c) | "street" (s) */
-        if (k[0] == 'c' && !county_str)
-          county_str = v;
-        else if (k[0] == 's' && !street_str)
-          street_str = v;
-        break;
-      case 7: /* "country" (co, guarded) | "city:de" (ci, always) */
-        if (k[0] == 'c') {
-          if (k[1] == 'o' && !memcmp(k, "country", 7) && !country)
-            country = v;
-          else if (k[1] == 'i' && !memcmp(k, "city:de", 7))
-            city_str = v;
-        }
-        break;
-      case 8: /* "state:de" | "postcode" (p)  */
-        if (k[0] == 'p' && !memcmp(k, "postcode", 8) && !postcode_str) {
-          postcode_str = v;
-        } else {
-          if (!memcmp(k, "state:de", 8)) state_str = v;
-        }
-        break;
-      case 9: /* "county:de" (c) | "street:de" (s) — always overwrite */
-        if (k[0] == 'c' && !memcmp(k, "county:de", 9))
-          county_str = v;
-        else if (k[0] == 's' && !memcmp(k, "street:de", 9))
-          street_str = v;
-        break;
-      case 10: /* "country:de" — always overwrites */
-        if (!memcmp(k, "country:de", 10)) country = v;
-        break;
-      }
-    }
-  }
-
-  /* --- resolve type category once (replaces 10 strcmp below) --- */
+  /* --- resolve type category for has_pt filtering --- */
   enum { TC_NONE, TC_COUNTRY, TC_STATE, TC_COUNTY, TC_CITY, TC_POSTCODE, TC_STREET } tc = TC_NONE;
-  if (type) {
-    switch (strlen(type)) {
+  if (place->type) {
+    switch (strlen(place->type)) {
     case 8:
-      if (type[0] == 'p') tc = TC_POSTCODE;
+      if (place->type[0] == 'p') tc = TC_POSTCODE;
       break;
     case 7:
-      if (type[0] == 'c') tc = TC_COUNTRY;
+      if (place->type[0] == 'c') tc = TC_COUNTRY;
       break;
     case 5:
-      if (type[0] == 's') tc = TC_STATE;
+      if (place->type[0] == 's') tc = TC_STATE;
       break;
     case 6:
-      if (type[0] == 'c')
+      if (place->type[0] == 'c')
         tc = TC_COUNTY;
-      else if (type[0] == 's')
+      else if (place->type[0] == 's')
         tc = TC_STREET;
       break;
     case 4:
-      if (type[0] == 'c') tc = TC_CITY;
+      if (place->type[0] == 'c') tc = TC_CITY;
       break;
     }
   }
 
-  if (tc == TC_COUNTRY) country = own_name;
-  if (tc == TC_STATE) state_str = own_name;
-  if (tc == TC_COUNTY) county_str = own_name;
-  if (tc == TC_CITY) city_str = own_name;
-  if (tc == TC_POSTCODE) postcode_str = own_name;
-  if (tc == TC_STREET) street_str = own_name;
-
-  if (!country_code) country_code = country;
-  if (!country_code) return;
-
-  /* --- centroid --- */
-  int has_pt = 0;
-  int32_t lon_e7 = 0, lat_e7 = 0;
-  yyjson_val *centroid = yyjson_obj_get(place, "centroid");
-  if (yyjson_is_arr(centroid) && yyjson_arr_size(centroid) == 2) {
-    double lon = yyjson_get_real(yyjson_arr_get(centroid, 0));
-    double lat = yyjson_get_real(yyjson_arr_get(centroid, 1));
-    has_pt = 1;
-    lon_e7 = (int32_t)round(lon * 1.0e7);
-    lat_e7 = (int32_t)round(lat * 1.0e7);
-  }
+  /* --- alias fields for compact key construction --- */
+  const char *country = place->country;
+  const char *state_str = place->state;
+  const char *county_str = place->county;
+  const char *city_str = place->city;
+  const char *postcode_str = place->postcode;
+  const char *street_str = place->street;
+  const char *house_str = place->house;
+  int32_t lon_e7 = place->lon_e7;
+  int32_t lat_e7 = place->lat_e7;
+  int has_pt = place->has_point;
 
   /* --- parent hashes (pre-compute on the stack) --- */
   BinKey parent_country = BINKEY_NULL;
@@ -323,7 +255,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
       &stats->countries, parent_country, BINKEY_NULL, /* no parent */
       fp_country, country_code,                       /* code  */
       country ? country : country_code,               /* name */
-      lon_e7, lat_e7, has_pt && (tc == TC_COUNTRY)
+      lon_e7, lat_e7, has_pt && (tc == TC_COUNTRY), alloc
   );
 
   {
@@ -333,7 +265,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
   if (state_str)
     key_set_add(
         &stats->states, parent_state, parent_country, fp_state, NULL, state_str, lon_e7, lat_e7,
-        has_pt && (tc == TC_STATE)
+        has_pt && (tc == TC_STATE), alloc
     );
 
   {
@@ -343,7 +275,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
   if (county_str)
     key_set_add(
         &stats->counties, parent_county, parent_state, fp_county, NULL, county_str, lon_e7, lat_e7,
-        has_pt && (tc == TC_COUNTY)
+        has_pt && (tc == TC_COUNTY), alloc
     );
 
   {
@@ -353,7 +285,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
   if (city_str)
     key_set_add(
         &stats->cities, parent_city, parent_county, fp_city, NULL, city_str, lon_e7, lat_e7,
-        has_pt && (tc == TC_CITY)
+        has_pt && (tc == TC_CITY), alloc
     );
 
   {
@@ -363,7 +295,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
   if (postcode_str)
     key_set_add(
         &stats->postcodes, parent_postcode, parent_city, fp_postcode, NULL, postcode_str, lon_e7,
-        lat_e7, has_pt && (tc == TC_POSTCODE)
+        lat_e7, has_pt && (tc == TC_POSTCODE), alloc
     );
 
   {
@@ -373,23 +305,17 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
   if (street_str)
     key_set_add(
         &stats->streets, parent_street, parent_postcode, fp_street, NULL, street_str, lon_e7,
-        lat_e7, has_pt && (tc == TC_STREET)
+        lat_e7, has_pt && (tc == TC_STREET), alloc
     );
 
   {
-    /* house: housenumber from own_name if type is house or house_number,
-       plus check address for "housenumber" field */
-    const char *house_str = NULL;
-    if (type && (strcmp(type, "house") == 0 || strcmp(type, "house_number") == 0))
-      house_str = own_name;
-    if (!house_str && address) house_str = localized(address, "housenumber", "housenumber");
     if (house_str) {
       const char *k7[] = {country_code, state_str,  county_str, city_str,
                           postcode_str, street_str, house_str};
       parent_house = hash_key_bin(k7, 7, &fp_house);
       key_set_add(
           &stats->houses, parent_house, parent_street, fp_house, NULL, house_str, lon_e7, lat_e7,
-          has_pt
+          has_pt, alloc
       );
     }
   }
@@ -406,7 +332,7 @@ void storage_stats_record(StorageStats *stats, yyjson_val *place) {
  *  prefix land in the corresponding destination bucket — no bucket
  *  reassignment needed.
  */
-static void key_set_merge(KeySet *dst, const KeySet *src) {
+static void key_set_merge(KeySet *dst, const KeySet *src, MetaAreaAllocator *alloc) {
   for (unsigned b = 0; b < PREFIX_BUCKET_COUNT; ++b) {
     Entity *src_entries = src->buckets[b].entries;
     if (!src_entries) continue;
@@ -419,8 +345,8 @@ static void key_set_merge(KeySet *dst, const KeySet *src) {
         Entity e = {
             .key = se->key,
             .parent_key = se->parent_key,
-            .code = se->code ? strdup(se->code) : NULL,
-            .name = se->name ? strdup(se->name) : NULL,
+            .code = meta_strdup(alloc, se->code),
+            .name = meta_strdup(alloc, se->name),
             .centroid_lon_e7 = se->centroid_lon_e7,
             .centroid_lat_e7 = se->centroid_lat_e7,
             .has_point = se->has_point,
@@ -440,13 +366,14 @@ static void key_set_merge(KeySet *dst, const KeySet *src) {
 }
 
 void storage_stats_merge(StorageStats *dst, const StorageStats *src) {
-  key_set_merge(&dst->countries, &src->countries);
-  key_set_merge(&dst->states, &src->states);
-  key_set_merge(&dst->counties, &src->counties);
-  key_set_merge(&dst->cities, &src->cities);
-  key_set_merge(&dst->postcodes, &src->postcodes);
-  key_set_merge(&dst->streets, &src->streets);
-  key_set_merge(&dst->houses, &src->houses);
+  MetaAreaAllocator *alloc = dst->alloc;
+  key_set_merge(&dst->countries, &src->countries, alloc);
+  key_set_merge(&dst->states, &src->states, alloc);
+  key_set_merge(&dst->counties, &src->counties, alloc);
+  key_set_merge(&dst->cities, &src->cities, alloc);
+  key_set_merge(&dst->postcodes, &src->postcodes, alloc);
+  key_set_merge(&dst->streets, &src->streets, alloc);
+  key_set_merge(&dst->houses, &src->houses, alloc);
   dst->unsupported_addresslines += src->unsupported_addresslines;
 }
 
@@ -515,4 +442,13 @@ void storage_stats_print(const StorageStats *stats) {
         "  Noch nicht über addresslines aufgelöste Einträge: %" PRIu64 "\n",
         stats->unsupported_addresslines
     );
+  if (stats->alloc) {
+    size_t arena_bytes = meta_area_total_allocated(stats->alloc);
+    size_t arena_count = meta_area_arena_count(stats->alloc);
+    char arena_buf[32];
+    format_byte_units(arena_buf, sizeof(arena_buf), arena_bytes, 2);
+    printf(
+        "\nArena-Allokator: %s in %zu × 32 MiB-Blöcken reserviert\n", arena_buf, arena_count
+    );
+  }
 }

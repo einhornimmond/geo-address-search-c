@@ -9,7 +9,8 @@
 
 #include <stdint.h>
 
-#include <yyjson.h>
+#include "json_parse.h"
+#include "meta_area_allocator.h"
 
 /** Opaque handle for the deduplicated, seven-level address store. */
 typedef struct StorageStats StorageStats;
@@ -18,11 +19,13 @@ typedef struct StorageStats StorageStats;
  * @brief Create an empty storage statistics collector.
  *
  *  Allocates and zero-initialises the internal key sets for all seven
- *  hierarchy levels (country through house).
+ *  hierarchy levels (country through house).  All future string copies
+ *  (@c strdup) within this collector are served from @p alloc.
  *
+ *  @param[in] alloc   Allocator for string storage; must outlive the collector.
  *  @return   New StorageStats pointer, or NULL on allocation failure.
  */
-StorageStats *storage_stats_create(void);
+StorageStats *storage_stats_create(MetaAreaAllocator *alloc);
 
 /**
  * @brief Release the collector and all its hash tables.
@@ -38,17 +41,16 @@ void storage_stats_destroy(StorageStats *stats);
  *
  *  Extracts the hierarchical key (country → state → county → city →
  *  postcode → street → housenumber), the display name, centroid
- *  coordinates, and country code from the JSON value. Inserts a unique
- *  entry into each relevant level, preserving all fields for later
- *  SQL export.
+ *  coordinates, and country code from the pre-parsed place. Inserts a
+ *  unique entry into each relevant level, preserving all fields for
+ *  later SQL export.
  *
  *  @param[in,out] stats   Collector to update.
- *  @param[in]     place   JSON value of a single content entry from a
- *                         Place document.
+ *  @param[in]     place   Pre-extracted place data from the JSON parser.
  *
  *  @whisper One more place finds its home in the hierarchy
  */
-void storage_stats_record(StorageStats *stats, yyjson_val *place);
+void storage_stats_record(StorageStats *stats, const PhotonPlace *place);
 
 /**
  * @brief Combine two collectors into one.

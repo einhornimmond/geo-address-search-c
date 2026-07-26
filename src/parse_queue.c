@@ -1,5 +1,4 @@
 #include "parse_queue.h"
-#include "error.h"
 
 #include <pthread.h>
 #include <stdlib.h>
