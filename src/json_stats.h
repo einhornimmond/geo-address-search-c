@@ -27,6 +27,8 @@ typedef struct JsonStats {
   uint64_t states;          /**< Entries tagged "state". */
   uint64_t counties;        /**< Entries tagged "county". */
   uint64_t cities;          /**< Entries tagged "city". */
+  uint64_t districts;
+  uint64_t localities;
   uint64_t streets;         /**< Entries tagged "street". */
   uint64_t houses;          /**< Entries tagged "house". */
   uint64_t other;           /**< Entries with unrecognised or missing address_type. */

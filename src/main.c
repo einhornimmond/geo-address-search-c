@@ -75,8 +75,7 @@ static void process_json_line(
     const char *line,
     size_t len,
     JsonStats *stats,
-    StorageStats *storage_stats,
-    MetaAreaAllocator *alloc
+    StorageStats *storage_stats
 ) {
   ProcessLineCtx ctx = {stats, storage_stats};
   JsonParseResult result;
@@ -85,7 +84,7 @@ static void process_json_line(
 }
 
 static void process_batch(
-    const ParseBatch *batch, JsonStats *stats, StorageStats *storage_stats, MetaAreaAllocator *alloc
+    const ParseBatch *batch, JsonStats *stats, StorageStats *storage_stats
 ) {
   const char *line = batch->buffer->buffer;
   const char *end = line + batch->len;
@@ -94,7 +93,7 @@ static void process_batch(
     const char *newline = memchr(line, '\n', (size_t)(end - line));
     size_t len = newline ? (size_t)(newline - line) : (size_t)(end - line);
     if (len > 0 && line[len - 1] == '\r') { --len; }
-    if (len > 0) { process_json_line(line, len, stats, storage_stats, alloc); }
+    if (len > 0) { process_json_line(line, len, stats, storage_stats); }
     line = newline ? newline + 1 : end;
   }
 }
@@ -111,7 +110,7 @@ static void *parser_thread(void *arg) {
   ParserThreadArgs *args = arg;
   ParseBatch batch;
   while (parse_queue_pop(args->queue, &batch)) {
-    process_batch(&batch, &args->stats, args->storage_stats, args->meta_alloc);
+    process_batch(&batch, &args->stats, args->storage_stats);
     buffer_pool_release(args->pool, batch.buffer);
   }
   return NULL;

@@ -1,31 +1,23 @@
 #include "json_stats.h"
-#include "error.h"
 #include "json_parse.h"
-
+#include "error.h"
 #include <inttypes.h>
 #include <stdio.h>
-#include <string.h>
 
-static void count_address_type(JsonStats *stats, const char *address_type) {
-  if (!address_type) {
-    ++stats->other;
-    return;
+static void count_address_type(JsonStats *stats, PhotonPlaceType address_type) {
+  switch(address_type) {
+    case PHOTON_PLACE_TYPE_HOUSE: ++stats->houses; break;
+    case PHOTON_PLACE_TYPE_STREET: ++stats->streets; break;
+    case PHOTON_PLACE_TYPE_CITY: ++stats->cities; break;
+    case PHOTON_PLACE_TYPE_STATE: ++stats->states; break;
+    case PHOTON_PLACE_TYPE_COUNTY: ++stats->counties; break;
+    case PHOTON_PLACE_TYPE_LOCALITY: ++stats->localities; break;
+    case PHOTON_PLACE_TYPE_DISTRICT: ++stats->districts; break;
+    case PHOTON_PLACE_TYPE_COUNTRY: ++stats->countries; break;
+    case PHOTON_PLACE_TYPE_OTHER: ++stats->other; break;
+    default: fatal(ERROR_ASSERT, "None or Unknown address type");
   }
-  if (strcmp(address_type, "country") == 0) {
-    ++stats->countries;
-  } else if (strcmp(address_type, "state") == 0) {
-    ++stats->states;
-  } else if (strcmp(address_type, "county") == 0) {
-    ++stats->counties;
-  } else if (strcmp(address_type, "city") == 0) {
-    ++stats->cities;
-  } else if (strcmp(address_type, "street") == 0) {
-    ++stats->streets;
-  } else if (strcmp(address_type, "house") == 0) {
-    ++stats->houses;
-  } else {
-    ++stats->other;
-  }
+  
 }
 
 void json_stats_count_document(JsonStats *stats, const void *result) {
@@ -41,7 +33,7 @@ void json_stats_count_document(JsonStats *stats, const void *result) {
 }
 
 void json_stats_count_place(JsonStats *stats, const PhotonPlace *place) {
-  count_address_type(stats, place->type);
+  count_address_type(stats, place->typeEnum);
 
   /* --- postcode sanity check (fatal if missing after threshold) --- */
   if (!stats->postcode_checked) {
@@ -66,6 +58,8 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
   total->states += addend->states;
   total->counties += addend->counties;
   total->cities += addend->cities;
+  total->localities += addend->localities;
+  total->districts += addend->districts;
   total->streets += addend->streets;
   total->houses += addend->houses;
   total->other += addend->other;
@@ -79,6 +73,8 @@ void json_stats_print(const JsonStats *stats) {
   printf("  Bundesländer:   %" PRIu64 "\n", stats->states);
   printf("  Landkreise:     %" PRIu64 "\n", stats->counties);
   printf("  Städte:         %" PRIu64 "\n", stats->cities);
+  printf("  Bezirke:        %" PRIu64 "\n", stats->districts);
+  printf("  Locales:        %" PRIu64 "\n", stats->localities);
   printf("  Straßen:        %" PRIu64 "\n", stats->streets);
   printf("  Adressen:       %" PRIu64 "\n", stats->houses);
   printf("  Sonstige:  %" PRIu64 "\n", stats->other);

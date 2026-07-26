@@ -41,6 +41,7 @@ typedef struct PhotonPlace {
   const char *state;        /**< state display name                          */
   const char *county;       /**< county display name                         */
   const char *city;         /**< city display name                           */
+  const char *suburb;
   const char *postcode;     /**< postcode string                             */
   const char *street;       /**< street display name                         */
   const char *house;        /**< housenumber                                 */

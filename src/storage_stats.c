@@ -1,3 +1,4 @@
+#include "json_parse.h"
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
 
@@ -87,6 +88,7 @@ static AddrTreeNode *tree_get_or_create(
     AddrTreeNode **children_ptr,
     const char *name,
     const char *postcode,
+    AddrTreeNodeType type,
     int32_t lon_e7,
     int32_t lat_e7,
     int has_point,
@@ -97,7 +99,7 @@ static AddrTreeNode *tree_get_or_create(
     uint64_t h = name_hash_fnv1a(name);
 
     /* --- try existing --- */
-    AddrTreeNode *node = *children_ptr ? hmgetp(*children_ptr, h) : NULL;
+    AddrTreeNode *node = *children_ptr ? hmgetp_null(*children_ptr, h) : NULL;
 
     if (!node) {
         AddrTreeNode new_node = {
@@ -107,11 +109,15 @@ static AddrTreeNode *tree_get_or_create(
             .lon_e7    = lon_e7,
             .lat_e7    = lat_e7,
             .has_point = (uint8_t)(has_point ? 1 : 0),
+            .type = type,
             .children  = NULL,
         };
         hmputs(*children_ptr, new_node);
-        node = hmgetp(*children_ptr, h); /* re-fetch after potential realloc */
+        node = hmgetp_null(*children_ptr, h); /* re-fetch after potential realloc */
     } else {
+        if (node->type != type) {
+            fatal(ERROR_ASSERT, "Node type mismatch: expected %d, got %d, name: %s, existing name: %s", node->type, type, name, node->name);
+        }
         /* --- enrich existing node --- */
         if (has_point && !node->has_point) {
             node->lon_e7   = lon_e7;
@@ -184,43 +190,69 @@ void storage_stats_record(StorageStats *stats, const PhotonPlace *place) {
     AddrTreeNode **cur = &stats->root;
 
     /* --- level 0: country --- */
-    {
-        AddrTreeNode *node = tree_get_or_create(cur, country_name, NULL,
-            lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_COUNTRY), alloc);
-        cur = &node->children;
+    if (!country_name) {
+      fatal(ERROR_ASSERT, "Missing country");
     }
+    
+    AddrTreeNode *node = tree_get_or_create(cur, country_name, NULL, ADDR_TREE_NODE_TYPE_COUNTRY,
+        lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_COUNTRY), alloc);
+    cur = &node->children;
 
     /* --- level 1: state --- */
     if (place->state) {
-        AddrTreeNode *node = tree_get_or_create(cur, place->state, NULL,
-            lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_STATE), alloc);
+        bool isState = place->typeEnum == PHOTON_PLACE_TYPE_STATE;
+        AddrTreeNode *node = tree_get_or_create(cur, place->state, NULL, ADDR_TREE_NODE_TYPE_STATE,
+            lon, lat, has_pt && isState, alloc);
         cur = &node->children;
+        if (isState) { return; }
+    } else {
+        // printf("missing state for %s\n", place->own_name);
     }
 
     /* --- level 2: county --- */
-    if (place->county) {
-        AddrTreeNode *node = tree_get_or_create(cur, place->county, NULL,
-            lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_COUNTY), alloc);
+    if (place->county || (!place->county && place->city)) {
+        bool isCounty = place->typeEnum == PHOTON_PLACE_TYPE_COUNTY;
+        AddrTreeNode *node = tree_get_or_create(cur, place->county ? place->county : place->city, NULL, ADDR_TREE_NODE_TYPE_COUNTY,
+            lon, lat, has_pt && isCounty, alloc);
         cur = &node->children;
+        if (isCounty) { return; }
     }
 
-    /* --- level 3: city (postcode may ride here) --- */
+    /* --- level 3: city or suburb (postcode may ride here) --- */
     if (place->city) {
-        AddrTreeNode *node = tree_get_or_create(cur, place->city, postcode,
-            lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_CITY), alloc);
+        bool isCity = place->typeEnum == PHOTON_PLACE_TYPE_CITY;
+        AddrTreeNode *node = tree_get_or_create(cur, place->city, postcode, ADDR_TREE_NODE_TYPE_CITY,
+            lon, lat, has_pt && isCity, alloc);
         cur = &node->children;
+        if (isCity) { return ; }
+    } else if (place->suburb) {
+        AddrTreeNode *node = tree_get_or_create(cur, place->suburb, postcode, ADDR_TREE_NODE_TYPE_SUBURB,
+            lon, lat, false, alloc);
+        cur = &node->children;
+    } else if(place->typeEnum == PHOTON_PLACE_TYPE_LOCALITY) {
+        AddrTreeNode *node = tree_get_or_create(cur, place->suburb, postcode, ADDR_TREE_NODE_TYPE_LOCALITY,
+            lon, lat, false, alloc);
+        cur = &node->children;
+    } else if(place->typeEnum == PHOTON_PLACE_TYPE_DISTRICT) {
+        AddrTreeNode *node = tree_get_or_create(cur, place->suburb, postcode, ADDR_TREE_NODE_TYPE_DISTRICT,
+            lon, lat, false, alloc);
+        cur = &node->children;
+    } else {
+        fatal(ERROR_ASSERT, "Unhandled place type: %s", place->type);
     }
 
     /* --- level 4: street (postcode may ride here as well) --- */
     if (place->street) {
-        AddrTreeNode *node = tree_get_or_create(cur, place->street, postcode,
-            lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_STREET), alloc);
+        bool isStreet = place->typeEnum == PHOTON_PLACE_TYPE_STREET;
+        AddrTreeNode *node = tree_get_or_create(cur, place->street, postcode, ADDR_TREE_NODE_TYPE_STREET,
+            lon, lat, has_pt && isStreet, alloc);
         cur = &node->children;
+        if (isStreet) { return; }
     }
 
     /* --- level 5: house (leaf — postcode rides here too) --- */
     if (place->house) {
-        tree_get_or_create(cur, place->house, postcode,
+        tree_get_or_create(cur, place->house, postcode, ADDR_TREE_NODE_TYPE_HOUSE,
             lon, lat, has_pt && (place->typeEnum == PHOTON_PLACE_TYPE_HOUSE), alloc);
     }
 }
@@ -242,7 +274,7 @@ static void tree_merge_node(
     const AddrTreeNode *src_node,
     MetaAreaAllocator *alloc
 ) {
-    AddrTreeNode *dst_node = *dst_children ? hmgetp(*dst_children, src_node->key) : NULL;
+    AddrTreeNode *dst_node = *dst_children ? hmgetp_null(*dst_children, src_node->key) : NULL;
 
     if (!dst_node) {
         AddrTreeNode copy = {
@@ -252,11 +284,19 @@ static void tree_merge_node(
             .lon_e7    = src_node->lon_e7,
             .lat_e7    = src_node->lat_e7,
             .has_point = src_node->has_point,
+            .type      = src_node->type,
             .children  = NULL,
         };
         hmputs(*dst_children, copy);
-        dst_node = hmgetp(*dst_children, src_node->key);
+        dst_node = hmgetp_null(*dst_children, src_node->key);
     } else {
+        if (dst_node->type != src_node->type) {
+            fatal(
+                ERROR_ASSERT, 
+                "Node type mismatch: expected %d, got %d, name: %s, existing name: %s",
+                dst_node->type, src_node->type, src_node->name, dst_node->name  
+            );
+        }
         if (src_node->has_point && !dst_node->has_point) {
             dst_node->lon_e7   = src_node->lon_e7;
             dst_node->lat_e7   = src_node->lat_e7;
@@ -292,24 +332,30 @@ void storage_stats_merge(StorageStats *dst, const StorageStats *src) {
  *
  *  @p depth 0 = countries, 1 = states, …, 5 = houses.
  */
-static void tree_count_levels(const AddrTreeNode *children, int depth, uint64_t counts[6]) {
-    if (!children || depth >= 6) return;
-    counts[depth] += (uint64_t)hmlen(children);
-    for (ptrdiff_t i = 0; i < hmlen(children); ++i) {
-        tree_count_levels(children[i].children, depth + 1, counts);
+static void tree_count_levels(const AddrTreeNode *nodes, uint64_t counts[ADDR_TREE_NODE_COUNT]) {
+    if (!nodes) return;
+
+    ptrdiff_t childrenCount = hmlen(nodes);    
+    for (ptrdiff_t i = 0; i < childrenCount; ++i) {
+        ++counts[nodes[i].type];    
+        if (nodes[i].type == ADDR_TREE_NODE_TYPE_STATE) {
+            printf("state: %s\n", nodes[i].name);
+        }
+        tree_count_levels(nodes[i].children, counts);
     }
 }
 
 void storage_stats_print(const StorageStats *stats) {
-    uint64_t counts[6] = {0};
-    tree_count_levels(stats->root, 0, counts);
-
+    uint64_t counts[ADDR_TREE_NODE_COUNT] = {0};
+    
+    tree_count_levels(stats->root, counts);
+    
     const char *labels[] = {
-        "Länder", "Bundesländer", "Landkreise", "Städte", "Straßen", "Adressen"
+        "Länder", "Bundesländer", "Landkreise", "Städte", "Suburbs", "Localities", "Districts", "Streets", "Häuser"
     };
 
     printf("\nAdresshierarchie (Baum):\n");
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 9; ++i) {
         printf("  %-14s %" PRIu64 "\n", labels[i], counts[i]);
     }
 
