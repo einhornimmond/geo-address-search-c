@@ -80,7 +80,7 @@ static void process_json_line(
 ) {
   ProcessLineCtx ctx = {stats, storage_stats};
   JsonParseResult result;
-  json_parse_line(line, len, process_place_callback, &ctx, alloc, &result);
+  json_parse_line(line, len, process_place_callback, &ctx, &result);
   json_stats_count_document(stats, &result);
 }
 

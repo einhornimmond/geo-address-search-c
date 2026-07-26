@@ -2,7 +2,6 @@
 
 #include "json_parse.h"
 #include "error.h"
-#include "meta_area_allocator.h"
 
 #include <math.h>
 #include <string.h>
@@ -15,8 +14,7 @@
 
 static const char *localized(yyjson_val *object, const char *german_key, const char *fallback_key) {
   yyjson_val *value = yyjson_obj_get(object, german_key);
-  if (!yyjson_is_str(value) && strcmp(german_key, fallback_key) != 0)
-    value = yyjson_obj_get(object, fallback_key);
+  if (fallback_key && !yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
   return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
 }
 
@@ -25,11 +23,160 @@ static const char *place_name(yyjson_val *place) {
   return yyjson_is_obj(names) ? localized(names, "name:de", "name") : NULL;
 }
 
+static PhotonPlaceType detectTypeEnum(const char* type)
+{
+  if (type) {
+    if (type[0] == 'h') return PHOTON_PLACE_TYPE_HOUSE;
+    else if (type[0] == 's') {
+      if (type[1] == 't') return PHOTON_PLACE_TYPE_STREET;
+      if (type[1] == 'a') return PHOTON_PLACE_TYPE_STATE;
+    } else if (type[0] == 'c') {
+      if (type[1] == 'i') {
+        return PHOTON_PLACE_TYPE_CITY;
+      } else if (type[5] == 'y') {
+        return PHOTON_PLACE_TYPE_COUNTY;
+      } else if (type[5] == 'r') {
+        return PHOTON_PLACE_TYPE_COUNTRY;
+      }
+    } else if (type[0] == 'o') {
+      return PHOTON_PLACE_TYPE_OTHER;
+    } else if (type[0] == 'd') {
+      return PHOTON_PLACE_TYPE_DISTRICT;
+    } else if (type[0] == 'l') {
+      return PHOTON_PLACE_TYPE_LOCALITY;
+    }
+  }
+  return PHOTON_PLACE_TYPE_UNKNOWN;
+}
+
+/*
+ *
+## example for district
+{
+  "type":"Place",
+  "content":[
+    {
+      "place_id":"133982153",
+      "object_type":"N",
+      "object_id":240095751,
+      "osm_key":"place",
+      "osm_value":"hamlet",
+      "categories":[
+        "osm.place.hamlet"
+      ],
+      "address_type":"district",
+      "importance":0.21337448257116948,
+      "name":{
+        "name":"Neubleyen"
+      },
+      "address":{
+        "other":[
+          "DE-BB",
+          "Bleyen",
+          "Golzow"
+        ],
+        "city":"Bleyen-Genschmar",
+        "county":"Märkisch-Oderland",
+        "county:de":"Märkisch-Oderland",
+        "state:de":"Brandenburg",
+        "state":"Brandenburg",
+        "city:de":"Bleyen-Genschmar",
+      },
+      "extra":{
+        "wikipedia":"de:Bleyen",
+        "wikidata":"Q883967"
+      },
+      "postcode":"15328",
+      "country_code":"de",
+      "centroid":[
+        14.6064559,
+        52.589975
+      ],
+      "bbox":[
+        14.6064559,
+        52.589975,
+        14.6064559,
+        52.589975
+      ],
+      "geometry":{
+        "type":"Point",
+        "coordinates":[
+          14.6064559,
+          52.589975
+        ]
+      }
+    }
+  ]
+}
+
+## example for locality
+  {
+    "type":"Place",
+    "content":[
+      {
+        "place_id":"133951735",
+        "object_type":"N",
+        "object_id":7196117845,
+        "osm_key":"place",
+        "osm_value":"isolated_dwelling",
+        "categories":[
+          "osm.place.isolated_dwelling"
+        ],
+        "address_type":"locality",
+        "importance":0.10671031586175324,
+        "name":{
+          "name":"Henriettenhof"
+        },
+        "address":{
+          "state:lt":"Brandenburgas",
+          "other":[
+            "DE-BB",
+            "Golzow"
+          ],
+          "city":"Bleyen-Genschmar",
+          "county":"Märkisch-Oderland",
+          "suburb:de":"Genschmar",
+          "county:de":"Märkisch-Oderland",
+          "state:de":"Brandenburg",
+          "state":"Brandenburg",
+          "city:de":"Bleyen-Genschmar",
+          "suburb":"Genschmar",
+        },
+        "postcode":"15328",
+        "country_code":"de",
+        "centroid":[
+          14.501003,
+          52.623578
+        ],
+        "bbox":[
+          14.501003,
+          52.623578,
+          14.501003,
+          52.623578
+        ],
+        "geometry":{
+          "type":"Point",
+          "coordinates":[
+            14.501003,
+            52.623578
+          ]
+        }
+      }
+    ]
+  }
+*/
+
+
+typedef enum ResultType {
+  RESULT_SUCCESS,
+  RESULT_SKIP,
+  RESULT_ERROR_UNKNOWN_TYPE
+} ResultType;
+
 /* =========================================================================
  *  Extract one content entry into a PhotonPlace
  * ========================================================================= */
-
-static void extract_place(yyjson_val *entry, PhotonPlace *p) {
+static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   memset(p, 0, sizeof(*p));
 
   /* --- address sub-object --- */
@@ -39,9 +186,13 @@ static void extract_place(yyjson_val *entry, PhotonPlace *p) {
     address = NULL;
   }
 
-  p->type = localized(entry, "address_type", "address_type");
+  p->type = localized(entry, "address_type", NULL);
+  p->typeEnum = detectTypeEnum(p->type);
+  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) {
+    return RESULT_SKIP;
+  }
   p->own_name = place_name(entry);
-  p->country_code = localized(entry, "country_code", "country_code");
+  p->country_code = localized(entry, "country_code", NULL);
 
   /* --- single-pass address field extraction --- */
   if (address) {
@@ -55,69 +206,38 @@ static void extract_place(yyjson_val *entry, PhotonPlace *p) {
       size_t kl = yyjson_get_len(key);
       const char *v = yyjson_get_str(val);
 
-      switch (kl) {
-      case 4:
-        if (!p->city && k[0] == 'c') p->city = v;
-        break;
-      case 5:
-        if (!p->state && k[0] == 's') p->state = v;
-        break;
-      case 6:
-        if (k[0] == 'c' && !p->county)
-          p->county = v;
-        else if (k[0] == 's' && !p->street)
-          p->street = v;
-        break;
-      case 7:
-        if (k[0] == 'c') {
-          if (k[1] == 'o' && !memcmp(k, "country", 7) && !p->country)
-            p->country = v;
-          else if (k[1] == 'i' && !memcmp(k, "city:de", 7))
-            p->city = v;
+      if (k[0] == 'h' && k[3] == 's') {
+        p->house = v;
+      } else {
+        switch (kl) {
+        case 4:
+          if (k[0] == 'c') p->city = v;
+          break;
+        case 5:
+          if (k[0] == 's') p->state = v;
+          break;
+        case 6:
+          if (k[0] == 'c') p->county = v;
+          else if (k[0] == 's') p->street = v;
+          break;
+        case 7:
+          if (k[0] == 'c' && k[1] == 'o' && k[5] == 'r') p->country = v;
+          break;
+        case 8:
+          if (k[0] == 'p' && k[7] == 'e') p->postcode = v;
+          break;
         }
-        break;
-      case 8:
-        if (k[0] == 'p' && !memcmp(k, "postcode", 8) && !p->postcode) {
-          p->postcode = v;
-        } else {
-          if (!memcmp(k, "state:de", 8)) p->state = v;
-        }
-        break;
-      case 9:
-        if (k[0] == 'c' && !memcmp(k, "county:de", 9))
-          p->county = v;
-        else if (k[0] == 's' && !memcmp(k, "street:de", 9))
-          p->street = v;
-        break;
-      case 10:
-        if (!memcmp(k, "country:de", 10)) p->country = v;
-        break;
       }
     }
   }
-
-  /* --- resolve type category: use own_name when it is the primary name --- */
-  if (p->type) {
-    switch (strlen(p->type)) {
-    case 8:
-      if (p->type[0] == 'p') p->postcode = p->own_name;
-      break;
-    case 7:
-      if (p->type[0] == 'c') p->country = p->own_name;
-      break;
-    case 5:
-      if (p->type[0] == 's') p->state = p->own_name;
-      break;
-    case 6:
-      if (p->type[0] == 'c')
-        p->county = p->own_name;
-      else if (p->type[0] == 's')
-        p->street = p->own_name;
-      break;
-    case 4:
-      if (p->type[0] == 'c') p->city = p->own_name;
-      break;
-    }
+  switch(p->typeEnum) {
+    case PHOTON_PLACE_TYPE_HOUSE: p->house = p->own_name; break;
+    case PHOTON_PLACE_TYPE_STREET: p->street = p->own_name; break;
+    case PHOTON_PLACE_TYPE_CITY: p->city = p->own_name; break;
+    case PHOTON_PLACE_TYPE_COUNTY: p->county = p->own_name; break;
+    case PHOTON_PLACE_TYPE_STATE: p->state = p->own_name; break;
+    case PHOTON_PLACE_TYPE_COUNTRY: p->country = p->own_name; break;
+    default:
   }
 
   /* --- centroid --- */
@@ -130,10 +250,10 @@ static void extract_place(yyjson_val *entry, PhotonPlace *p) {
     p->lat_e7 = (int32_t)round(lat * 1.0e7);
   }
 
-  /* --- house: housenumber from own_name or address sub-field --- */
-  if (p->type && (strcmp(p->type, "house") == 0 || strcmp(p->type, "house_number") == 0))
-    p->house = p->own_name;
-  if (!p->house && address) p->house = localized(address, "housenumber", "housenumber");
+  if (p->typeEnum == PHOTON_PLACE_TYPE_UNKNOWN) {
+    return RESULT_ERROR_UNKNOWN_TYPE;
+  }
+  return RESULT_SUCCESS;
 }
 
 /* =========================================================================
@@ -145,7 +265,6 @@ int json_parse_line(
     size_t len,
     PhotonPlaceCallback callback,
     void *user_data,
-    MetaAreaAllocator *alloc,
     JsonParseResult *result
 ) {
   memset(result, 0, sizeof(*result));
@@ -205,13 +324,63 @@ int json_parse_line(
     if (!yyjson_is_obj(entry)) continue;
 
     PhotonPlace place;
-    extract_place(entry, &place);
-    callback(&place, user_data);
-    ++result->entry_count;
+    ResultType extractResult = extract_place(entry, &place);
+    if (extractResult == RESULT_ERROR_UNKNOWN_TYPE) {
+      char* buf = (char*)calloc(1, len+1);
+      memcpy(buf, line, len);
+      fatal(ERROR_JSON, "unknown type: %s", buf);
+    } else if (extractResult == RESULT_SUCCESS) {
+      callback(&place, user_data);
+      ++result->entry_count;
+    }
   }
 
   yyjson_doc_free(doc);
   return 1;
+}
+
+/* =========================================================================
+ *  Debug serialisation — PhotonPlace → JSON string (via yyjson mutable API)
+ * ========================================================================= */
+
+char *photon_place_to_json(const PhotonPlace *place) {
+    static __thread char buf[4096];
+    if (!place) {
+        snprintf(buf, sizeof(buf), "null");
+        return buf;
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+
+    if (place->type)         yyjson_mut_obj_add_str(doc, root, "type",         place->type);
+    if (place->own_name)     yyjson_mut_obj_add_str(doc, root, "name",         place->own_name);
+    if (place->country_code) yyjson_mut_obj_add_str(doc, root, "country_code", place->country_code);
+    if (place->country)      yyjson_mut_obj_add_str(doc, root, "country",      place->country);
+    if (place->state)        yyjson_mut_obj_add_str(doc, root, "state",        place->state);
+    if (place->county)       yyjson_mut_obj_add_str(doc, root, "county",       place->county);
+    if (place->city)         yyjson_mut_obj_add_str(doc, root, "city",         place->city);
+    if (place->postcode)     yyjson_mut_obj_add_str(doc, root, "postcode",     place->postcode);
+    if (place->street)       yyjson_mut_obj_add_str(doc, root, "street",       place->street);
+    if (place->house)        yyjson_mut_obj_add_str(doc, root, "house",        place->house);
+
+    yyjson_mut_obj_add_int(doc, root, "lon_e7",      place->lon_e7);
+    yyjson_mut_obj_add_int(doc, root, "lat_e7",      place->lat_e7);
+    yyjson_mut_obj_add_bool(doc, root, "has_point",  place->has_point);
+    yyjson_mut_obj_add_bool(doc, root, "unsupported", place->unsupported);
+
+    size_t len = 0;
+    const char *json = yyjson_mut_write(doc, 0, &len);
+    if (json && len < sizeof(buf)) {
+        memcpy(buf, json, len);
+        buf[len] = '\0';
+    } else {
+        snprintf(buf, sizeof(buf), "{\"error\":\"serialization failed\"}");
+    }
+    free((void *)json);
+    yyjson_mut_doc_free(doc);
+
+    return buf;
 }
 
 /** @endcond */

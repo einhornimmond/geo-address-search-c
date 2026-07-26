@@ -1,7 +1,8 @@
 /** @defgroup storage_stats_internal Storage statistics internals
  *  @ingroup data
- *  @brief Shared struct definitions for the deduplicated address store —
- *         visible to storage_stats.c and sql_export.c.
+ *  @brief Tree-based address hierarchy — every node carries its children
+ *         directly instead of routing through flat key sets and parent_key
+ *         indirection.
  *  @{
  */
 
@@ -12,66 +13,54 @@
 /** Opaque handle — owned by the meta-area allocator module. */
 typedef struct MetaAreaAllocator MetaAreaAllocator;
 
-/** 16-byte binary hash key — faster than 32-char hex strings. */
-typedef struct {
-  uint64_t h1, h2;
-} BinKey;
-
-/** Sentinel for an empty / unset BinKey. */
-#define BINKEY_NULL ((BinKey){0, 0})
-
-/** One deduplicated address entity at any hierarchy level.
+/**
+ * @brief One node in the geo-hierarchy tree.
  *
- *  The @p key is a 16-byte binary hash stored inline — no allocation,
- *  no strcmp.  @p parent_key references the parent entity's key.
+ *  Each node lives at a specific hierarchy level (country, state, county,
+ *  city, street, or house).  @p name_hash is the FNV-1a 64-bit hash of
+ *  @p name and doubles as the stb_ds hashmap key — it must remain the
+ *  first field so stb_ds can use it for keyed lookup.
+ *
+ *  @p children is a lazy stb_ds hashmap mapping child name_hash to child
+ *  node.  It stays NULL until the first child knocks, saving memory for
+ *  the millions of leaf nodes.
+ *
+ *  @p postcode rides as an optional attribute — not a separate tree level.
+ *  It is stored on whichever node the Photon entry attaches it to
+ *  (typically city, street, or house).
+ *
+ *  @whisper Each node holds its name and waits for children to arrive —
+ *           no flat key sets, no parent_key indirection
  */
-typedef struct Entity {
-  BinKey key;              /**< binary hash key (16 bytes inline)              */
-  BinKey parent_key;       /**< parent's binary hash (BINKEY_NULL for root)   */
-  char *code;              /**< country code (strdup'd, NULL otherwise)        */
-  char *name;              /**< display name suffix — prefix stored implicitly
-                                in the bucket index (saves 2 bytes per entry)  */
-  int32_t centroid_lon_e7; /**< longitude × 10⁷                               */
-  int32_t centroid_lat_e7; /**< latitude  × 10⁷                               */
-  uint8_t has_point;       /**< centroid data is present                       */
-  uint32_t fingerprint;    /**< djb2 over value strings — collision guard     */
-} Entity;
+typedef struct AddrTreeNode {
+    uint64_t key;                    /**< FNV-1a hash of name — stb_ds key (must be first)       */
+    char *name;                      /**< display name (arena-allocated, never freed individually) */
+    char *postcode;                  /**< postcode attribute (arena-allocated, NULL if absent)     */
+    int32_t lon_e7;                  /**< longitude × 10⁷                                         */
+    int32_t lat_e7;                  /**< latitude  × 10⁷                                         */
+    uint8_t has_point;               /**< centroid is present                                     */
+    struct AddrTreeNode *children;   /**< stb_ds hm: child name_hash → AddrTreeNode (NULL = leaf) */
+} AddrTreeNode;
 
-/** Number of prefix buckets — one per possible unsigned short (2-byte prefix). */
-#define PREFIX_BUCKET_COUNT 65536
-
-/** A bucket of entities sharing the same 2-byte name prefix.
+/**
+ * @brief Root of the address hierarchy tree.
  *
- *  The prefix is the first two bytes of the display name reinterpreted as
- *  an unsigned short.  Each bucket carries its own stb_ds hash table,
- *  initialised lazily to NULL — only populated when an entry lands here.
+ *  @p root is a stb_ds hashmap mapping country name_hash → AddrTreeNode.
+ *  The hierarchy flows naturally through nested children maps:
  *
- *  @whisper One bucket stays silent until the first name falls into it
- */
-typedef struct {
-  Entity *entries; /**< stb_ds binary-keyed hash: BinKey → Entity     */
-} PrefixBucket;
-
-/** A binary-keyed hash set, pre-sorted into 65536 prefix buckets.
+ *  root → country.children → state.children → county.children →
+ *         city.children → street.children → house (leaf)
  *
- *  Bucket index = (unsigned char)name[0] | ((unsigned char)name[1] << 8).
- *  Entity.name stores only the suffix (name + 2); the full name is
- *  reconstructed on the stack where needed (sql_export, print, estimates).
- */
-typedef struct KeySet {
-  PrefixBucket buckets[PREFIX_BUCKET_COUNT];
-} KeySet;
-
-/** Seven-level deduplicated address store.
+ *  @p unsupported_addresslines counts Photon entries that carry address
+ *  data in the legacy addresslines array instead of a structured address
+ *  object — they are logged but not inserted into the tree.
  *
- *  The hierarchy flows: countries → states → counties → cities →
- *  postcodes → streets → houses. Each level is a KeySet with parent
- *  references linking entries together.
+ *  @whisper The tree is the hierarchy — seven levels collapse into nested children maps
  */
 struct StorageStats {
-  KeySet countries, states, counties, cities, postcodes, streets, houses;
-  uint64_t unsupported_addresslines;
-  MetaAreaAllocator *alloc; /**< Allocator for string copies — shared across all key sets */
+    AddrTreeNode *root;              /**< stb_ds hm of country name_hash → AddrTreeNode           */
+    uint64_t unsupported_addresslines; /**< entries skipped due to legacy addresslines format       */
+    MetaAreaAllocator *alloc;        /**< arena allocator for all string copies                   */
 };
 
 typedef struct StorageStats StorageStats;

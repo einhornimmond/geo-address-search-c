@@ -11,8 +11,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/** Opaque handle — owned by the meta-area allocator module. */
-typedef struct MetaAreaAllocator MetaAreaAllocator;
+typedef enum PhotonPlaceType {
+  PHOTON_PLACE_TYPE_NONE,
+  PHOTON_PLACE_TYPE_COUNTRY,
+  PHOTON_PLACE_TYPE_STATE,
+  PHOTON_PLACE_TYPE_COUNTY,
+  PHOTON_PLACE_TYPE_CITY,
+  PHOTON_PLACE_TYPE_STREET,
+  PHOTON_PLACE_TYPE_HOUSE,
+  PHOTON_PLACE_TYPE_OTHER,
+  PHOTON_PLACE_TYPE_DISTRICT,
+  PHOTON_PLACE_TYPE_LOCALITY,
+  PHOTON_PLACE_TYPE_UNKNOWN
+} PhotonPlaceType;
 
 /**
  * @brief All address fields extracted from one Photon Place content entry.
@@ -23,6 +34,7 @@ typedef struct MetaAreaAllocator MetaAreaAllocator;
  */
 typedef struct PhotonPlace {
   const char *type;         /**< address_type ("country", "state", …)         */
+  PhotonPlaceType typeEnum;
   const char *own_name;     /**< place display name ("name:de" or "name")    */
   const char *country_code; /**< ISO 3166-1 alpha-2 country code             */
   const char *country;      /**< country display name                        */
@@ -66,7 +78,6 @@ typedef struct {
  *  @param[in]  len       Byte length of @p line.
  *  @param[in]  callback  Invoked once per Place content entry.
  *  @param[in]  user_data Forwarded to @p callback on every invocation.
- *  @param[in]  alloc     Allocator for the yyjson internal buffer.
  *  @param[out] result    Document-level metadata for stats aggregation.
  *  @return true on success (including non-Place documents), false on
  *          JSON parse error.
@@ -76,8 +87,22 @@ int json_parse_line(
     size_t len,
     PhotonPlaceCallback callback,
     void *user_data,
-    MetaAreaAllocator *alloc,
     JsonParseResult *result
 );
+
+/**
+ * @brief Serialize a PhotonPlace to a compact JSON string for debugging.
+ *
+ *  Writes into a thread-local static buffer (4 KiB).  The returned
+ *  pointer is valid until the next call on the same thread.
+ *  Basic JSON escaping is applied to string values.
+ *
+ *  @param[in] place  Place to serialize (NULL-safe, returns @c "null").
+ *  @return JSON string (thread-local, ephemeral — copy if you need to
+ *          keep it across calls).
+ *
+ *  @whisper A place speaks its full shape — for the debugger's eye alone
+ */
+char *photon_place_to_json(const PhotonPlace *place);
 
 /** @} */
