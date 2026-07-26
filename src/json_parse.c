@@ -170,7 +170,7 @@ static PhotonPlaceType detectTypeEnum(const char* type)
 typedef enum ResultType {
   RESULT_SUCCESS,
   RESULT_SKIP,
-  RESULT_ERROR_UNKNOWN_TYPE
+  RESULT_ERROR_UNKNOWN_TYPE,
 } ResultType;
 
 /* =========================================================================
@@ -183,7 +183,7 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   yyjson_val *address = yyjson_obj_get(entry, "address");
   if (!yyjson_is_obj(address)) {
     if (yyjson_is_arr(yyjson_obj_get(entry, "addresslines"))) p->unsupported = 1;
-    address = NULL;
+    return RESULT_SKIP;
   }
 
   p->type = localized(entry, "address_type", NULL);
@@ -195,41 +195,41 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   p->country_code = localized(entry, "country_code", NULL);
 
   /* --- single-pass address field extraction --- */
-  if (address) {
-    yyjson_obj_iter iter;
-    yyjson_obj_iter_init(address, &iter);
-    yyjson_val *key, *val;
-    while ((key = yyjson_obj_iter_next(&iter))) {
-      val = yyjson_obj_iter_get_val(key);
-      if (!yyjson_is_str(val)) continue;
-      const char *k = yyjson_get_str(key);
-      size_t kl = yyjson_get_len(key);
-      const char *v = yyjson_get_str(val);
 
-      if (k[0] == 'h' && k[3] == 's') {
-        p->house = v;
-      } else {
-        switch (kl) {
-        case 4:
-          if (k[0] == 'c') p->city = v;
-          break;
-        case 5:
-          if (k[0] == 's') p->state = v;
-          break;
-        case 6:
-          if (k[0] == 'c') p->county = v;
-          else if (k[0] == 's') p->street = v;
-          break;
-        case 7:
-          if (k[0] == 'c' && k[1] == 'o' && k[5] == 'r') p->country = v;
-          break;
-        case 8:
-          if (k[0] == 'p' && k[7] == 'e') p->postcode = v;
-          break;
-        }
+  yyjson_obj_iter iter;
+  yyjson_obj_iter_init(address, &iter);
+  yyjson_val *key, *val;
+  while ((key = yyjson_obj_iter_next(&iter))) {
+    val = yyjson_obj_iter_get_val(key);
+    if (!yyjson_is_str(val)) continue;
+    const char *k = yyjson_get_str(key);
+    size_t kl = yyjson_get_len(key);
+    const char *v = yyjson_get_str(val);
+
+    if (k[0] == 'h' && k[3] == 's') {
+      p->house = v;
+    } else {
+      switch (kl) {
+      case 4:
+        if (k[0] == 'c') p->city = v;
+        break;
+      case 5:
+        if (k[0] == 's') p->state = v;
+        break;
+      case 6:
+        if (k[0] == 'c') p->county = v;
+        else if (k[0] == 's') p->street = v;
+        break;
+      case 7:
+        if (k[0] == 'c' && k[1] == 'o' && k[5] == 'r') p->country = v;
+        break;
+      case 8:
+        if (k[0] == 'p' && k[7] == 'e') p->postcode = v;
+        break;
       }
     }
   }
+
   switch(p->typeEnum) {
     case PHOTON_PLACE_TYPE_HOUSE: p->house = p->own_name; break;
     case PHOTON_PLACE_TYPE_STREET: p->street = p->own_name; break;
