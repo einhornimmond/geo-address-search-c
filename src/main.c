@@ -6,7 +6,6 @@
 #include "meta_area_allocator.h"
 #include "parse_queue.h"
 #include "progress.h"
-#include "sql_export.h"
 #include "storage_stats.h"
 
 #include <pthread.h>
@@ -277,13 +276,7 @@ int main(int argc, char *argv[]) {
   storage_stats_print(storage_stats);
 
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf("Joining stats finished in %s, writing SQL file...\n", timeUsedBuffer);
-  grdu_mono_timer_reset(&timeUsed);
-
-  // storage_stats_write_sql(storage_stats, output_filename);
-
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf("Writing SQL file finished in %s.\n", timeUsedBuffer);
+  printf("Joining stats finished in %s...\n", timeUsedBuffer);
   grdu_mono_timer_reset(&timeUsed);
 
   printf("Cleaning up...\n");

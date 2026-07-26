@@ -414,11 +414,11 @@ static uint64_t estimated_index_bytes(const KeySet *set, unsigned parent_count) 
 }
 
 void storage_stats_print(const StorageStats *stats) {
-  const KeySet *sets[] = {&stats->countries, &stats->states,  &stats->counties, &stats->cities,
+  /*const KeySet *sets[] = {&stats->countries, &stats->states,  &stats->counties, &stats->cities,
                           &stats->postcodes, &stats->streets, &stats->houses};
   const char *labels[] = {"Länder",         "Bundesländer", "Landkreise", "Städte",
                           "Postleitzahlen", "Straßen",      "Adressen"};
-  uint64_t heap = 0, indexes = 0;
+
   printf("\nNormalisierte deutsche Adressdaten (weltweit):\n");
   for (size_t i = 0; i < 7; ++i) {
     uint64_t rows = 0;
@@ -426,29 +426,20 @@ void storage_stats_print(const StorageStats *stats) {
       if (sets[i]->buckets[b].entries) rows += (uint64_t)hmlen(sets[i]->buckets[b].entries);
     }
     printf("  %-14s %" PRIu64 "\n", labels[i], rows);
-    heap += estimated_table_bytes(sets[i], (unsigned)i);
-    indexes += estimated_index_bytes(sets[i], (unsigned)i) + rows * 16;
   }
-  printf(
-      "\nPostgreSQL-Schätzung (Heap + PK/Unique-Indizes): %.2f GiB\n",
-      (double)(heap + indexes) / (1024.0 * 1024.0 * 1024.0)
-  );
-  printf(
-      "  Heap: %.2f GiB, Indizes: %.2f GiB\n", (double)heap / (1024.0 * 1024.0 * 1024.0),
-      (double)indexes / (1024.0 * 1024.0 * 1024.0)
-  );
+
   if (stats->unsupported_addresslines)
     printf(
         "  Noch nicht über addresslines aufgelöste Einträge: %" PRIu64 "\n",
         stats->unsupported_addresslines
-    );
+        );*/
   if (stats->alloc) {
     size_t arena_bytes = meta_area_total_allocated(stats->alloc);
     size_t arena_count = meta_area_arena_count(stats->alloc);
     char arena_buf[32];
     format_byte_units(arena_buf, sizeof(arena_buf), arena_bytes, 2);
     printf(
-        "\nArena-Allokator: %s in %zu × 32 MiB-Blöcken reserviert\n", arena_buf, arena_count
+        "\nArena-Allokator: %s in %zu × 32 MiB-Blöcken reserviert\n", arena_buf, arena_count
     );
   }
 }
