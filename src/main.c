@@ -65,10 +65,10 @@ typedef struct {
   StorageStats *storage;
 } ProcessLineCtx;
 
-static void process_place_callback(const PhotonPlace *place, void *user_data) {
+static int process_place_callback(const PhotonPlace *place, void *user_data) {
   ProcessLineCtx *ctx = user_data;
   json_stats_count_place(ctx->stats, place);
-  storage_stats_record(ctx->storage, place);
+  return storage_stats_record(ctx->storage, place);
 }
 
 static void process_json_line(
@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
 
   const char *output_filename = argv[2];
 
-  unsigned parser_thread_count = 4;
+  unsigned parser_thread_count = 1;
   if (argc == 4) {
     char *end;
     unsigned long value = strtoul(argv[3], &end, 10);

@@ -22,6 +22,8 @@ typedef enum PhotonPlaceType {
   PHOTON_PLACE_TYPE_OTHER,
   PHOTON_PLACE_TYPE_DISTRICT,
   PHOTON_PLACE_TYPE_LOCALITY,
+  PHOTON_PLACE_TYPE_STATE_COUNTY_CITY,
+  PHOTON_PLACE_TYPE_INDEPENDENT_CITY,
   PHOTON_PLACE_TYPE_UNKNOWN
 } PhotonPlaceType;
 
@@ -52,7 +54,7 @@ typedef struct PhotonPlace {
 } PhotonPlace;
 
 /** Callback invoked once per Place content entry. */
-typedef void (*PhotonPlaceCallback)(const PhotonPlace *place, void *user_data);
+typedef int (*PhotonPlaceCallback)(const PhotonPlace *place, void *user_data);
 
 /**
  * @brief Per-document metadata returned by json_parse_line().

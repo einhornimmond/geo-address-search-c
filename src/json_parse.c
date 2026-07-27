@@ -202,25 +202,14 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   memset(p, 0, sizeof(*p));
 
   /* --- address sub-object --- */
-  yyjson_val *address = yyjson_obj_get(entry, "address");
-  if (!yyjson_is_obj(address)) {
-    if (yyjson_is_arr(yyjson_obj_get(entry, "addresslines"))) p->unsupported = 1;
-    return RESULT_SKIP;
-  }
   const char* osm_value = localized(entry, "osm_value", NULL);
-  // residential
-  /*if (!strcmp("bus_stop", osm_value)) {
-    return RESULT_SKIP;
-  }*/
   p->type = localized(entry, "address_type", NULL);
   if (!p->type) {
     return RESULT_ERROR_MISSING_TYPE;
   }
   p->typeEnum = detectTypeEnum(p->type);
-  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) {
-    return RESULT_SKIP;
-  }
-  if (PHOTON_PLACE_TYPE_STREET == p->typeEnum) {
+
+  /*if (PHOTON_PLACE_TYPE_STREET == p->typeEnum) {
     if (strcmp("residential", osm_value)) {
       return RESULT_SKIP;
     }
@@ -229,44 +218,73 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
     if (strcmp("place", osm_value)) {
       return RESULT_SKIP;
     }
-  }
+  }*/
   p->country_code = localized(entry, "country_code", NULL);
   p->own_name = place_name(entry);
-  /* --- single-pass address field extraction --- */
+  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) {
+    return RESULT_SKIP;
+  }
+  yyjson_val *address = yyjson_obj_get(entry, "address");
+  yyjson_val *extra = NULL;
+  if (p->typeEnum == PHOTON_PLACE_TYPE_CITY) {
+    extra = yyjson_obj_get(entry, "extra");
+  }
 
-  yyjson_obj_iter iter;
-  yyjson_obj_iter_init(address, &iter);
-  yyjson_val *key, *val;
-  while ((key = yyjson_obj_iter_next(&iter))) {
-    val = yyjson_obj_iter_get_val(key);
-    if (!yyjson_is_str(val)) continue;
-    const char *k = yyjson_get_str(key);
-    size_t kl = yyjson_get_len(key);
-    const char *v = yyjson_get_str(val);
+  if (yyjson_is_obj(address))
+  {
+    // could be a independent town
+    if (extra && yyjson_is_obj(extra)) {
+      const char *admin_title = localized(extra, "admin_title", NULL);
+      if (admin_title && !strcmp(admin_title, "independent town")) {
+        p->typeEnum = PHOTON_PLACE_TYPE_INDEPENDENT_CITY;
+      }
+    }
 
-    if (k[0] == 'h' && k[3] == 's') {
-      p->house = v;
-    } else {
-      switch (kl) {
-      case 4:
-        if (k[0] == 'c') p->city = v;
-        break;
-      case 5:
-        if (k[0] == 's') p->state = v;
-        break;
-      case 6:
-        if (k[0] == 'c') p->county = v;
-        else if (k[0] == 's') {
-          if(k[1] == 't') p->street = v;
-          else if(k[1] == 'u') p->suburb = v;
+    /* --- single-pass address field extraction --- */
+    yyjson_obj_iter iter;
+    yyjson_obj_iter_init(address, &iter);
+    yyjson_val *key, *val;
+    while ((key = yyjson_obj_iter_next(&iter))) {
+      val = yyjson_obj_iter_get_val(key);
+      if (!yyjson_is_str(val)) continue;
+      const char *k = yyjson_get_str(key);
+      size_t kl = yyjson_get_len(key);
+      const char *v = yyjson_get_str(val);
+
+      if (k[0] == 'h' && k[3] == 's') {
+        p->house = v;
+      } else {
+        switch (kl) {
+        case 4:
+          if (k[0] == 'c') p->city = v;
+          break;
+        case 5:
+          if (k[0] == 's') p->state = v;
+          break;
+        case 6:
+          if (k[0] == 'c') p->county = v;
+          else if (k[0] == 's') {
+            if(k[1] == 't') p->street = v;
+            else if(k[1] == 'u') p->suburb = v;
+          }
+          break;
+        case 7:
+          if (k[0] == 'c' && k[1] == 'o' && k[5] == 'r') p->country = v;
+          break;
+        case 8:
+          if (k[0] == 'p' && k[7] == 'e') p->postcode = v;
+          break;
         }
-        break;
-      case 7:
-        if (k[0] == 'c' && k[1] == 'o' && k[5] == 'r') p->country = v;
-        break;
-      case 8:
-        if (k[0] == 'p' && k[7] == 'e') p->postcode = v;
-        break;
+      }
+    }
+  } else {
+    if (yyjson_is_arr(yyjson_obj_get(entry, "addresslines"))) p->unsupported = 1;
+    // could be a city-state
+    if (extra && yyjson_is_obj(extra))
+    {
+      const char *official_status = localized(extra, "official_status:de", "official_status");
+      if (official_status && !strcmp(official_status, "Land")) {
+        p->typeEnum = PHOTON_PLACE_TYPE_STATE_COUNTY_CITY;
       }
     }
   }
@@ -274,13 +292,34 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   switch(p->typeEnum) {
     case PHOTON_PLACE_TYPE_HOUSE: p->house = p->own_name; break;
     case PHOTON_PLACE_TYPE_STREET: p->street = p->own_name; break;
-    case PHOTON_PLACE_TYPE_CITY: p->city = p->own_name; break;
+    case PHOTON_PLACE_TYPE_CITY:
+    case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
+    case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
+      p->city = p->own_name;
+      break;
     case PHOTON_PLACE_TYPE_COUNTY: p->county = p->own_name; break;
     case PHOTON_PLACE_TYPE_STATE: p->state = p->own_name; break;
     case PHOTON_PLACE_TYPE_COUNTRY: p->country = p->own_name; break;
     default:
   }
 
+  // Debug
+  /*if(p->typeEnum == PHOTON_PLACE_TYPE_STATE_COUNTY_CITY) {
+    if (p->county) {
+      printf("county was set on state-city: %s\n", p->own_name);
+    }
+    if (p->state) {
+      printf("state was set on state-city: %s\n", p->own_name);
+    }
+    p->county = NULL;
+    p->state = NULL;
+  } else if (p->typeEnum == PHOTON_PLACE_TYPE_INDEPENDENT_CITY) {
+    if (p->county) {
+      printf("county was set on independent city: %s\n", p->own_name);
+    }
+    p->county = NULL;
+  }
+*/
   /* --- centroid --- */
   yyjson_val *centroid = yyjson_obj_get(entry, "centroid");
   if (yyjson_is_arr(centroid) && yyjson_arr_size(centroid) == 2) {
@@ -363,7 +402,27 @@ int json_parse_line(
   yyjson_val *entry;
   yyjson_arr_foreach(content, index, max, entry) {
     if (!yyjson_is_obj(entry)) continue;
-
+    const char* own_name = place_name(entry);
+    yyjson_val *address = yyjson_obj_get(entry, "address");
+    const char* state = NULL;
+    const char* city = NULL;
+    if(yyjson_is_obj(address)) {
+      state = localized(address, "state:de", "state");
+      city = localized(address, "city:de", "city");
+    }
+    const char* filterCity = "Basedow";
+    if (
+      (
+        (own_name && !strcmp(own_name, filterCity)) ||
+        (city && !strcmp(city, filterCity))
+      ) && !state) {
+      char* buf = (char*)calloc(1, len+1);
+      memcpy(buf, line, len);
+      printf("%s: %s\n\n", filterCity, buf);
+      free(buf);
+      //continue;
+    }
+//*/
     PhotonPlace place;
     ResultType extractResult = extract_place(entry, &place);
     if (extractResult == RESULT_ERROR_UNKNOWN_TYPE) {
@@ -374,12 +433,11 @@ int json_parse_line(
       char* buf = (char*)calloc(1, len+1);
       memcpy(buf, line, len);
       fatal(ERROR_JSON, "missing type: %s", buf);
-    }
-    else if (extractResult == RESULT_SUCCESS) {
+    } else if (extractResult == RESULT_SKIP) {
+    } else if (extractResult == RESULT_SUCCESS) {
       static int count = 0;
       if (true &&
-        ((place.street && strcmp(place.street, "Suchlandstraße") == 0) &&
-         (!place.state /*|| strcmp(place.state, "Könnern") == 0*/) && count <= 10)) { //*/
+        ((place.county && strcmp(place.county, "Berlin") == 0) && place.typeEnum == PHOTON_PLACE_TYPE_COUNTY && count <= 10)) { //*/
       //if (place.typeEnum == PHOTON_PLACE_TYPE_HOUSE && count <= 10) {
       //if (place.typeEnum == PHOTON_PLACE_TYPE_CITY && !place.city && count <= 10) {
         char* buf = (char*)calloc(1, len+1);
@@ -388,7 +446,12 @@ int json_parse_line(
         free(buf);
         count++;
       }
-      callback(&place, user_data);
+      if(callback(&place, user_data)) {
+        char* buf = (char*)calloc(1, len+1);
+        memcpy(buf, line, len);
+        printf("callback error with: %s\n\n", buf);
+        free(buf);
+      }
       ++result->entry_count;
     }
   }

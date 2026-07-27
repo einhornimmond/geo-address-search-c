@@ -31,6 +31,8 @@ typedef struct JsonStats {
   uint64_t localities;
   uint64_t streets;         /**< Entries tagged "street". */
   uint64_t houses;          /**< Entries tagged "house". */
+  uint64_t state_cities;
+  uint64_t independent_cities;
   uint64_t other;           /**< Entries with unrecognised or missing address_type. */
   uint64_t invalid_records; /**< Malformed entries skipped during scan. */
   int postcode_checked;     /**< Internal: set when at least one postcode has been seen. */

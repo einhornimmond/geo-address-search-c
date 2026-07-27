@@ -13,19 +13,6 @@
 /** Opaque handle — owned by the meta-area allocator module. */
 typedef struct MetaAreaAllocator MetaAreaAllocator;
 
-typedef enum AddrTreeNodeType {
-  ADDR_TREE_NODE_TYPE_COUNTRY,
-  ADDR_TREE_NODE_TYPE_STATE,
-  ADDR_TREE_NODE_TYPE_COUNTY,
-  ADDR_TREE_NODE_TYPE_CITY,
-  ADDR_TREE_NODE_TYPE_SUBURB,
-  ADDR_TREE_NODE_TYPE_LOCALITY,
-  ADDR_TREE_NODE_TYPE_DISTRICT,
-  ADDR_TREE_NODE_TYPE_STREET,
-  ADDR_TREE_NODE_TYPE_HOUSE,
-  
-  ADDR_TREE_NODE_COUNT,  
-} AddrTreeNodeType;
 
 /**
  * @brief One node in the geo-hierarchy tree.
@@ -53,7 +40,6 @@ typedef struct AddrTreeNode {
     int32_t lon_e7;                  /**< longitude × 10⁷                                         */
     int32_t lat_e7;                  /**< latitude  × 10⁷                                         */
     uint8_t has_point;               /**< centroid is present                                     */
-    AddrTreeNodeType type;
     struct AddrTreeNode *children;   /**< stb_ds hm: child name_hash → AddrTreeNode (NULL = leaf) */
 } AddrTreeNode;
 

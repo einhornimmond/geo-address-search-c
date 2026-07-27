@@ -11,6 +11,7 @@
 
 #include "json_parse.h"
 #include "meta_area_allocator.h"
+#include "storage_stats_internal.h"
 
 /** Opaque handle for the deduplicated, seven-level address store. */
 typedef struct StorageStats StorageStats;
@@ -47,10 +48,11 @@ void storage_stats_destroy(StorageStats *stats);
  *
  *  @param[in,out] stats   Collector to update.
  *  @param[in]     place   Pre-extracted place data from the JSON parser.
+ *  @param[out]    result  0 if ok, <> 0 on error
  *
  *  @whisper One more place finds its home in the hierarchy
  */
-void storage_stats_record(StorageStats *stats, const PhotonPlace *place);
+int storage_stats_record(StorageStats *stats, const PhotonPlace *place);
 
 /**
  * @brief Combine two collectors into one.
@@ -63,6 +65,8 @@ void storage_stats_record(StorageStats *stats, const PhotonPlace *place);
  *  @param[in]     source        Partial collector to fold in.
  */
 void storage_stats_merge(StorageStats *destination, const StorageStats *source);
+
+AddrTreeNode* storage_stats_find_state_by_city(AddrTreeNode* root, const char* cityName, const char* countryCode);
 
 /**
  * @brief Print estimated row counts and PostgreSQL storage size.

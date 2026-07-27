@@ -15,9 +15,11 @@ static void count_address_type(JsonStats *stats, PhotonPlaceType address_type) {
     case PHOTON_PLACE_TYPE_DISTRICT: ++stats->districts; break;
     case PHOTON_PLACE_TYPE_COUNTRY: ++stats->countries; break;
     case PHOTON_PLACE_TYPE_OTHER: ++stats->other; break;
+    case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY: ++stats->state_cities; break;
+    case PHOTON_PLACE_TYPE_INDEPENDENT_CITY: ++stats->independent_cities; break;
     default: fatal(ERROR_ASSERT, "None or Unknown address type");
   }
-  
+
 }
 
 void json_stats_count_document(JsonStats *stats, const void *result) {
@@ -63,6 +65,8 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
   total->streets += addend->streets;
   total->houses += addend->houses;
   total->other += addend->other;
+  total->state_cities += addend->state_cities;
+  total->independent_cities += addend->independent_cities;
   total->invalid_records += addend->invalid_records;
   if (addend->postcode_checked) total->postcode_checked = 1;
 }
