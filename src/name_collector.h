@@ -282,6 +282,24 @@ grd_result name_run_merge(
 const NameGroup *name_set_find(const NameSet *set, const char *name, size_t name_size);
 
 /**
+ * @brief Find a word and learn its position in the whole set.
+ *
+ *  The rank is what a posting list refers to: words are numbered by their
+ *  place in byte order, so the number outlives every rebuild of the same
+ *  input.  Two steps — the tree chooses the group, a binary search finds the
+ *  word inside it.
+ *
+ *  @param[in]  set       Merged set; must not be NULL.
+ *  @param[in]  word      Word to look up, exactly as it was collected.
+ *  @param[in]  size      Byte length of @p word.
+ *  @param[out] out_rank  Receives the rank if the word exists; may be NULL.
+ *  @return true if the word is present.
+ *
+ *  @whisper A word asks for its number, and the order answers
+ */
+bool name_set_rank(const NameSet *set, const char *word, size_t size, size_t *out_rank);
+
+/**
  * @brief Borrow one group by position, groups being ordered by key.
  *
  *  @param[in] set          Merged set; must not be NULL.

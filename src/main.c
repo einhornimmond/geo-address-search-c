@@ -1,5 +1,6 @@
 #include "error.h"
 #include "format.h"
+#include "geo_index.h"
 #include "json_parse.h"
 #include "json_stats.h"
 #include "line_buffer.h"
@@ -7,7 +8,9 @@
 #include "name_collector.h"
 #include "parse_queue.h"
 #include "progress.h"
+#include "text_tokenize.h"
 
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,39 +63,120 @@ static void buffer_pool_destroy(BufferPool *pool) {
   pthread_mutex_destroy(&pool->mutex);
 }
 
-typedef struct {
-  JsonStats *stats;
-  NameCollector *names;
-} ProcessLineCtx;
+/** What a walk over the dump is for. */
+typedef enum ParserPass {
+  PARSER_PASS_VOCABULARY, /**< Gather the words and the written spellings. */
+  PARSER_PASS_DOCUMENTS   /**< Write documents and postings against them. */
+} ParserPass;
+
+typedef struct ParserThreadArgs {
+  ParseQueue *queue;
+  BufferPool *pool;
+  ParserPass pass;
+  MetaAreaAllocator *meta_alloc; /**< Private arena — the allocator is not thread-safe. */
+  NameCollector words;           /**< Folded search words of this thread. */
+  NameCollector display;         /**< The same places as they are written. */
+  TextTokenizer tokenizer;       /**< Folding scratch space, one per thread. */
+  NameRun word_run;              /**< Words, sorted once the queue ran dry. */
+  NameRun display_run;           /**< Spellings, likewise. */
+  grd_result finish_result;      /**< Outcome of the thread's own sorting pass. */
+  const NameSet *word_set;       /**< Second pass: where a word finds its rank. */
+  const NameSet *display_set;    /**< Second pass: where a spelling finds its rank. */
+  DocCollector documents;        /**< Second pass: what this thread found. */
+  grd_result document_result;    /**< First failure while collecting documents. */
+  JsonStats stats;
+} ParserThreadArgs;
+
+/** Look a written form up; absent text and unknown text both mean "no rank". */
+static uint32_t display_rank(const NameSet *set, PhotonString text) {
+  size_t rank = 0;
+  if (!text.data || !text.size) return GEO_RANK_NONE;
+  if (!name_set_rank(set, text.data, text.size, &rank)) return GEO_RANK_NONE;
+  return (uint32_t)rank;
+}
+
+/** Photon's weight is a fraction; the record keeps it as 1/65535 steps. */
+static uint16_t quantize_importance(double importance) {
+  if (!(importance > 0.0)) return 0; /* also catches NaN */
+  if (importance >= 1.0) return UINT16_MAX;
+  return (uint16_t)(importance * (double)UINT16_MAX + 0.5);
+}
+
+/** First pass: every text of the entry joins the vocabulary. */
+static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place) {
+  for (uint8_t i = 0; i < place->search_count; ++i) {
+    size_t tokens = text_tokenize(&args->tokenizer, place->search[i].data, place->search[i].size);
+    for (size_t t = 0; t < tokens; ++t) {
+      const TextToken *token = &args->tokenizer.tokens[t];
+      grd_result result = name_collector_add(&args->words, token->data, token->size);
+      if (result != GRD_SUCCESS) {
+        fatal(ERROR_MEMORY, "Failed to keep search term (grd_result %d).", (int)result);
+      }
+    }
+  }
+  /* houses are payload, not answers — their spelling is nobody's display name */
+  if (place->typeEnum == PHOTON_PLACE_TYPE_HOUSE) return;
+  const PhotonString written[] = {place->own_name, place->city, place->postcode};
+  for (size_t i = 0; i < sizeof(written) / sizeof(written[0]); ++i) {
+    grd_result result = name_collector_add(&args->display, written[i].data, written[i].size);
+    if (result != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep display text (grd_result %d).", (int)result);
+    }
+  }
+}
+
+/** Second pass: the entry becomes a document, and its words point at it. */
+static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
+  if (place->typeEnum == PHOTON_PLACE_TYPE_HOUSE) return;
+
+  GeoDocument document = {
+      .lat_e7 = place->lat_e7,
+      .lon_e7 = place->lon_e7,
+      .name_rank = display_rank(args->display_set, place->own_name),
+      .city_rank = display_rank(args->display_set, place->city),
+      .postcode_rank = display_rank(args->display_set, place->postcode),
+      .importance = quantize_importance(place->importance),
+      .type = (uint8_t)place->typeEnum,
+      .flags = place->has_point ? GEO_DOCUMENT_HAS_POINT : 0u,
+  };
+
+  uint32_t number = 0;
+  grd_result result = doc_collector_add_document(&args->documents, &document, &number);
+  if (result != GRD_SUCCESS) {
+    if (args->document_result == GRD_SUCCESS) args->document_result = result;
+    return;
+  }
+
+  for (uint8_t i = 0; i < place->search_count; ++i) {
+    size_t tokens = text_tokenize(&args->tokenizer, place->search[i].data, place->search[i].size);
+    for (size_t t = 0; t < tokens; ++t) {
+      const TextToken *token = &args->tokenizer.tokens[t];
+      size_t rank = 0;
+      if (!name_set_rank(args->word_set, token->data, token->size, &rank)) {
+        ++args->documents.dropped_words; /* the first pass saw every word — this cannot happen */
+        continue;
+      }
+      result = doc_collector_add_posting(&args->documents, (uint32_t)rank, number);
+      if (result != GRD_SUCCESS && args->document_result == GRD_SUCCESS) {
+        args->document_result = result;
+        return;
+      }
+    }
+  }
+}
 
 static int process_place_callback(const PhotonPlace *place, void *user_data) {
-  ProcessLineCtx *ctx = user_data;
-  json_stats_count_place(ctx->stats, place);
-  /* every text of the entry that someone might type — houses contribute none */
-  for (uint8_t i = 0; i < place->search_count; ++i) {
-    grd_result result = name_collector_add(ctx->names, place->search[i].data, place->search[i].size);
-    if (result != GRD_SUCCESS) {
-      fatal(ERROR_MEMORY, "Failed to keep search term (grd_result %d).", (int)result);
-    }
+  ParserThreadArgs *args = user_data;
+  if (args->pass == PARSER_PASS_VOCABULARY) {
+    json_stats_count_place(&args->stats, place);
+    collect_vocabulary(args, place);
+  } else {
+    collect_document(args, place);
   }
   return 0;
 }
 
-static void process_json_line(
-    const char *line,
-    size_t len,
-    JsonStats *stats,
-    NameCollector *names
-) {
-  ProcessLineCtx ctx = {stats, names};
-  JsonParseResult result;
-  json_parse_line(line, len, process_place_callback, &ctx, &result);
-  json_stats_count_document(stats, &result);
-}
-
-static void process_batch(
-    const ParseBatch *batch, JsonStats *stats, NameCollector *names
-) {
+static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
   const char *line = batch->buffer->buffer;
   const char *end = line + batch->len;
 
@@ -100,31 +184,30 @@ static void process_batch(
     const char *newline = memchr(line, '\n', (size_t)(end - line));
     size_t len = newline ? (size_t)(newline - line) : (size_t)(end - line);
     if (len > 0 && line[len - 1] == '\r') { --len; }
-    if (len > 0) { process_json_line(line, len, stats, names); }
+    if (len > 0) {
+      JsonParseResult result;
+      json_parse_line(line, len, process_place_callback, args, &result);
+      if (args->pass == PARSER_PASS_VOCABULARY) json_stats_count_document(&args->stats, &result);
+    }
     line = newline ? newline + 1 : end;
   }
 }
-
-typedef struct ParserThreadArgs {
-  ParseQueue *queue;
-  BufferPool *pool;
-  MetaAreaAllocator *meta_alloc; /**< Private arena — the allocator is not thread-safe. */
-  NameCollector names;           /**< Every own_name this thread has met. */
-  NameRun run;                   /**< The same names, sorted once the queue ran dry. */
-  grd_result finish_result;      /**< Outcome of the thread's own sorting pass. */
-  JsonStats stats;
-} ParserThreadArgs;
 
 static void *parser_thread(void *arg) {
   ParserThreadArgs *args = arg;
   ParseBatch batch;
   while (parse_queue_pop(args->queue, &batch)) {
-    process_batch(&batch, &args->stats, &args->names);
+    process_batch(&batch, args);
     buffer_pool_release(args->pool, batch.buffer);
   }
+  if (args->pass != PARSER_PASS_VOCABULARY) return NULL;
+
   /* the queue has run dry — sort what this thread gathered while the others
      do the same, so the join finds nothing but ordered runs */
-  args->finish_result = name_collector_finish(&args->names, &args->run);
+  args->finish_result = name_collector_finish(&args->words, &args->word_run);
+  if (args->finish_result == GRD_SUCCESS) {
+    args->finish_result = name_collector_finish(&args->display, &args->display_run);
+  }
   return NULL;
 }
 
@@ -144,94 +227,29 @@ static void enqueue_complete_lines(
   *active_buffer = next;
 }
 
-int main(int argc, char *argv[]) {
-  grdu_mono_timer timeUsedAll;
-  grdu_mono_timer_reset(&timeUsedAll);
-
-  if (argc < 2 || argc > 3) {
-    fatal(
-        ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> [parser_threads: 1-2]", argv[0]
-    );
-  }
-
-  grdu_mono_timer_init();
-
-
-  unsigned parser_thread_count = 4;
-  if (argc == 4) {
-    char *end;
-    unsigned long value = strtoul(argv[3], &end, 10);
-    if (*argv[3] == '\0' || *end != '\0' || value < 1 || value > 10) {
-      fatal(ERROR_USAGE, "parser_threads must between 1 and 10.");
-    }
-    parser_thread_count = (unsigned)value;
-  }
-
-  FILE *fp = fopen(argv[1], "rb");
-  if (!fp) { fatal(ERROR_IO, "Cannot open '%s'.", argv[1]); }
-
-  ZSTD_DStream *dstream = ZSTD_createDStream();
-  if (!dstream) { fatal(ERROR_MEMORY, "Failed to create ZSTD_DStream."); }
-
+/**
+ * @brief Decompress the whole dump once and hand every line to the queue.
+ *
+ *  Rewinds the file and restarts the stream, so the same dump can be walked
+ *  again for the second pass.  Closes the queue when the last line is in.
+ */
+static void stream_dump(
+    FILE *fp,
+    ZSTD_DStream *dstream,
+    char *inputBuffer,
+    size_t inputSize,
+    void *outputBuffer,
+    size_t outputSize,
+    ParseQueue *queue,
+    BufferPool *pool
+) {
+  rewind(fp);
   size_t ret = ZSTD_initDStream(dstream);
   if (ZSTD_isError(ret)) { fatal(ERROR_ZSTD, "%s", ZSTD_getErrorName(ret)); }
 
-  const size_t inputSize = ZSTD_DStreamInSize() * 2;
-  const size_t outputSize = ZSTD_DStreamOutSize() * 2;
-
-  char *inputBuffer = malloc(inputSize);
-  void *outputBuffer = malloc(outputSize);
-  ParseQueue *parse_queue = parse_queue_create();
-  pthread_t parser_threads[10];
-  ParserThreadArgs parser_args[10] = {0};
-  BufferPool buffer_pool;
-
-  char inputSizeBuf[32], outputSizeBuf[32];
-  format_byte_units(inputSizeBuf, sizeof(inputSizeBuf), inputSize, 2);
-  format_byte_units(outputSizeBuf, sizeof(outputSizeBuf), outputSize, 2);
-  printf("inputSize: %s, outputSize: %s\n", inputSizeBuf, outputSizeBuf);
-
-  if (!inputBuffer || !outputBuffer) {
-    fatal(ERROR_MEMORY, "Failed to allocate streaming buffers.");
-  }
-  if (!parse_queue) { fatal(ERROR_MEMORY, "Failed to allocate parsing buffers."); }
-  buffer_pool_init(&buffer_pool, outputSize * 2);
-  for (unsigned i = 0; i < parser_thread_count; ++i) {
-    parser_args[i].queue = parse_queue;
-    parser_args[i].pool = &buffer_pool;
-    /* One arena per thread — meta_area_alloc() bumps without a lock, so it must
-       not be shared. The arenas outlive the threads: they hold the name bytes. */
-    parser_args[i].meta_alloc = meta_area_allocator_create();
-    if (!parser_args[i].meta_alloc) {
-      fatal(ERROR_MEMORY, "Failed to create meta area allocator for parser thread %u.", i);
-    }
-    if (name_collector_init(&parser_args[i].names, parser_args[i].meta_alloc) != GRD_SUCCESS) {
-      fatal(ERROR_MEMORY, "Failed to init name collector for parser thread %u.", i);
-    }
-    if (pthread_create(&parser_threads[i], NULL, parser_thread, &parser_args[i]) != 0) {
-      fatal(ERROR_MEMORY, "Failed to create parser thread %u.", i);
-    }
-  }
-
-  fseek(fp, 0, SEEK_END);
-  uint64_t totalBytes = ftell(fp);
-  rewind(fp);
-
-  progress_init(totalBytes);
-
-  ZSTD_inBuffer input = {
-      .src = inputBuffer,
-      .size = 0,
-      .pos = 0,
-  };
-
-  ZSTD_outBuffer output = {
-      .dst = outputBuffer,
-      .size = outputSize,
-      .pos = 0,
-  };
-
-  LineBuffer *lineBuffer = buffer_pool_acquire(&buffer_pool);
+  ZSTD_inBuffer input = {.src = inputBuffer, .size = 0, .pos = 0};
+  ZSTD_outBuffer output = {.dst = outputBuffer, .size = outputSize, .pos = 0};
+  LineBuffer *lineBuffer = buffer_pool_acquire(pool);
 
   while (1) {
     size_t read = fread(inputBuffer, 1, inputSize, fp);
@@ -242,108 +260,484 @@ int main(int argc, char *argv[]) {
 
     while (input.pos < input.size || output.pos == output.size) {
       ret = ZSTD_decompressStream(dstream, &output, &input);
-
       if (ZSTD_isError(ret)) { fatal(ERROR_ZSTD, "%s", ZSTD_getErrorName(ret)); }
 
-      // Process decompressed data
-      char *data = (char *)output.dst;
-      size_t dataSize = output.pos;
-
-      line_buffer_append(lineBuffer, data, dataSize);
-      enqueue_complete_lines(parse_queue, &buffer_pool, &lineBuffer);
+      line_buffer_append(lineBuffer, (char *)output.dst, output.pos);
+      enqueue_complete_lines(queue, pool, &lineBuffer);
       output.pos = 0;
 
-      // if fully flushed
-      if (0 == ret) { break; }
+      if (0 == ret) { break; } /* fully flushed */
     }
   }
-  printf("\n");
-  progress_finish();
-  printf("Reading and decompress file finished, wait for parser threads to finish...\n");
-  grdu_mono_timer timeUsed;
-  grdu_mono_timer_reset(&timeUsed);
-  char timeUsedBuffer[32];
 
   if (lineBuffer->position > 0) {
-    parse_queue_push(parse_queue, (ParseBatch){.buffer = lineBuffer, .len = lineBuffer->position});
+    parse_queue_push(queue, (ParseBatch){.buffer = lineBuffer, .len = lineBuffer->position});
   } else {
-    buffer_pool_release(&buffer_pool, lineBuffer);
+    buffer_pool_release(pool, lineBuffer);
   }
-  parse_queue_close(parse_queue);
-  for (unsigned i = 0; i < parser_thread_count; ++i) { pthread_join(parser_threads[i], NULL); }
+  parse_queue_close(queue);
+}
 
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf("All parser threads have finished in %s. Joining stats...\n", timeUsedBuffer);
+/**
+ * @brief Run one pass: threads up, dump through, threads joined.
+ *
+ *  The queue lives only as long as the pass — it closes once and cannot
+ *  reopen, so the second walk gets a fresh one.  Everything a thread keeps
+ *  across passes sits in its @ref ParserThreadArgs and is untouched here.
+ */
+static void run_pass(
+    ParserPass pass,
+    FILE *fp,
+    ZSTD_DStream *dstream,
+    char *inputBuffer,
+    size_t inputSize,
+    void *outputBuffer,
+    size_t outputSize,
+    BufferPool *pool,
+    ParserThreadArgs *args,
+    pthread_t *threads,
+    unsigned thread_count,
+    uint64_t totalBytes
+) {
+  ParseQueue *queue = parse_queue_create();
+  if (!queue) { fatal(ERROR_MEMORY, "Failed to allocate the parse queue."); }
+
+  for (unsigned i = 0; i < thread_count; ++i) {
+    args[i].queue = queue;
+    args[i].pool = pool;
+    args[i].pass = pass;
+    if (pthread_create(&threads[i], NULL, parser_thread, &args[i]) != 0) {
+      fatal(ERROR_MEMORY, "Failed to create parser thread %u.", i);
+    }
+  }
+
+  progress_init(totalBytes);
+  stream_dump(fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize, queue, pool);
+  printf("\n");
+  progress_finish();
+
+  for (unsigned i = 0; i < thread_count; ++i) { pthread_join(threads[i], NULL); }
+  parse_queue_destroy(queue);
+}
+
+/**
+ * @brief Walk a compressed dump and leave a finished index behind.
+ *
+ *  The long way round: decompress, parse, fold, sort, merge, write.  Every
+ *  later start takes the short way and only maps the result.
+ *
+ *  @param[in] dump_path           Photon JSONL dump, zstd compressed.
+ *  @param[in] index_path          Destination for the index file.
+ *  @param[in] parser_thread_count Parser threads, 1 … 10.
+ *  @return 0 on success; failures end the program through fatal().
+ */
+static int build_index(
+    const char *dump_path, const char *index_path, unsigned parser_thread_count
+) {
+  grdu_mono_timer timeUsedAll;
+  grdu_mono_timer_reset(&timeUsedAll);
+
+  FILE *fp = fopen(dump_path, "rb");
+  if (!fp) { fatal(ERROR_IO, "Cannot open '%s'.", dump_path); }
+
+  ZSTD_DStream *dstream = ZSTD_createDStream();
+  if (!dstream) { fatal(ERROR_MEMORY, "Failed to create ZSTD_DStream."); }
+
+  const size_t inputSize = ZSTD_DStreamInSize() * 2;
+  const size_t outputSize = ZSTD_DStreamOutSize() * 2;
+
+  char *inputBuffer = malloc(inputSize);
+  void *outputBuffer = malloc(outputSize);
+  if (!inputBuffer || !outputBuffer) {
+    fatal(ERROR_MEMORY, "Failed to allocate streaming buffers.");
+  }
+
+  pthread_t parser_threads[10];
+  ParserThreadArgs parser_args[10] = {0};
+  BufferPool buffer_pool;
+
+  char inputSizeBuf[32], outputSizeBuf[32];
+  format_byte_units(inputSizeBuf, sizeof(inputSizeBuf), inputSize, 2);
+  format_byte_units(outputSizeBuf, sizeof(outputSizeBuf), outputSize, 2);
+  printf("inputSize: %s, outputSize: %s\n", inputSizeBuf, outputSizeBuf);
+
+  buffer_pool_init(&buffer_pool, outputSize * 2);
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    /* One arena per thread — meta_area_alloc() bumps without a lock, so it must
+       not be shared. The arenas outlive the threads: they hold the text bytes. */
+    parser_args[i].meta_alloc = meta_area_allocator_create();
+    if (!parser_args[i].meta_alloc) {
+      fatal(ERROR_MEMORY, "Failed to create meta area allocator for parser thread %u.", i);
+    }
+    if (name_collector_init(&parser_args[i].words, parser_args[i].meta_alloc) != GRD_SUCCESS ||
+        name_collector_init(&parser_args[i].display, parser_args[i].meta_alloc) != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to init collectors for parser thread %u.", i);
+    }
+    text_tokenizer_init(&parser_args[i].tokenizer);
+  }
+
+  fseek(fp, 0, SEEK_END);
+  uint64_t totalBytes = ftell(fp);
+
+  grdu_mono_timer timeUsed;
+  char timeUsedBuffer[32];
+
+  /* =======================================================================
+   *  First pass: what words exist at all
+   * ======================================================================= */
+
+  printf("Durchlauf 1 von 2: Wortschatz sammeln\n");
+  run_pass(
+      PARSER_PASS_VOCABULARY, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
+      &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
+  );
   grdu_mono_timer_reset(&timeUsed);
 
   JsonStats stats = {0};
-
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     json_stats_add(&stats, &parser_args[i].stats);
   }
-
   json_stats_print(&stats);
 
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf("Joining stats finished in %s...\n", timeUsedBuffer);
-  grdu_mono_timer_reset(&timeUsed);
-
   /* --- the sorted per-thread runs flow together and lose their last doubles --- */
-  const NameRun *runs[10];
+  const NameRun *word_runs[10];
+  const NameRun *display_runs[10];
   size_t meta_allocated = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     if (parser_args[i].finish_result != GRD_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to sort its place names (grd_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to sort its texts (grd_result %d).", i,
           (int)parser_args[i].finish_result
       );
     }
-    runs[i] = &parser_args[i].run;
+    word_runs[i] = &parser_args[i].word_run;
+    display_runs[i] = &parser_args[i].display_run;
     meta_allocated += meta_area_total_allocated(parser_args[i].meta_alloc);
   }
 
-  NameSet names;
-  grd_result merge_result = name_run_merge(&names, runs, parser_thread_count, parser_thread_count);
+  NameSet words, display;
+  grd_result merge_result =
+      name_run_merge(&words, word_runs, parser_thread_count, parser_thread_count);
+  if (merge_result == GRD_SUCCESS) {
+    merge_result = name_run_merge(&display, display_runs, parser_thread_count, parser_thread_count);
+  }
   if (merge_result != GRD_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to merge collected place names (grd_result %d).", (int)merge_result);
+    fatal(ERROR_MEMORY, "Failed to merge the collected texts (grd_result %d).", (int)merge_result);
   }
 
   char nameBytesBuffer[32];
   format_byte_units(nameBytesBuffer, sizeof(nameBytesBuffer), meta_allocated, 2);
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  size_t stored = 0;
-  for (unsigned i = 0; i < parser_thread_count; ++i) { stored += parser_args[i].run.count; }
+  uint64_t inputs = 0, repeated = 0, dropped = 0;
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    inputs += parser_args[i].tokenizer.inputs;
+    repeated += parser_args[i].tokenizer.repeated;
+    dropped += parser_args[i].tokenizer.dropped;
+  }
   printf(
-      "\nSuchbegriffe: %zu gesehen, %zu eindeutig (%s Textspeicher) in %s\n",
-      names.total, names.count, nameBytesBuffer, timeUsedBuffer
+      "\nTexte: %" PRIu64 " angeboten, %" PRIu64 " als Wiederholung übersprungen\n", inputs,
+      repeated
   );
-  printf("  davon je Thread eindeutig: %zu\n", stored);
+  printf("Wörter: %zu gesehen, %zu eindeutig\n", words.total, words.count);
+  printf("Schreibweisen: %zu gesehen, %zu eindeutig\n", display.total, display.count);
+  printf("  Textspeicher: %s, sortiert und vereinigt in %s\n", nameBytesBuffer, timeUsedBuffer);
+  if (dropped) { printf("  verworfen (kein Platz): %" PRIu64 "\n", dropped); }
   char treeBytesBuffer[32];
-  format_byte_units(treeBytesBuffer, sizeof(treeBytesBuffer), prefix_tree_memory(&names.prefixes), 2);
+  format_byte_units(
+      treeBytesBuffer, sizeof(treeBytesBuffer), prefix_tree_memory(&words.prefixes), 2
+  );
   printf(
-      "Prefix-Gruppen: %zu (Index-Tree: Tiefe %u, %zu Ebenen, %s)\n",
-      names.group_count, NAME_PREFIX_DEPTH, names.prefixes.levels, treeBytesBuffer
+      "Prefix-Gruppen: %zu (Index-Tree: Tiefe %u, %zu Ebenen, %s)\n", words.group_count,
+      NAME_PREFIX_DEPTH, words.prefixes.levels, treeBytesBuffer
+  );
+
+  /* the runs have handed their words to the merged sets */
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    name_run_free(&parser_args[i].word_run);
+    name_run_free(&parser_args[i].display_run);
+  }
+
+  /* =======================================================================
+   *  Second pass: places, and which words point at them
+   * ======================================================================= */
+
+  printf("\nDurchlauf 2 von 2: Dokumente und Posting-Listen\n");
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    parser_args[i].word_set = &words;
+    parser_args[i].display_set = &display;
+    parser_args[i].document_result = GRD_SUCCESS;
+    if (doc_collector_init(&parser_args[i].documents) != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to init document collector for parser thread %u.", i);
+    }
+    /* every occurrence counts now — a posting belongs to its document even
+       when the same text came by a moment ago */
+    parser_args[i].tokenizer.repetition_filter = 0;
+  }
+
+  run_pass(
+      PARSER_PASS_DOCUMENTS, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
+      &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
   );
   grdu_mono_timer_reset(&timeUsed);
 
+  DocCollector *doc_collectors[10];
+  uint64_t unknown_words = 0;
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    if (parser_args[i].document_result != GRD_SUCCESS) {
+      fatal(
+          ERROR_MEMORY, "Parser thread %u failed to collect documents (grd_result %d).", i,
+          (int)parser_args[i].document_result
+      );
+    }
+    doc_collectors[i] = &parser_args[i].documents;
+    unknown_words += parser_args[i].documents.dropped_words;
+  }
+
+  DocSet documents;
+  grd_result doc_result =
+      doc_collector_merge(&documents, doc_collectors, parser_thread_count, words.count);
+  if (doc_result != GRD_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to join the documents (grd_result %d).", (int)doc_result);
+  }
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf(
+      "Dokumente: %zu aus %zu Segmenten, Postings: %zu — vereinigt in %s\n",
+      documents.document_count, documents.segment_count, documents.posting_count, timeUsedBuffer
+  );
+  if (unknown_words) { printf("  Wörter ohne Rang: %" PRIu64 " (sollte 0 sein)\n", unknown_words); }
+  grdu_mono_timer_reset(&timeUsed);
+
+  /* --- the result lies down in the shape it will be read in --- */
+  grd_result write_result = geo_index_write(index_path, &words, &display, &documents, words.total);
+  if (write_result != GRD_SUCCESS) {
+    fatal(ERROR_IO, "Failed to write index '%s' (grd_result %d).", index_path, (int)write_result);
+  }
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf("Index geschrieben nach '%s' in %s\n", index_path, timeUsedBuffer);
+
   printf("Cleaning up...\n");
 
-  name_set_free(&names);
+  doc_set_free(&documents);
+  name_set_free(&words);
+  name_set_free(&display);
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    name_run_free(&parser_args[i].run);
-    name_collector_free(&parser_args[i].names);
+    doc_collector_free(&parser_args[i].documents);
+    name_collector_free(&parser_args[i].words);
+    name_collector_free(&parser_args[i].display);
     meta_area_allocator_destroy(parser_args[i].meta_alloc);
   }
-  parse_queue_destroy(parse_queue);
   buffer_pool_destroy(&buffer_pool);
   free(outputBuffer);
   free(inputBuffer);
-
   ZSTD_freeDStream(dstream);
-
   fclose(fp);
 
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsedAll);
   printf("All finished in %s.\n", timeUsedBuffer);
   return 0;
+}
+
+/* =========================================================================
+ *  The short way: a finished index
+ * ========================================================================= */
+
+/**
+ * @brief Map a finished index and report what it holds.
+ *
+ *  Mapping is constant time — the numbers below appear before the disk has
+ *  been touched beyond the header.
+ *
+ *  @param[in] index_path  File written by a previous build.
+ *  @return 0 on success; a failed open ends the program through fatal().
+ */
+/** Print one display text, or a placeholder when the entry never carried it. */
+static void print_display(const GeoIndex *index, uint32_t rank) {
+  if (rank == GEO_RANK_NONE) {
+    printf("—");
+    return;
+  }
+  size_t size = 0;
+  const char *text = geo_dictionary_word(&index->display, rank, &size);
+  printf("%.*s", (int)size, text ? text : "");
+}
+
+/** Show what a query found: the place as it is written, and where it lies. */
+static void print_hits(const GeoIndex *index, const GeoHit *hits, size_t count, const char *query) {
+  if (!count) {
+    printf("Keine Treffer für '%s'.\n", query);
+    return;
+  }
+  printf("Treffer für '%s':\n", query);
+  for (size_t i = 0; i < count; ++i) {
+    const GeoDocument *document = &index->documents[hits[i].document];
+    printf("  ");
+    print_display(index, document->name_rank);
+    printf(", ");
+    print_display(index, document->postcode_rank);
+    printf(" ");
+    print_display(index, document->city_rank);
+    if (document->flags & GEO_DOCUMENT_HAS_POINT) {
+      printf("  →  %.7f, %.7f", document->lat_e7 / 1.0e7, document->lon_e7 / 1.0e7);
+    } else {
+      printf("  →  ohne Koordinate");
+    }
+    printf("  (Typ %u, Gewicht %u)\n", document->type, document->importance);
+  }
+}
+
+static int open_index(const char *index_path, const char *query, size_t result_limit) {
+  grdu_mono_timer timeUsed;
+  grdu_mono_timer_init();
+  grdu_mono_timer_reset(&timeUsed);
+
+  GeoIndex index;
+  grd_result result = geo_index_open(&index, index_path);
+  if (result != GRD_SUCCESS) {
+    fatal(ERROR_IO, "Cannot open index '%s' (grd_result %d).", index_path, (int)result);
+  }
+
+  char timeUsedBuffer[32], sizeBuffer[32], textBuffer[32], displayBuffer[32], treeBuffer[32];
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  format_byte_units(sizeBuffer, sizeof(sizeBuffer), index.size, 2);
+  format_byte_units(textBuffer, sizeof(textBuffer), index.words.text_size, 2);
+  format_byte_units(displayBuffer, sizeof(displayBuffer), index.display.text_size, 2);
+  format_byte_units(treeBuffer, sizeof(treeBuffer), prefix_tree_memory(&index.words.prefixes), 2);
+
+  printf("Index '%s' geöffnet in %s\n", index_path, timeUsedBuffer);
+  printf("  Datei:          %s\n", sizeBuffer);
+  printf(
+      "  Wörter:         %zu (%s Text, %zu Prefix-Gruppen, Tree %s)\n", index.words.word_count,
+      textBuffer, index.words.group_count, treeBuffer
+  );
+  printf("  Schreibweisen:  %zu (%s Text)\n", index.display.word_count, displayBuffer);
+  printf("  Dokumente:      %zu\n", index.document_count);
+  printf("  Postings:       %zu\n", index.posting_count);
+  printf("  Begriffe beim Bauen gesehen: %" PRIu64 "\n", index.total_terms);
+
+  if (query) {
+    TextTokenizer tokenizer;
+    text_tokenizer_init(&tokenizer);
+    GeoHit hits[64];
+    if (result_limit > sizeof(hits) / sizeof(hits[0]))
+      result_limit = sizeof(hits) / sizeof(hits[0]);
+
+    grdu_mono_timer queryTime;
+    grdu_mono_timer_reset(&queryTime);
+    size_t count = geo_index_query(&index, &tokenizer, query, strlen(query), hits, result_limit);
+    grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
+
+    printf("\n");
+    print_hits(&index, hits, count, query);
+    printf("Gesucht in %s.\n", timeUsedBuffer);
+  }
+
+  geo_index_close(&index);
+  return 0;
+}
+
+/* =========================================================================
+ *  Command line
+ * ========================================================================= */
+
+static bool has_extension(const char *path, const char *extension) {
+  size_t path_size = strlen(path);
+  size_t extension_size = strlen(extension);
+  if (path_size < extension_size) return false;
+  return strcasecmp(path + path_size - extension_size, extension) == 0;
+}
+
+/**
+ * @brief Derive the index path from the dump path.
+ *
+ *  `planet.jsonl.zst` becomes `planet.gdx` — the known dump suffixes fall
+ *  away, everything else keeps its name.
+ */
+static void derive_index_path(char *out, size_t size, const char *dump_path) {
+  static const char *const suffixes[] = {".jsonl.zst", ".json.zst", ".zst", ".jsonl"};
+  size_t length = strlen(dump_path);
+  for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+    size_t suffix_size = strlen(suffixes[i]);
+    if (length >= suffix_size && strcasecmp(dump_path + length - suffix_size, suffixes[i]) == 0) {
+      length -= suffix_size;
+      break;
+    }
+  }
+  if (length + strlen(GEO_INDEX_EXTENSION) + 1 > size) {
+    fatal(ERROR_USAGE, "Path '%s' is too long to derive an index name from.", dump_path);
+  }
+  memcpy(out, dump_path, length);
+  strcpy(out + length, GEO_INDEX_EXTENSION);
+}
+
+/** Vorgabe für die Anzahl gezeigter Treffer. */
+#define DEFAULT_RESULT_LIMIT 10
+
+static void print_usage(const char *program) {
+  fatal(
+      ERROR_USAGE,
+      "Usage:\n"
+      "  %s <photon_dump.jsonl.zst> [index%s] [parser_threads: 1-10]\n"
+      "      Baut den Suchindex aus dem Dump und schreibt ihn als Binärdatei.\n"
+      "      Ohne Zielangabe entsteht der Name aus dem Dump (planet.jsonl.zst -> planet%s).\n"
+      "      Vorgabe für parser_threads: 4.\n"
+      "\n"
+      "  %s <index%s> [\"Suchanfrage\"] [max_treffer]\n"
+      "      Lädt einen fertigen Index per mmap, zeigt seine Kennzahlen und —\n"
+      "      wenn eine Anfrage dabeisteht — die Orte, die alle ihre Wörter tragen.\n"
+      "      Die Wörter dürfen in beliebiger Reihenfolge stehen.\n"
+      "      Vorgabe für max_treffer: %d.\n"
+      "\n"
+      "Der Pfad entscheidet über den Weg: endet die Datei auf %s, wird geladen,\n"
+      "sonst wird gebaut.\n"
+      "\n"
+      "Beispiele:\n"
+      "  %s planet.jsonl.zst 8\n"
+      "  %s planet%s \"Berlin, Superstraße\"\n"
+      "  %s planet%s \"15328 Bleyen\" 5",
+      program, GEO_INDEX_EXTENSION, GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION,
+      DEFAULT_RESULT_LIMIT, GEO_INDEX_EXTENSION, program, program, GEO_INDEX_EXTENSION, program,
+      GEO_INDEX_EXTENSION
+  );
+}
+
+/** Read a positive count, or end the program saying what was wrong. */
+static unsigned parse_count(const char *text, unsigned low, unsigned high, const char *name) {
+  char *end;
+  unsigned long value = strtoul(text, &end, 10);
+  if (*text == '\0' || *end != '\0' || value < low || value > high) {
+    fatal(ERROR_USAGE, "%s must be between %u and %u.", name, low, high);
+  }
+  return (unsigned)value;
+}
+
+int main(int argc, char *argv[]) {
+  if (argc < 2 || argc > 4) { print_usage(argv[0]); }
+
+  const char *input = argv[1];
+  if (has_extension(input, GEO_INDEX_EXTENSION)) {
+    const char *query = argc >= 3 ? argv[2] : NULL;
+    unsigned limit = argc == 4 ? parse_count(argv[3], 1, 64, "max_treffer") : DEFAULT_RESULT_LIMIT;
+    return open_index(input, query, limit);
+  }
+
+  /* `dump.jsonl.zst 8` means eight threads, not a file called "8" */
+  bool second_is_count = argc == 3 && argv[2][strspn(argv[2], "0123456789")] == '\0';
+
+  char derived[4096];
+  const char *index_path;
+  if (argc >= 3 && !second_is_count) {
+    index_path = argv[2];
+  } else {
+    derive_index_path(derived, sizeof(derived), input);
+    index_path = derived;
+  }
+  unsigned parser_thread_count = 4;
+  if (second_is_count) {
+    parser_thread_count = parse_count(argv[2], 1, 10, "parser_threads");
+  } else if (argc == 4) {
+    parser_thread_count = parse_count(argv[3], 1, 10, "parser_threads");
+  }
+
+  grdu_mono_timer_init();
+  return build_index(input, index_path, parser_thread_count);
 }

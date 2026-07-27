@@ -16,7 +16,8 @@ typedef struct PrefixLeaf {
 
 /** Open a fresh level for depth @p level — a leaf at the last character. */
 static void *level_alloc(PrefixTree *tree, unsigned level) {
-  void *block = level + 1 == tree->depth ? calloc(1, sizeof(PrefixLeaf)) : calloc(1, sizeof(PrefixNode));
+  void *block =
+      level + 1 == tree->depth ? calloc(1, sizeof(PrefixLeaf)) : calloc(1, sizeof(PrefixNode));
   if (block) ++tree->levels;
   return block;
 }
@@ -112,7 +113,11 @@ size_t prefix_tree_memory(const PrefixTree *tree) {
 
 /** Walk one level in ascending slot order, carrying the key built so far. */
 static int level_walk(
-    const void *block, unsigned level, unsigned depth, uint8_t *key, PrefixTreeVisitor visit,
+    const void *block,
+    unsigned level,
+    unsigned depth,
+    uint8_t *key,
+    PrefixTreeVisitor visit,
     void *user_data
 ) {
   if (level + 1 == depth) {

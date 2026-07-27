@@ -21,7 +21,9 @@ static PhotonString string_of(yyjson_val *value) {
   return result;
 }
 
-static PhotonString localized(yyjson_val *object, const char *german_key, const char *fallback_key) {
+static PhotonString localized(
+    yyjson_val *object, const char *german_key, const char *fallback_key
+) {
   yyjson_val *value = yyjson_obj_get(object, german_key);
   if (fallback_key && !yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
   return string_of(value);
@@ -38,10 +40,10 @@ static PhotonString place_name(yyjson_val *place) {
   return yyjson_is_obj(names) ? localized(names, "name:de", "name") : empty;
 }
 
-static PhotonPlaceType detectTypeEnum(const char* type)
-{
+static PhotonPlaceType detectTypeEnum(const char *type) {
   if (type) {
-    if (type[0] == 'h') return PHOTON_PLACE_TYPE_HOUSE;
+    if (type[0] == 'h')
+      return PHOTON_PLACE_TYPE_HOUSE;
     else if (type[0] == 's') {
       if (type[2] == 'r') return PHOTON_PLACE_TYPE_STREET;
       if (type[2] == 'a') return PHOTON_PLACE_TYPE_STATE;
@@ -106,7 +108,9 @@ static void search_add_array(PhotonPlace *p, yyjson_val *array) {
   if (!yyjson_is_arr(array)) return;
   size_t index, max;
   yyjson_val *item;
-  yyjson_arr_foreach(array, index, max, item) { search_add(p, string_of(item)); }
+  yyjson_arr_foreach(array, index, max, item) {
+    search_add(p, string_of(item));
+  }
 }
 
 /* =========================================================================
@@ -119,20 +123,27 @@ typedef enum AddressRole {
   ADDRESS_ROLE_STREET,
   ADDRESS_ROLE_POSTCODE,
   ADDRESS_ROLE_HOUSE,
-  ADDRESS_ROLE_CITY_DE,   /**< localized variant, preferred over the plain one */
+  ADDRESS_ROLE_CITY_DE, /**< localized variant, preferred over the plain one */
   ADDRESS_ROLE_STREET_DE
 } AddressRole;
 
 /** Recognise the four keys an answer needs; everything else stays role-free. */
 static AddressRole address_role(const char *key, size_t key_size) {
   switch (key_size) {
-  case 4: return memcmp(key, "city", 4) == 0 ? ADDRESS_ROLE_CITY : ADDRESS_ROLE_NONE;
-  case 6: return memcmp(key, "street", 6) == 0 ? ADDRESS_ROLE_STREET : ADDRESS_ROLE_NONE;
-  case 7: return memcmp(key, "city:de", 7) == 0 ? ADDRESS_ROLE_CITY_DE : ADDRESS_ROLE_NONE;
-  case 8: return memcmp(key, "postcode", 8) == 0 ? ADDRESS_ROLE_POSTCODE : ADDRESS_ROLE_NONE;
-  case 9: return memcmp(key, "street:de", 9) == 0 ? ADDRESS_ROLE_STREET_DE : ADDRESS_ROLE_NONE;
-  case 11: return memcmp(key, "housenumber", 11) == 0 ? ADDRESS_ROLE_HOUSE : ADDRESS_ROLE_NONE;
-  default: return ADDRESS_ROLE_NONE;
+  case 4:
+    return memcmp(key, "city", 4) == 0 ? ADDRESS_ROLE_CITY : ADDRESS_ROLE_NONE;
+  case 6:
+    return memcmp(key, "street", 6) == 0 ? ADDRESS_ROLE_STREET : ADDRESS_ROLE_NONE;
+  case 7:
+    return memcmp(key, "city:de", 7) == 0 ? ADDRESS_ROLE_CITY_DE : ADDRESS_ROLE_NONE;
+  case 8:
+    return memcmp(key, "postcode", 8) == 0 ? ADDRESS_ROLE_POSTCODE : ADDRESS_ROLE_NONE;
+  case 9:
+    return memcmp(key, "street:de", 9) == 0 ? ADDRESS_ROLE_STREET_DE : ADDRESS_ROLE_NONE;
+  case 11:
+    return memcmp(key, "housenumber", 11) == 0 ? ADDRESS_ROLE_HOUSE : ADDRESS_ROLE_NONE;
+  default:
+    return ADDRESS_ROLE_NONE;
   }
 }
 
@@ -187,16 +198,23 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
       case ADDRESS_ROLE_CITY:
         if (!p->city.data) p->city = text;
         break;
-      case ADDRESS_ROLE_CITY_DE: p->city = text; break;
+      case ADDRESS_ROLE_CITY_DE:
+        p->city = text;
+        break;
       case ADDRESS_ROLE_STREET:
         if (!p->street.data) p->street = text;
         break;
-      case ADDRESS_ROLE_STREET_DE: p->street = text; break;
+      case ADDRESS_ROLE_STREET_DE:
+        p->street = text;
+        break;
       case ADDRESS_ROLE_POSTCODE:
         if (!p->postcode.data) p->postcode = text;
         break;
-      case ADDRESS_ROLE_HOUSE: p->house = text; break;
-      default: break;
+      case ADDRESS_ROLE_HOUSE:
+        p->house = text;
+        break;
+      default:
+        break;
       }
       /* Parent text enters the dictionary through the parent's own entry —
          "Brandenburg" is a state document of its own. Carrying every language
@@ -229,11 +247,16 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   case PHOTON_PLACE_TYPE_HOUSE:
     if (!p->house.data) p->house = p->own_name;
     break;
-  case PHOTON_PLACE_TYPE_STREET: p->street = p->own_name; break;
+  case PHOTON_PLACE_TYPE_STREET:
+    p->street = p->own_name;
+    break;
   case PHOTON_PLACE_TYPE_CITY:
   case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
-  case PHOTON_PLACE_TYPE_INDEPENDENT_CITY: p->city = p->own_name; break;
-  default: break;
+  case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
+    p->city = p->own_name;
+    break;
+  default:
+    break;
   }
 
   /* --- centroid --- */
@@ -252,8 +275,7 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
 /* =========================================================================
  *  Public API
  * ========================================================================= */
-bool photon_place_has_point(const PhotonPlace* place)
-{
+bool photon_place_has_point(const PhotonPlace *place) {
   return place->has_point;
 }
 
@@ -323,17 +345,17 @@ int json_parse_line(
     PhotonPlace place;
     ResultType extractResult = extract_place(entry, &place);
     if (extractResult == RESULT_ERROR_UNKNOWN_TYPE) {
-      char* buf = (char*)calloc(1, len+1);
+      char *buf = (char *)calloc(1, len + 1);
       memcpy(buf, line, len);
       fatal(ERROR_JSON, "unknown type: %s", buf);
-    } else if (extractResult == RESULT_ERROR_MISSING_TYPE)  {
-      char* buf = (char*)calloc(1, len+1);
+    } else if (extractResult == RESULT_ERROR_MISSING_TYPE) {
+      char *buf = (char *)calloc(1, len + 1);
       memcpy(buf, line, len);
       fatal(ERROR_JSON, "missing type: %s", buf);
     } else if (extractResult == RESULT_SKIP) {
     } else if (extractResult == RESULT_SUCCESS) {
-      if(callback(&place, user_data)) {
-        char* buf = (char*)calloc(1, len+1);
+      if (callback(&place, user_data)) {
+        char *buf = (char *)calloc(1, len + 1);
         memcpy(buf, line, len);
         printf("callback error with: %s\n\n", buf);
         free(buf);
@@ -357,57 +379,60 @@ static void add_string_field(
 }
 
 char *photon_place_to_json(const PhotonPlace *place) {
-    static __thread char buf[4096];
-    if (!place) {
-        snprintf(buf, sizeof(buf), "null");
-        return buf;
-    }
-
-    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
-    if (!doc) {
-        snprintf(buf, sizeof(buf), "{\"error\":\"failed to create JSON document\"}");
-        return buf;
-    }
-
-    yyjson_mut_val *root = yyjson_mut_obj(doc);
-    if (!root) {
-        yyjson_mut_doc_free(doc);
-        snprintf(buf, sizeof(buf), "{\"error\":\"failed to create JSON object\"}");
-        return buf;
-    }
-    yyjson_mut_doc_set_root(doc, root);
-
-    if (place->type)         yyjson_mut_obj_add_str(doc, root, "type",         place->type);
-    add_string_field(doc, root, "name",     place->own_name);
-    add_string_field(doc, root, "street",   place->street);
-    add_string_field(doc, root, "house",    place->house);
-    add_string_field(doc, root, "postcode", place->postcode);
-    add_string_field(doc, root, "city",     place->city);
-    if (place->country_code) yyjson_mut_obj_add_str(doc, root, "country_code", place->country_code);
-
-    yyjson_mut_obj_add_real(doc, root, "importance", place->importance);
-    yyjson_mut_obj_add_int(doc, root, "lon_e7",      place->lon_e7);
-    yyjson_mut_obj_add_int(doc, root, "lat_e7",      place->lat_e7);
-    yyjson_mut_obj_add_bool(doc, root, "has_point",  place->has_point);
-
-    yyjson_mut_val *search = yyjson_mut_arr(doc);
-    for (uint8_t i = 0; i < place->search_count; ++i) {
-      yyjson_mut_arr_add_strn(doc, search, place->search[i].data, place->search[i].size);
-    }
-    yyjson_mut_obj_add_val(doc, root, "search", search);
-
-    size_t len = 0;
-    const char *json = yyjson_mut_write(doc, 0, &len);
-    if (json && len < sizeof(buf)) {
-        memcpy(buf, json, len);
-        buf[len] = '\0';
-    } else {
-        snprintf(buf, sizeof(buf), "{\"error\":\"serialization failed\", \"len\":\"%zu\"}, json: %s", len, json);
-    }
-    free((void *)json);
-    yyjson_mut_doc_free(doc);
-
+  static __thread char buf[4096];
+  if (!place) {
+    snprintf(buf, sizeof(buf), "null");
     return buf;
+  }
+
+  yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+  if (!doc) {
+    snprintf(buf, sizeof(buf), "{\"error\":\"failed to create JSON document\"}");
+    return buf;
+  }
+
+  yyjson_mut_val *root = yyjson_mut_obj(doc);
+  if (!root) {
+    yyjson_mut_doc_free(doc);
+    snprintf(buf, sizeof(buf), "{\"error\":\"failed to create JSON object\"}");
+    return buf;
+  }
+  yyjson_mut_doc_set_root(doc, root);
+
+  if (place->type) yyjson_mut_obj_add_str(doc, root, "type", place->type);
+  add_string_field(doc, root, "name", place->own_name);
+  add_string_field(doc, root, "street", place->street);
+  add_string_field(doc, root, "house", place->house);
+  add_string_field(doc, root, "postcode", place->postcode);
+  add_string_field(doc, root, "city", place->city);
+  if (place->country_code) yyjson_mut_obj_add_str(doc, root, "country_code", place->country_code);
+
+  yyjson_mut_obj_add_real(doc, root, "importance", place->importance);
+  yyjson_mut_obj_add_int(doc, root, "lon_e7", place->lon_e7);
+  yyjson_mut_obj_add_int(doc, root, "lat_e7", place->lat_e7);
+  yyjson_mut_obj_add_bool(doc, root, "has_point", place->has_point);
+
+  yyjson_mut_val *search = yyjson_mut_arr(doc);
+  for (uint8_t i = 0; i < place->search_count; ++i) {
+    yyjson_mut_arr_add_strn(doc, search, place->search[i].data, place->search[i].size);
+  }
+  yyjson_mut_obj_add_val(doc, root, "search", search);
+
+  size_t len = 0;
+  const char *json = yyjson_mut_write(doc, 0, &len);
+  if (json && len < sizeof(buf)) {
+    memcpy(buf, json, len);
+    buf[len] = '\0';
+  } else {
+    snprintf(
+        buf, sizeof(buf), "{\"error\":\"serialization failed\", \"len\":\"%zu\"}, json: %s", len,
+        json
+    );
+  }
+  free((void *)json);
+  yyjson_mut_doc_free(doc);
+
+  return buf;
 }
 
 /** @endcond */

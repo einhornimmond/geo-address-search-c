@@ -84,7 +84,7 @@ static grd_result try_alloc_from(MetaAreaAllocator *m, size_t i, uint8_t **out, 
     m->total_alloc += size;
   } else {
     if (arena->arena.last_index + META_ARENA_FULL_REMAINING > arena->arena.capacity) {
-      m->last_hint = i+1;
+      m->last_hint = i + 1;
     }
   }
   return result;

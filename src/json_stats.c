@@ -1,25 +1,47 @@
 #include "json_stats.h"
-#include "json_parse.h"
 #include "error.h"
+#include "json_parse.h"
 #include <inttypes.h>
 #include <stdio.h>
 
 static void count_address_type(JsonStats *stats, PhotonPlaceType address_type) {
-  switch(address_type) {
-    case PHOTON_PLACE_TYPE_HOUSE: ++stats->houses; break;
-    case PHOTON_PLACE_TYPE_STREET: ++stats->streets; break;
-    case PHOTON_PLACE_TYPE_CITY: ++stats->cities; break;
-    case PHOTON_PLACE_TYPE_STATE: ++stats->states; break;
-    case PHOTON_PLACE_TYPE_COUNTY: ++stats->counties; break;
-    case PHOTON_PLACE_TYPE_LOCALITY: ++stats->localities; break;
-    case PHOTON_PLACE_TYPE_DISTRICT: ++stats->districts; break;
-    case PHOTON_PLACE_TYPE_COUNTRY: ++stats->countries; break;
-    case PHOTON_PLACE_TYPE_OTHER: ++stats->other; break;
-    case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY: ++stats->state_cities; break;
-    case PHOTON_PLACE_TYPE_INDEPENDENT_CITY: ++stats->independent_cities; break;
-    default: fatal(ERROR_ASSERT, "None or Unknown address type");
+  switch (address_type) {
+  case PHOTON_PLACE_TYPE_HOUSE:
+    ++stats->houses;
+    break;
+  case PHOTON_PLACE_TYPE_STREET:
+    ++stats->streets;
+    break;
+  case PHOTON_PLACE_TYPE_CITY:
+    ++stats->cities;
+    break;
+  case PHOTON_PLACE_TYPE_STATE:
+    ++stats->states;
+    break;
+  case PHOTON_PLACE_TYPE_COUNTY:
+    ++stats->counties;
+    break;
+  case PHOTON_PLACE_TYPE_LOCALITY:
+    ++stats->localities;
+    break;
+  case PHOTON_PLACE_TYPE_DISTRICT:
+    ++stats->districts;
+    break;
+  case PHOTON_PLACE_TYPE_COUNTRY:
+    ++stats->countries;
+    break;
+  case PHOTON_PLACE_TYPE_OTHER:
+    ++stats->other;
+    break;
+  case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
+    ++stats->state_cities;
+    break;
+  case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
+    ++stats->independent_cities;
+    break;
+  default:
+    fatal(ERROR_ASSERT, "None or Unknown address type");
   }
-
 }
 
 void json_stats_count_document(JsonStats *stats, const void *result) {

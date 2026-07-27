@@ -183,8 +183,8 @@ grd_result name_collector_finish(NameCollector *collector, NameRun *run) {
   if (!collector || !run) return GRD_ERROR_NULL_POINTER;
   memset(run, 0, sizeof(*run));
 
-  size_t total = collector->size;   /* names actually stored */
-  size_t seen = collector->seen;    /* names offered, for the caller's report */
+  size_t total = collector->size; /* names actually stored */
+  size_t seen = collector->seen;  /* names offered, for the caller's report */
   size_t group_count = prefix_tree_count(&collector->prefixes);
   if (!total || !group_count) {
     name_collector_free(collector);
@@ -244,10 +244,10 @@ typedef struct MergeGroup {
 typedef struct MergeWorker {
   const NameRun *const *runs;
   size_t run_count;
-  const char **flat;   /**< Destination, shared but never overlapping. */
+  const char **flat; /**< Destination, shared but never overlapping. */
   MergeGroup *union_groups;
-  size_t first_group;  /**< First group of this share. */
-  size_t end_group;    /**< One past the last group of this share. */
+  size_t first_group; /**< First group of this share. */
+  size_t end_group;   /**< One past the last group of this share. */
 } MergeWorker;
 
 /**
@@ -362,7 +362,10 @@ static size_t build_union(
  *  shares are legitimate when few groups carry everything.
  */
 static void partition_groups(
-    const MergeGroup *union_groups, size_t union_count, size_t total, unsigned worker_count,
+    const MergeGroup *union_groups,
+    size_t union_count,
+    size_t total,
+    unsigned worker_count,
     size_t *bounds
 ) {
   bounds[0] = 0;
@@ -501,6 +504,38 @@ const NameGroup *name_set_find(const NameSet *set, const char *name, size_t name
   size_t index = 0;
   if (!prefix_tree_find(&set->prefixes, key, &index) || index >= set->group_count) return NULL;
   return &set->groups[index];
+}
+
+bool name_set_rank(const NameSet *set, const char *word, size_t size, size_t *out_rank) {
+  const NameGroup *group = name_set_find(set, word, size);
+  if (!group) return false;
+
+  /* the group carries the leading bytes; only the remainder is compared, and
+     the caller's word need not be NUL-terminated — its length is the truth */
+  size_t carried = size < NAME_PREFIX_DEPTH ? size : NAME_PREFIX_DEPTH;
+  const char *rest = word + carried;
+  size_t rest_size = size - carried;
+
+  size_t low = group->start;
+  size_t high = group->start + group->count;
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+    const char *candidate = set->names[middle];
+    size_t candidate_size = strlen(candidate);
+    size_t shared = candidate_size < rest_size ? candidate_size : rest_size;
+    int order = shared ? memcmp(candidate, rest, shared) : 0;
+    if (order == 0 && candidate_size != rest_size) { order = candidate_size < rest_size ? -1 : 1; }
+    if (order == 0) {
+      if (out_rank) *out_rank = middle;
+      return true;
+    }
+    if (order < 0) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return false;
 }
 
 const NameGroup *name_set_group_at(const NameSet *set, size_t group_index) {
