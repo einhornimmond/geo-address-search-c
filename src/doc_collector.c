@@ -281,7 +281,8 @@ grd_result doc_collector_merge(
         }
       } else if (better_display(&piece, &documents[cluster_base + cluster])) {
         GeoDocument *held = &documents[cluster_base + cluster];
-        uint16_t importance = held->importance > piece.importance ? held->importance : piece.importance;
+        uint16_t importance =
+            held->importance > piece.importance ? held->importance : piece.importance;
         *held = piece;
         held->importance = importance;
       } else if (piece.importance > documents[cluster_base + cluster].importance) {

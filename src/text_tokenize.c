@@ -266,7 +266,9 @@ static const struct {
  * ========================================================================= */
 
 /** Append one word unless it is already there. */
-static void token_add(TextTokenizer *tokenizer, const char *data, size_t size) {
+static void token_add(
+    TextTokenizer *tokenizer, const char *data, size_t size, uint16_t group, uint8_t part
+) {
   if (!size) return;
   for (size_t i = 0; i < tokenizer->token_count; ++i) {
     if (tokenizer->tokens[i].size == size && memcmp(tokenizer->tokens[i].data, data, size) == 0) {
@@ -279,6 +281,8 @@ static void token_add(TextTokenizer *tokenizer, const char *data, size_t size) {
   }
   tokenizer->tokens[tokenizer->token_count].data = data;
   tokenizer->tokens[tokenizer->token_count].size = size;
+  tokenizer->tokens[tokenizer->token_count].group = group;
+  tokenizer->tokens[tokenizer->token_count].part = part;
   ++tokenizer->token_count;
 }
 
@@ -297,7 +301,7 @@ static const char *buffer_put(TextTokenizer *tokenizer, const char *text, size_t
 /**
  * @brief Close one folded word: expand it, keep it, and let a compound fall apart.
  */
-static void word_finish(TextTokenizer *tokenizer, const char *word, size_t size) {
+static void word_finish(TextTokenizer *tokenizer, const char *word, size_t size, uint16_t group) {
   if (!size) return;
 
   /* --- an abbreviation stands for its full word, and only for that --- */
@@ -330,15 +334,15 @@ static void word_finish(TextTokenizer *tokenizer, const char *word, size_t size)
     break;
   }
 
-  token_add(tokenizer, word, size);
+  token_add(tokenizer, word, size, group, 0);
 
   /* --- a compound also names its parts --- */
   for (size_t i = 0; i < sizeof(COMPOUND_TAILS) / sizeof(COMPOUND_TAILS[0]); ++i) {
     size_t tail = COMPOUND_TAILS[i].size;
     if (size <= tail + COMPOUND_HEAD_MIN - 1) continue;
     if (memcmp(word + size - tail, COMPOUND_TAILS[i].word, tail) != 0) continue;
-    token_add(tokenizer, word, size - tail);
-    token_add(tokenizer, word + size - tail, tail);
+    token_add(tokenizer, word, size - tail, group, 1);
+    token_add(tokenizer, word + size - tail, tail, group, 1);
     break;
   }
 }
@@ -347,6 +351,9 @@ static void word_finish(TextTokenizer *tokenizer, const char *word, size_t size)
 static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, int german) {
   int special = 0;
   size_t word_start = tokenizer->used;
+  /* both readings walk the same input and break at the same places, so the
+     n-th word of one is the n-th word of the other */
+  uint16_t group = 0;
 
   for (size_t pos = 0; pos < size;) {
     uint32_t code;
@@ -355,7 +362,10 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
     char folded[4];
     size_t written = 0;
     if (fold_code(code, german, folded, &written, &special) == FOLD_SEPARATOR || !written) {
-      word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start);
+      if (tokenizer->used > word_start) {
+        word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group);
+        ++group;
+      }
       word_start = tokenizer->used;
       continue;
     }
@@ -366,7 +376,7 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
     memcpy(tokenizer->buffer + tokenizer->used, folded, written);
     tokenizer->used += written;
   }
-  word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start);
+  word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group);
   return special;
 }
 

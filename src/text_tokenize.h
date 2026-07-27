@@ -29,6 +29,13 @@
  *
  *  Every word appears once; repetitions within one input dissolve.
  *
+ *  Each token remembers which word of the input it came from and whether it is
+ *  that word or only a piece of it.  A searcher needs the distinction: the two
+ *  readings of *München* are alternatives and must be **or**-ed, while
+ *  *München* and *Marienplatz* are separate demands and must be **and**-ed.
+ *  Whoever ignores the grouping asks for a place that is spelled both ways at
+ *  once.
+ *
  *  ### Repetition filter
  *
  *  The dump offers the same parent text again and again in immediate
@@ -65,6 +72,8 @@ enum {
 typedef struct TextToken {
   const char *data; /**< Folded bytes, not NUL-terminated. */
   size_t size;      /**< Byte length. */
+  uint16_t group;   /**< Which word of the input this came from. */
+  uint8_t part;     /**< Set when this is a piece of a compound, not the word itself. */
 } TextToken;
 
 /** An input the filter remembers verbatim. */

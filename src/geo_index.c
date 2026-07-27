@@ -13,6 +13,9 @@
 /** Sections begin on an 8-byte boundary so every record stays naturally aligned. */
 #define GEO_INDEX_ALIGNMENT 8u
 
+/** A frozen bitmap is a memory image and must begin on a 32-byte boundary. */
+#define GEO_INDEX_BITMAP_ALIGNMENT 32u
+
 /* =========================================================================
  *  Layout fingerprint
  * ========================================================================= */
@@ -49,15 +52,20 @@ static size_t key_length(const uint8_t *key) {
  *  Writing
  * ========================================================================= */
 
-/** Pad the file to the next section boundary. */
-static grd_result pad_to_alignment(FILE *file, uint64_t *position) {
-  static const char zeros[GEO_INDEX_ALIGNMENT] = {0};
-  uint64_t misaligned = *position % GEO_INDEX_ALIGNMENT;
+/** Pad the file until @p position sits on a multiple of @p alignment. */
+static grd_result pad_to(FILE *file, uint64_t *position, uint64_t alignment) {
+  static const char zeros[GEO_INDEX_BITMAP_ALIGNMENT] = {0};
+  uint64_t misaligned = *position % alignment;
   if (!misaligned) return GRD_SUCCESS;
-  size_t padding = GEO_INDEX_ALIGNMENT - (size_t)misaligned;
+  size_t padding = (size_t)(alignment - misaligned);
   if (fwrite(zeros, 1, padding, file) != padding) return GRD_ERROR_ENCODE_FAILED;
   *position += padding;
   return GRD_SUCCESS;
+}
+
+/** Pad the file to the next section boundary. */
+static grd_result pad_to_alignment(FILE *file, uint64_t *position) {
+  return pad_to(file, position, GEO_INDEX_ALIGNMENT);
 }
 
 /** Open one section at the current position. */
@@ -155,6 +163,98 @@ done:
   return result;
 }
 
+/**
+ * @brief Write one Roaring bitmap per word and remember where each begins.
+ *
+ *  The lists arrive sorted and free of doubles, which is exactly what a bitmap
+ *  wants; `run_optimize` then folds long stretches of neighbouring documents
+ *  into runs, which streets in a town readily form.  Only one bitmap exists at
+ *  a time — building seven million of them at once would cost more memory than
+ *  the index itself.
+ *
+ *  The frozen format is written, not the portable one: it is the memory image
+ *  a reader may look at directly, and it keeps keys and type codes inside the
+ *  buffer instead of rebuilding them beside it.  The price is that every
+ *  bitmap must begin on a 32-byte boundary — a few bytes of padding each, in
+ *  exchange for a view that touches nothing misaligned.
+ *
+ *  @param[out] out_offsets  Receives a table of word_count + 1 byte offsets,
+ *                           to be freed by the caller.
+ */
+static grd_result write_postings(
+    FILE *file,
+    uint64_t *position,
+    GeoIndexSection *section,
+    const DocSet *documents,
+    uint64_t **out_offsets
+) {
+  size_t word_count = documents->word_count;
+  uint64_t *offsets = malloc((word_count + 1) * sizeof(*offsets));
+  if (!offsets) return GRD_ERROR_OUT_OF_MEMORY;
+
+  grd_result result = pad_to(file, position, GEO_INDEX_BITMAP_ALIGNMENT);
+  if (result == GRD_SUCCESS) {
+    result = section_begin(file, position, section, GEO_INDEX_SECTION_POSTINGS);
+  }
+  if (result != GRD_SUCCESS) {
+    free(offsets);
+    return result;
+  }
+
+  char *buffer = NULL;
+  size_t buffer_size = 0;
+
+  for (size_t w = 0; w < word_count; ++w) {
+    /* the table holds where the last bitmap ended; the next one begins at the
+       following 32-byte mark, which is exactly what the reader computes */
+    offsets[w] = *position - section->offset;
+
+    uint32_t first = documents->posting_offsets[w];
+    uint32_t last = documents->posting_offsets[w + 1];
+    if (last <= first) continue; /* a word nobody used takes no bytes at all */
+
+    roaring_bitmap_t *bitmap = roaring_bitmap_of_ptr(last - first, documents->postings + first);
+    if (!bitmap) {
+      result = GRD_ERROR_OUT_OF_MEMORY;
+      break;
+    }
+    roaring_bitmap_run_optimize(bitmap);
+
+    result = pad_to(file, position, GEO_INDEX_BITMAP_ALIGNMENT);
+    if (result != GRD_SUCCESS) {
+      roaring_bitmap_free(bitmap);
+      break;
+    }
+    section->size = *position - section->offset;
+
+    size_t needed = roaring_bitmap_frozen_size_in_bytes(bitmap);
+    if (needed > buffer_size) {
+      char *grown = realloc(buffer, needed);
+      if (!grown) {
+        roaring_bitmap_free(bitmap);
+        result = GRD_ERROR_OUT_OF_MEMORY;
+        break;
+      }
+      buffer = grown;
+      buffer_size = needed;
+    }
+    roaring_bitmap_frozen_serialize(bitmap, buffer);
+    roaring_bitmap_free(bitmap);
+
+    result = section_put(file, position, section, buffer, needed);
+    if (result != GRD_SUCCESS) break;
+  }
+  offsets[word_count] = *position - section->offset;
+
+  free(buffer);
+  if (result != GRD_SUCCESS) {
+    free(offsets);
+    return result;
+  }
+  *out_offsets = offsets;
+  return GRD_SUCCESS;
+}
+
 grd_result geo_index_write(
     const char *path,
     const NameSet *words,
@@ -175,6 +275,7 @@ grd_result geo_index_write(
   memset(sections, 0, sizeof(sections));
 
   uint64_t position = sizeof(header) + sizeof(sections);
+  uint64_t *posting_offsets = NULL;
   grd_result result = GRD_ERROR_ENCODE_FAILED;
   if (fseek(file, (long)position, SEEK_SET) != 0) goto failed;
 
@@ -198,19 +299,27 @@ grd_result geo_index_write(
   );
   if (result != GRD_SUCCESS) goto failed;
 
+  /* The bitmaps go down first and tell us their sizes on the way; the table of
+     offsets follows behind them, because only then is it known. */
+  result = write_postings(file, &position, &sections[8], documents, &posting_offsets);
+  if (result != GRD_SUCCESS) goto failed;
+
+  /* the weights travel apart from the records: ranking touches nothing else,
+     and a hundred megabytes of them fit into the caches far better than two
+     gigabytes of full documents */
+  result = section_begin(file, &position, &sections[9], GEO_INDEX_SECTION_IMPORTANCE);
+  if (result != GRD_SUCCESS) goto failed;
+  for (size_t d = 0; d < documents->document_count; ++d) {
+    uint16_t weight = documents->documents[d].importance;
+    result = section_put(file, &position, &sections[9], &weight, sizeof(weight));
+    if (result != GRD_SUCCESS) goto failed;
+  }
+
   result = section_begin(file, &position, &sections[7], GEO_INDEX_SECTION_POSTING_OFFSETS);
   if (result != GRD_SUCCESS) goto failed;
   result = section_put(
-      file, &position, &sections[7], documents->posting_offsets,
-      (documents->word_count + 1) * sizeof(uint32_t)
-  );
-  if (result != GRD_SUCCESS) goto failed;
-
-  result = section_begin(file, &position, &sections[8], GEO_INDEX_SECTION_POSTINGS);
-  if (result != GRD_SUCCESS) goto failed;
-  result = section_put(
-      file, &position, &sections[8], documents->postings,
-      documents->posting_count * sizeof(uint32_t)
+      file, &position, &sections[7], posting_offsets,
+      (documents->word_count + 1) * sizeof(*posting_offsets)
   );
   if (result != GRD_SUCCESS) goto failed;
 
@@ -237,6 +346,7 @@ grd_result geo_index_write(
   result = GRD_SUCCESS;
 
 failed:
+  free(posting_offsets);
   if (fclose(file) != 0 && result == GRD_SUCCESS) result = GRD_ERROR_ENCODE_FAILED;
   return result;
 }
@@ -372,23 +482,31 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
       base, size, sections, header->section_count, GEO_INDEX_SECTION_DOCUMENTS,
       header->document_count * sizeof(GeoDocument), NULL
   );
-  const uint32_t *posting_offsets = section_of(
+  const uint16_t *importance = section_of(
+      base, size, sections, header->section_count, GEO_INDEX_SECTION_IMPORTANCE,
+      header->document_count * sizeof(uint16_t), NULL
+  );
+  const uint64_t *posting_offsets = section_of(
       base, size, sections, header->section_count, GEO_INDEX_SECTION_POSTING_OFFSETS,
-      (header->word_count + 1) * sizeof(uint32_t), NULL
+      (header->word_count + 1) * sizeof(uint64_t), NULL
   );
-  const uint32_t *postings = section_of(
-      base, size, sections, header->section_count, GEO_INDEX_SECTION_POSTINGS,
-      header->posting_count * sizeof(uint32_t), NULL
+  uint64_t posting_bytes = 0;
+  const char *postings = section_of(
+      base, size, sections, header->section_count, GEO_INDEX_SECTION_POSTINGS, 0, &posting_bytes
   );
-  if (!documents || !posting_offsets || !postings) goto refused_dictionaries;
-  if (posting_offsets[header->word_count] != header->posting_count) goto refused_dictionaries;
+  if (!documents || !importance || !posting_offsets || !postings) goto refused_dictionaries;
+  /* The offsets are checked one at a time, when a word is looked up — walking
+     seven million of them here would turn an instant open into a wait. */
+  if (posting_offsets[header->word_count] > posting_bytes) goto refused_dictionaries;
 
   index->base = base;
   index->size = size;
   index->documents = documents;
+  index->importance = importance;
   index->document_count = (size_t)header->document_count;
   index->posting_offsets = posting_offsets;
   index->postings = postings;
+  index->posting_bytes = (size_t)posting_bytes;
   index->posting_count = (size_t)header->posting_count;
   index->total_terms = header->total_terms;
   return GRD_SUCCESS;
@@ -458,46 +576,25 @@ bool geo_dictionary_find(
   return false;
 }
 
-const uint32_t *geo_index_postings(const GeoIndex *index, size_t rank, size_t *out_count) {
-  if (out_count) *out_count = 0;
+const roaring_bitmap_t *geo_index_word_documents(const GeoIndex *index, size_t rank) {
   if (!index || !index->postings || rank >= index->words.word_count) return NULL;
-  uint32_t start = index->posting_offsets[rank];
-  uint32_t end = index->posting_offsets[rank + 1];
-  if (end <= start) return NULL;
-  if (out_count) *out_count = end - start;
-  return index->postings + start;
+  /* the table records where the previous bitmap ended; this one starts at the
+     next 32-byte mark and reaches exactly to the entry behind it */
+  uint64_t previous = index->posting_offsets[rank];
+  uint64_t end = index->posting_offsets[rank + 1];
+  uint64_t start =
+      (previous + GEO_INDEX_BITMAP_ALIGNMENT - 1) & ~(uint64_t)(GEO_INDEX_BITMAP_ALIGNMENT - 1);
+  if (end <= start || end > index->posting_bytes) return NULL; /* empty, or not ours */
+
+  const char *buffer = index->postings + start;
+  if ((uintptr_t)buffer % GEO_INDEX_BITMAP_ALIGNMENT) return NULL; /* not written by us */
+  /* the length must be exact — a frozen bitmap reads its header from the end */
+  return roaring_bitmap_frozen_view(buffer, (size_t)(end - start));
 }
 
 /* =========================================================================
  *  Querying
  * ========================================================================= */
-
-/** A word on more than this share of all documents is treated as filler. */
-#define GEO_QUERY_COMMON_SHARE 100
-
-/** …but never below this many documents, so small indexes keep every word. */
-#define GEO_QUERY_COMMON_FLOOR 1000
-
-/** One word of the query, with the documents that carry it. */
-typedef struct QueryTerm {
-  const uint32_t *documents;
-  size_t count;
-} QueryTerm;
-
-/** Is @p document among an ascending list? */
-static bool list_contains(const uint32_t *documents, size_t count, uint32_t document) {
-  size_t low = 0, high = count;
-  while (low < high) {
-    size_t middle = low + (high - low) / 2;
-    if (documents[middle] == document) return true;
-    if (documents[middle] < document) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return false;
-}
 
 /** Keep the heaviest hits in order, without ever growing beyond @p limit. */
 static size_t hit_insert(GeoHit *hits, size_t count, size_t limit, GeoHit candidate) {
@@ -509,6 +606,43 @@ static size_t hit_insert(GeoHit *hits, size_t count, size_t limit, GeoHit candid
   }
   hits[position] = candidate;
   return count < limit ? count + 1 : count;
+}
+
+/** The readings of one query word — alternatives, never demands of their own. */
+typedef struct QueryGroup {
+  const roaring_bitmap_t *readings[4];
+  size_t reading_count;
+  uint64_t weight; /**< Documents the widest reading covers; decides the order. */
+  uint16_t source; /**< The word of the query these readings came from. */
+} QueryGroup;
+
+/** Longest a query may be, in words; further words are ignored. */
+#define GEO_QUERY_GROUP_MAX 16
+
+/**
+ * @brief Narrow @p carried down to the documents that also answer to @p group.
+ *
+ *  The readings are alternatives, so each is intersected with what is already
+ *  carried and the results joined.  Intersecting first and joining after keeps
+ *  the work inside the small set: uniting *muenchen* and *munchen* over the
+ *  whole planet would build a bitmap of millions, only to throw all but a
+ *  handful away.
+ *
+ *  @return The narrowed set, or NULL when nothing is left.
+ */
+static roaring_bitmap_t *narrow_by(const roaring_bitmap_t *carried, const QueryGroup *group) {
+  roaring_bitmap_t *joined = NULL;
+  for (size_t r = 0; r < group->reading_count; ++r) {
+    roaring_bitmap_t *part = roaring_bitmap_and(carried, group->readings[r]);
+    if (!part) continue;
+    if (!joined) {
+      joined = part;
+    } else {
+      roaring_bitmap_or_inplace(joined, part);
+      roaring_bitmap_free(part);
+    }
+  }
+  return joined;
 }
 
 size_t geo_index_query(
@@ -526,67 +660,101 @@ size_t geo_index_query(
   size_t token_count = text_tokenize(tokenizer, query, size);
   if (!token_count) return 0;
 
-  QueryTerm terms[TEXT_TOKEN_MAX];
-  size_t term_count = 0;
-  for (size_t t = 0; t < token_count && term_count < TEXT_TOKEN_MAX; ++t) {
+  /* --- gather the readings of every word the query carries --- */
+  QueryGroup groups[GEO_QUERY_GROUP_MAX];
+  size_t group_count = 0;
+  for (size_t t = 0; t < token_count; ++t) {
+    const TextToken *token = &tokenizer->tokens[t];
+    if (token->part) continue; /* pieces of a compound serve the index, not the query */
+
     size_t rank = 0;
-    if (!geo_dictionary_find(
-            &index->words, tokenizer->tokens[t].data, tokenizer->tokens[t].size, &rank
-        )) {
+    if (!geo_dictionary_find(&index->words, token->data, token->size, &rank)) {
       continue; /* a word nobody ever wrote cannot narrow anything down */
     }
-    size_t count = 0;
-    const uint32_t *documents = geo_index_postings(index, rank, &count);
+    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
     if (!documents) continue;
-    terms[term_count].documents = documents;
-    terms[term_count].count = count;
-    ++term_count;
-  }
-  if (!term_count) return 0;
 
-  /* --- shortest list first: it names the candidates, and the ones after it
-         are asked in growing order, so a candidate that does not belong is
-         usually turned away by a cheap list before an expensive one is
-         touched.  A word like *de* sits on millions of documents; every probe
-         into its list is a jump through gigabytes. --- */
-  for (size_t t = 1; t < term_count; ++t) {
-    QueryTerm term = terms[t];
-    size_t place = t;
-    while (place > 0 && terms[place - 1].count > term.count) {
-      terms[place] = terms[place - 1];
+    /* readings of the same word join the same group */
+    QueryGroup *group = NULL;
+    for (size_t g = 0; g < group_count; ++g) {
+      if (groups[g].source == token->group) { group = &groups[g]; }
+    }
+    if (!group) {
+      if (group_count >= GEO_QUERY_GROUP_MAX) {
+        roaring_bitmap_free(documents);
+        break;
+      }
+      group = &groups[group_count++];
+      group->reading_count = 0;
+      group->weight = 0;
+      group->source = token->group;
+    }
+    if (group->reading_count >= sizeof(group->readings) / sizeof(group->readings[0])) {
+      roaring_bitmap_free(documents);
+      continue;
+    }
+    uint64_t weight = roaring_bitmap_get_cardinality(documents);
+    group->readings[group->reading_count++] = documents;
+    if (weight > group->weight) group->weight = weight;
+  }
+  if (!group_count) return 0;
+
+  /* --- narrowest word first, so the carried set shrinks as early as it can --- */
+  for (size_t g = 1; g < group_count; ++g) {
+    QueryGroup group = groups[g];
+    size_t place = g;
+    while (place > 0 && groups[place - 1].weight > group.weight) {
+      groups[place] = groups[place - 1];
       --place;
     }
-    terms[place] = term;
+    groups[place] = group;
   }
 
-  /* --- a word standing on nearly everything narrows nothing down.  It is not
-         wrong, only useless, and every probe into its list is a jump through
-         gigabytes — so it is let go while narrower words remain.  Which words
-         those are needs no list: their own frequency says it.
-         Two words are always kept, though: falling back to a single common one
-         would turn a search into a list of whatever is most important, and
-         *Rio de Janeiro* would answer with everything ever named *Janeiro*. --- */
-  size_t common = index->document_count / GEO_QUERY_COMMON_SHARE;
-  if (common < GEO_QUERY_COMMON_FLOOR) common = GEO_QUERY_COMMON_FLOOR;
-  while (term_count > 2 && terms[term_count - 1].count > common) { --term_count; }
-
-  size_t found = 0;
-  for (size_t i = 0; i < terms[0].count; ++i) {
-    uint32_t document = terms[0].documents[i];
-    if (document >= index->document_count) continue;
-    bool everywhere = true;
-    for (size_t t = 1; t < term_count && everywhere; ++t) {
-      everywhere = list_contains(terms[t].documents, terms[t].count, document);
+  /* --- the first word is carried as it is, the rest narrow it --- */
+  roaring_bitmap_t *carried = NULL;
+  if (groups[0].reading_count == 1) {
+    carried = roaring_bitmap_copy(groups[0].readings[0]);
+  } else {
+    carried = roaring_bitmap_copy(groups[0].readings[0]);
+    for (size_t r = 1; carried && r < groups[0].reading_count; ++r) {
+      roaring_bitmap_or_inplace(carried, groups[0].readings[r]);
     }
-    if (!everywhere) continue;
-    GeoHit hit = {
-        .document = document,
-        .matched = (uint32_t)term_count,
-        .importance = index->documents[document].importance,
-    };
-    found = hit_insert(hits, found, limit, hit);
   }
-  return found;
+  for (size_t g = 1; carried && g < group_count; ++g) {
+    roaring_bitmap_t *narrowed = narrow_by(carried, &groups[g]);
+    roaring_bitmap_free(carried);
+    carried = narrowed;
+  }
+
+  size_t count = 0;
+  if (carried) {
+    uint32_t batch[256];
+    roaring_uint32_iterator_t walk;
+    roaring_iterator_init(carried, &walk);
+    for (;;) {
+      uint32_t read =
+          roaring_uint32_iterator_read(&walk, batch, (uint32_t)(sizeof(batch) / sizeof(batch[0])));
+      if (!read) break;
+      for (uint32_t i = 0; i < read; ++i) {
+        uint32_t document = batch[i];
+        if (document >= index->document_count) continue;
+        GeoHit hit = {
+            .document = document,
+            .matched = (uint32_t)group_count,
+            .importance = index->importance[document],
+        };
+        count = hit_insert(hits, count, limit, hit);
+      }
+    }
+    roaring_bitmap_free(carried);
+  }
+
+  for (size_t g = 0; g < group_count; ++g) {
+    for (size_t r = 0; r < groups[g].reading_count; ++r) {
+      roaring_bitmap_free(groups[g].readings[r]);
+    }
+  }
+  return count;
 }
 
 /** @endcond */

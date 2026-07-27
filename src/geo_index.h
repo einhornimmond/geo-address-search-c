@@ -17,8 +17,9 @@
  *  [ word dictionary ] groups, offsets, text — folded words, what a query meets
  *  [ display dict.   ] groups, offsets, text — original spelling, what an answer shows
  *  [ documents       ] one fixed record per place
- *  [ posting offsets ] word_count + 1 entries into the postings
- *  [ postings        ] document numbers, ascending within each word
+ *  [ importance      ] one weight per place, apart from the records
+ *  [ posting offsets ] word_count + 1 byte offsets into the postings
+ *  [ postings        ] one frozen Roaring bitmap per word, 32-byte aligned
  *  @endcode
  *
  *  Two dictionaries, because the two jobs disagree: a query types
@@ -33,6 +34,12 @@
  *    on every record size — a compiler cannot shift the format silently.
  *  - **The header refuses.** Magic, version, byte order and a hash over the
  *    record sizes are checked before a single byte is trusted.
+ *
+ *  The postings are Roaring bitmaps rather than plain lists of numbers.  A
+ *  word standing on millions of places then costs a bit per place instead of
+ *  four bytes, and asking whether one of them is *this* place is a bit test
+ *  instead of a walk through gigabytes.  Nothing is decoded when the file
+ *  opens: a bitmap is viewed where it lies.
  *
  *  Words are stored whole here, not split into prefix and remainder as they
  *  were while being collected: the file is read far more often than written,
@@ -49,6 +56,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <roaring/roaring.h>
+
 #include "doc_collector.h"
 #include "gradido_blockchain_core/result.h"
 #include "name_collector.h"
@@ -59,7 +68,7 @@
 #define GEO_INDEX_MAGIC "GRDGEOIX"
 
 /** Format version; a reader refuses anything it does not know. */
-#define GEO_INDEX_VERSION 2u
+#define GEO_INDEX_VERSION 4u
 
 /** Written as 0x01020304 — a reader on the other byte order sees it reversed. */
 #define GEO_INDEX_BYTE_ORDER 0x01020304u
@@ -76,12 +85,13 @@ typedef enum GeoIndexSectionKind {
   GEO_INDEX_SECTION_DISPLAY_OFFSETS = 5,
   GEO_INDEX_SECTION_DISPLAY_TEXT = 6,
   GEO_INDEX_SECTION_DOCUMENTS = 7,       /**< @ref GeoDocument records. */
-  GEO_INDEX_SECTION_POSTING_OFFSETS = 8, /**< uint32, word_count + 1 of them. */
-  GEO_INDEX_SECTION_POSTINGS = 9         /**< uint32 document numbers. */
+  GEO_INDEX_SECTION_POSTING_OFFSETS = 8, /**< uint64 byte offsets, word_count + 1 of them. */
+  GEO_INDEX_SECTION_POSTINGS = 9,        /**< One serialized bitmap per word. */
+  GEO_INDEX_SECTION_IMPORTANCE = 10      /**< uint16 per document, for ranking alone. */
 } GeoIndexSectionKind;
 
 /** Sections the writer always produces. */
-enum { GEO_INDEX_SECTION_COUNT = 9 };
+enum { GEO_INDEX_SECTION_COUNT = 10 };
 
 /** Where one section sits in the file. */
 typedef struct GeoIndexSection {
@@ -145,10 +155,12 @@ typedef struct GeoIndex {
   GeoDictionary words;   /**< Folded words — the search side. */
   GeoDictionary display; /**< Written spellings — the answer side. */
   const GeoDocument *documents;
+  const uint16_t *importance; /**< One weight per document, read while ranking. */
   size_t document_count;
-  const uint32_t *posting_offsets; /**< words.word_count + 1 entries. */
-  const uint32_t *postings;
-  size_t posting_count;
+  const uint64_t *posting_offsets; /**< words.word_count + 1 byte offsets into @c postings. */
+  const char *postings;            /**< Serialized bitmaps, one per word. */
+  size_t posting_bytes;            /**< Length of the bitmap blob. */
+  size_t posting_count;            /**< Word-to-document connections held in it. */
   uint64_t total_terms;
 } GeoIndex;
 
@@ -231,14 +243,20 @@ bool geo_dictionary_find(
 );
 
 /**
- * @brief Borrow the documents a word names.
+ * @brief Open the set of documents a word names.
  *
- *  @param[in]  index      Opened index; must not be NULL.
- *  @param[in]  rank       Word rank in the word dictionary.
- *  @param[out] out_count  Receives the number of documents.
- *  @return Ascending document numbers, or NULL when nothing carries the word.
+ *  The bitmap is a view onto the mapping — nothing is copied, and it stays
+ *  valid as long as the index is open.  Release it with roaring_bitmap_free();
+ *  that frees the small header the view needs, never the mapped bytes.
+ *
+ *  @param[in] index  Opened index; must not be NULL.
+ *  @param[in] rank   Word rank in the word dictionary.
+ *  @return A read-only bitmap, or NULL when nothing carries the word or the
+ *          stored bitmap does not fit its slice.
+ *
+ *  @whisper A word opens its hand and shows every place that answers to it
  */
-const uint32_t *geo_index_postings(const GeoIndex *index, size_t rank, size_t *out_count);
+const roaring_bitmap_t *geo_index_word_documents(const GeoIndex *index, size_t rank);
 
 /** One place a query found. */
 typedef struct GeoHit {
@@ -252,10 +270,12 @@ typedef struct GeoHit {
  *
  *  The query walks the same folding as the index did, so *Superstr.* and
  *  *superstrasse* arrive as the same word.  Order is irrelevant: the words
- *  are sets, and the answer is where the sets meet.  Words the dictionary
- *  does not know are passed over rather than made to fail the whole query —
- *  a country name or a filler word should not silence an otherwise clear
- *  address.  If no word is known at all, nothing is found.
+ *  are sets, and the answer is where the sets meet — an intersection of
+ *  bitmaps, which is cheap even when one of the words stands on millions of
+ *  places.  Words the dictionary does not know are passed over rather than
+ *  made to fail the whole query — a country name or a filler word should not
+ *  silence an otherwise clear address.  If no word is known at all, nothing
+ *  is found.
  *
  *  Results come back by importance, heaviest first.
  *

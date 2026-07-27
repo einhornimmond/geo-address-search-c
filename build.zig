@@ -17,6 +17,9 @@ pub fn build(b: *std.Build) !void {
     // make a list of targets that have include files and c source files
     var cdbTargets: std.ArrayList(*std.Build.Step.Compile) = .empty;
 
+    // options
+    const disable_avx512 = b.option(bool, "ROARING_DISABLE_AVX512", "Disable AVX512 in CRoaring") orelse autoDetectDisableAvx512(target);
+
     const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
     const blockchain_core = b.dependency("blockchain_core", .{ .target = target, .optimize = optimize });
 
@@ -31,19 +34,13 @@ pub fn build(b: *std.Build) !void {
 
     // zstd
     exe.linkLibrary(zstd.artifact("zstd"));
-    exe.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
-
-    // Project sources
-    try addDirSources(exe, b, "src", c_flags);
 
     // gradido blockchain core
+    exe.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
     exe.addIncludePath(blockchain_core.path("include"));
 
     // yyjson
     exe.addIncludePath(b.path("third_party/yyjson/src"));
-
-    // stb
-    exe.addIncludePath(b.path("third_party/stb"));
     exe.addCSourceFiles(.{
         .root = b.path("third_party/yyjson/src"),
         .files = &.{
@@ -51,6 +48,31 @@ pub fn build(b: *std.Build) !void {
         },
         .flags = c_flags,
     });
+
+    // stb
+    exe.addIncludePath(b.path("third_party/stb"));
+
+    // roaring bitmaps
+    const lib_flags: []const []const u8 = if (disable_avx512) &[_][]const u8{"-DCROARING_COMPILER_SUPPORTS_AVX512=0"} else &[_][]const u8{};
+    var flags_list: std.ArrayList([]const u8) = .empty;
+    try flags_list.appendSlice(b.allocator, c_flags);
+
+    // lib_flags hinzufügen (nur wenn sie nicht leer sind)
+    if (lib_flags.len > 0) {
+        try flags_list.appendSlice(b.allocator, lib_flags);
+    }
+    exe.addIncludePath(b.path("third_party/CRoaring/include"));
+    exe.addCSourceFiles(.{
+        .root = b.path("third_party/CRoaring"),
+        .files = &.{
+            "roaring.c",
+        },
+        .flags = flags_list.items,
+    });
+
+    // Project sources
+    try addDirSources(exe, b, "src", c_flags);
+
     cdbTargets.append(b.allocator, exe) catch @panic("OOM");
 
     b.installArtifact(exe);
@@ -120,4 +142,30 @@ fn addDirSources(
         .files = files.items,
         .flags = flags,
     });
+}
+
+fn autoDetectDisableAvx512(target: std.Build.ResolvedTarget) bool {
+    const cpu_arch = target.result.cpu.arch;
+
+    // AVX512 ist nur auf x86_64 verfügbar
+    if (cpu_arch != .x86_64) {
+        std.log.info("Non-x86_64 target detected ({s}), disabling AVX512 in CRoaring", .{@tagName(cpu_arch)});
+        return true;
+    }
+
+    // Für x86_64 prüfen, ob die benötigten Features unterstützt werden
+    const cpu_features = target.result.cpu.features;
+    const has_avx512f = cpu_features.isEnabled(@intFromEnum(std.Target.x86.Feature.avx512f));
+    const has_avx512dq = cpu_features.isEnabled(@intFromEnum(std.Target.x86.Feature.avx512dq));
+    const has_avx512bw = cpu_features.isEnabled(@intFromEnum(std.Target.x86.Feature.avx512bw));
+
+    const has_required_avx512 = has_avx512f and has_avx512dq and has_avx512bw;
+
+    if (!has_required_avx512) {
+        std.log.info("AVX512 features not detected on x86_64 target CPU, disabling AVX512 in CRoaring", .{});
+    } else {
+        std.log.info("AVX512 features detected on x86_64 target CPU, enabling AVX512 optimizations", .{});
+    }
+
+    return !has_required_avx512;
 }

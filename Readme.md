@@ -91,7 +91,8 @@ Das Binary landet unter `./zig-out/bin/parse_photon_jsonl_dump`.
 Abhängigkeiten holt das Zig-Buildsystem selbst:
 [zstd](https://github.com/facebook/zstd),
 [gradido-blockchain-core](https://github.com/gradido/gradido-blockchain-core) (Bucket-Vektor,
-Arena-Allokator, Timer), [yyjson](https://github.com/ibireme/yyjson) (mitgeliefert).
+Arena-Allokator, Timer), [yyjson](https://github.com/ibireme/yyjson) und
+[CRoaring](https://github.com/RoaringBitmap/CRoaring) (beide mitgeliefert).
 
 Voraussetzungen: Zig ≥ 0.15.1, pthreads, Linux.
 
@@ -120,7 +121,7 @@ Voraussetzungen: Zig ≥ 0.15.1, pthreads, Linux.
 | `name_collector` | Sammeln, sortieren, deduplizieren; k-Way-Merge über die Threads |
 | `prefix_tree` | Byte-weiser Indexbaum: ein Zeichen je Ebene, am Ende ein Index |
 | `doc_collector` | Dokumente und Postings je Thread, Zusammenführung per Zählsortierung |
-| `geo_index` | Dateiformat, Writer, `mmap`-Loader, Wortsuche, Anfragen |
+| `geo_index` | Dateiformat, Writer, `mmap`-Loader, Wortsuche, Anfragen über Bitmaps |
 | `meta_area_allocator` | Arena-Ketten für die Textbytes, eine je Thread |
 | `parse_queue`, `line_buffer`, `progress`, `format`, `error` | Infrastruktur |
 
@@ -132,13 +133,19 @@ Voraussetzungen: Zig ≥ 0.15.1, pthreads, Linux.
 [ Wörterbuch      ] groups, offsets, text — gefaltete Wörter, was eine Anfrage trifft
 [ Schreibweisen   ] groups, offsets, text — Original, was eine Antwort zeigt
 [ documents       ] je Ort ein fester Satz: Koordinate, Gewicht, Typ, Anzeige-Ränge
-[ posting offsets ] word_count + 1 Einträge in die Postings
-[ postings        ] Dokumentnummern, je Wort aufsteigend
+[ posting offsets ] word_count + 1 Byte-Offsets in die Postings
+[ postings        ] je Wort eine eingefrorene Roaring-Bitmap, 32-Byte-ausgerichtet
 ```
 
 Zwei Wörterbücher, weil die beiden Aufgaben sich widersprechen: eine Anfrage tippt
 *muenchen*, eine Antwort muss *München* lesen. Gefaltete Wörter teilen sich weit
 häufiger als geschriebene, deshalb bleibt die Suchseite klein.
+
+Die Postings sind Roaring-Bitmaps ([CRoaring](https://github.com/RoaringBitmap/CRoaring),
+mitgeliefert): ein Wort auf Millionen Orten kostet damit ein Bit je Ort statt vier Byte,
+und die Frage „steht dieser Ort darauf" ist ein Bit-Test statt einer Suche durch Gigabyte.
+Das *frozen*-Format ist das Speicherabbild selbst — beim Öffnen wird nichts dekodiert,
+eine Bitmap wird dort betrachtet, wo sie liegt.
 
 Keine Zeiger, nur `uint32`-Indizes und Offsets; feste Feldbreiten mit `static_assert`;
 Header prüft Magic, Version, Byte-Reihenfolge, Layout-Hash und Dateigröße, bevor ein Byte
