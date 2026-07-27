@@ -38,6 +38,7 @@ typedef struct PhotonPlace {
   const char *type;         /**< address_type ("country", "state", …)         */
   PhotonPlaceType typeEnum;
   const char *own_name;     /**< place display name ("name:de" or "name")    */
+  size_t own_name_size;
   const char *country_code; /**< ISO 3166-1 alpha-2 country code             */
   int32_t lon_e7;           /**< longitude × 10⁷                             */
   int32_t lat_e7;           /**< latitude  × 10⁷                             */

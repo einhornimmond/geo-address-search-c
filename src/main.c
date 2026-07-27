@@ -4,6 +4,7 @@
 #include "json_stats.h"
 #include "line_buffer.h"
 #include "meta_area_allocator.h"
+#include "name_collector.h"
 #include "parse_queue.h"
 #include "progress.h"
 
@@ -61,28 +62,33 @@ static void buffer_pool_destroy(BufferPool *pool) {
 
 typedef struct {
   JsonStats *stats;
-
+  NameCollector *names;
 } ProcessLineCtx;
 
 static int process_place_callback(const PhotonPlace *place, void *user_data) {
   ProcessLineCtx *ctx = user_data;
   json_stats_count_place(ctx->stats, place);
+  grd_result result = name_collector_add(ctx->names, place->own_name, place->own_name_size);
+  if (result != GRD_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to keep place name (grd_result %d).", (int)result);
+  }
   return 0;
 }
 
 static void process_json_line(
     const char *line,
     size_t len,
-    JsonStats *stats
+    JsonStats *stats,
+    NameCollector *names
 ) {
-  ProcessLineCtx ctx = {stats};
+  ProcessLineCtx ctx = {stats, names};
   JsonParseResult result;
   json_parse_line(line, len, process_place_callback, &ctx, &result);
   json_stats_count_document(stats, &result);
 }
 
 static void process_batch(
-    const ParseBatch *batch, JsonStats *stats
+    const ParseBatch *batch, JsonStats *stats, NameCollector *names
 ) {
   const char *line = batch->buffer->buffer;
   const char *end = line + batch->len;
@@ -91,7 +97,7 @@ static void process_batch(
     const char *newline = memchr(line, '\n', (size_t)(end - line));
     size_t len = newline ? (size_t)(newline - line) : (size_t)(end - line);
     if (len > 0 && line[len - 1] == '\r') { --len; }
-    if (len > 0) { process_json_line(line, len, stats); }
+    if (len > 0) { process_json_line(line, len, stats, names); }
     line = newline ? newline + 1 : end;
   }
 }
@@ -99,7 +105,8 @@ static void process_batch(
 typedef struct ParserThreadArgs {
   ParseQueue *queue;
   BufferPool *pool;
-  MetaAreaAllocator *meta_alloc;
+  MetaAreaAllocator *meta_alloc; /**< Private arena — the allocator is not thread-safe. */
+  NameCollector names;           /**< Every own_name this thread has met. */
   JsonStats stats;
 } ParserThreadArgs;
 
@@ -107,7 +114,7 @@ static void *parser_thread(void *arg) {
   ParserThreadArgs *args = arg;
   ParseBatch batch;
   while (parse_queue_pop(args->queue, &batch)) {
-    process_batch(&batch, &args->stats);
+    process_batch(&batch, &args->stats, &args->names);
     buffer_pool_release(args->pool, batch.buffer);
   }
   return NULL;
@@ -167,8 +174,6 @@ int main(int argc, char *argv[]) {
   char *inputBuffer = malloc(inputSize);
   void *outputBuffer = malloc(outputSize);
   ParseQueue *parse_queue = parse_queue_create();
-  MetaAreaAllocator *meta_alloc = meta_area_allocator_create();
-  if (!meta_alloc) fatal(ERROR_MEMORY, "Failed to create meta area allocator.");
   pthread_t parser_threads[10];
   ParserThreadArgs parser_args[10] = {0};
   BufferPool buffer_pool;
@@ -186,7 +191,15 @@ int main(int argc, char *argv[]) {
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].queue = parse_queue;
     parser_args[i].pool = &buffer_pool;
-    parser_args[i].meta_alloc = meta_alloc;
+    /* One arena per thread — meta_area_alloc() bumps without a lock, so it must
+       not be shared. The arenas outlive the threads: they hold the name bytes. */
+    parser_args[i].meta_alloc = meta_area_allocator_create();
+    if (!parser_args[i].meta_alloc) {
+      fatal(ERROR_MEMORY, "Failed to create meta area allocator for parser thread %u.", i);
+    }
+    if (name_collector_init(&parser_args[i].names, parser_args[i].meta_alloc) != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to init name collector for parser thread %u.", i);
+    }
     if (pthread_create(&parser_threads[i], NULL, parser_thread, &parser_args[i]) != 0) {
       fatal(ERROR_MEMORY, "Failed to create parser thread %u.", i);
     }
@@ -267,9 +280,36 @@ int main(int argc, char *argv[]) {
   printf("Joining stats finished in %s...\n", timeUsedBuffer);
   grdu_mono_timer_reset(&timeUsed);
 
+  /* --- the per-thread name streams flow together, sort, and lose their doubles --- */
+  const NameCollector *collectors[10];
+  size_t meta_allocated = 0;
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    collectors[i] = &parser_args[i].names;
+    meta_allocated += meta_area_total_allocated(parser_args[i].meta_alloc);
+  }
+
+  NameSet names;
+  grd_result merge_result = name_collector_merge(&names, collectors, parser_thread_count);
+  if (merge_result != GRD_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to merge collected place names (grd_result %d).", (int)merge_result);
+  }
+
+  char nameBytesBuffer[32];
+  format_byte_units(nameBytesBuffer, sizeof(nameBytesBuffer), meta_allocated, 2);
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf(
+      "\nNamen: %zu gesammelt, %zu eindeutig (%s Namensspeicher) in %s\n",
+      names.total, names.count, nameBytesBuffer, timeUsedBuffer
+  );
+  grdu_mono_timer_reset(&timeUsed);
+
   printf("Cleaning up...\n");
 
-  meta_area_allocator_destroy(meta_alloc);
+  name_set_free(&names);
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    name_collector_free(&parser_args[i].names);
+    meta_area_allocator_destroy(parser_args[i].meta_alloc);
+  }
   parse_queue_destroy(parse_queue);
   buffer_pool_destroy(&buffer_pool);
   free(outputBuffer);

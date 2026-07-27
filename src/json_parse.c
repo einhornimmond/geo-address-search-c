@@ -12,15 +12,21 @@
  *  Localisation helpers — moved from storage_stats.c
  * ========================================================================= */
 
-static const char *localized(yyjson_val *object, const char *german_key, const char *fallback_key) {
+static const char *localized(yyjson_val *object, const char *german_key, const char *fallback_key, size_t* size) {
   yyjson_val *value = yyjson_obj_get(object, german_key);
   if (fallback_key && !yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
-  return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
+  if (yyjson_is_str(value)) {
+    if (size) {
+      *size = yyjson_get_len(value);
+    }
+    return yyjson_get_str(value);
+  }
+  return NULL;
 }
 
-static const char *place_name(yyjson_val *place) {
+static const char *place_name(yyjson_val *place, size_t* size) {
   yyjson_val *names = yyjson_obj_get(place, "name");
-  return yyjson_is_obj(names) ? localized(names, "name:de", "name") : NULL;
+  return yyjson_is_obj(names) ? localized(names, "name:de", "name", size) : NULL;
 }
 
 static PhotonPlaceType detectTypeEnum(const char* type)
@@ -62,13 +68,13 @@ typedef enum ResultType {
 static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   memset(p, 0, sizeof(*p));
 
-  p->type = localized(entry, "address_type", NULL);
+  p->type = localized(entry, "address_type", NULL, NULL);
   if (!p->type) {
     return RESULT_ERROR_MISSING_TYPE;
   }
   p->typeEnum = detectTypeEnum(p->type);
-  p->country_code = localized(entry, "country_code", NULL);
-  p->own_name = place_name(entry);
+  p->country_code = localized(entry, "country_code", NULL, NULL);
+  p->own_name = place_name(entry, &p->own_name_size);
   if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) {
     return RESULT_SKIP;
   }
