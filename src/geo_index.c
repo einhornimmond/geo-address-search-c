@@ -260,9 +260,10 @@ grd_result geo_index_write(
     const NameSet *words,
     const NameSet *display,
     const DocSet *documents,
+    const HouseSet *houses,
     uint64_t total_terms
 ) {
-  if (!path || !words || !display || !documents) return GRD_ERROR_NULL_POINTER;
+  if (!path || !words || !display || !documents || !houses) return GRD_ERROR_NULL_POINTER;
 
   FILE *file = fopen(path, "wb");
   if (!file) return GRD_ERROR_ENCODE_FAILED;
@@ -323,6 +324,21 @@ grd_result geo_index_write(
   );
   if (result != GRD_SUCCESS) goto failed;
 
+  result = section_begin(file, &position, &sections[10], GEO_INDEX_SECTION_HOUSES);
+  if (result != GRD_SUCCESS) goto failed;
+  result = section_put(
+      file, &position, &sections[10], houses->houses, houses->house_count * sizeof(GeoHouse)
+  );
+  if (result != GRD_SUCCESS) goto failed;
+
+  result = section_begin(file, &position, &sections[11], GEO_INDEX_SECTION_HOUSE_OFFSETS);
+  if (result != GRD_SUCCESS) goto failed;
+  result = section_put(
+      file, &position, &sections[11], houses->offsets,
+      (documents->document_count + 1) * sizeof(uint32_t)
+  );
+  if (result != GRD_SUCCESS) goto failed;
+
   /* --- back to the front, now that every offset is known --- */
   memcpy(header.magic, GEO_INDEX_MAGIC, sizeof(header.magic));
   header.version = GEO_INDEX_VERSION;
@@ -336,6 +352,7 @@ grd_result geo_index_write(
   header.display_group_count = display->group_count;
   header.document_count = documents->document_count;
   header.posting_count = documents->posting_count;
+  header.house_count = houses->house_count;
   header.total_terms = total_terms;
 
   result = GRD_ERROR_ENCODE_FAILED;
@@ -457,6 +474,7 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
   }
   if (header->word_count > UINT32_MAX || header->display_count > UINT32_MAX) goto refused;
   if (header->document_count > UINT32_MAX || header->posting_count > UINT32_MAX) goto refused;
+  if (header->house_count > UINT32_MAX) goto refused;
   if (header->word_group_count > header->word_count) goto refused;
   if (header->display_group_count > header->display_count) goto refused;
 
@@ -486,6 +504,14 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
       base, size, sections, header->section_count, GEO_INDEX_SECTION_IMPORTANCE,
       header->document_count * sizeof(uint16_t), NULL
   );
+  const GeoHouse *houses = section_of(
+      base, size, sections, header->section_count, GEO_INDEX_SECTION_HOUSES,
+      header->house_count * sizeof(GeoHouse), NULL
+  );
+  const uint32_t *house_offsets = section_of(
+      base, size, sections, header->section_count, GEO_INDEX_SECTION_HOUSE_OFFSETS,
+      (header->document_count + 1) * sizeof(uint32_t), NULL
+  );
   const uint64_t *posting_offsets = section_of(
       base, size, sections, header->section_count, GEO_INDEX_SECTION_POSTING_OFFSETS,
       (header->word_count + 1) * sizeof(uint64_t), NULL
@@ -495,6 +521,8 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
       base, size, sections, header->section_count, GEO_INDEX_SECTION_POSTINGS, 0, &posting_bytes
   );
   if (!documents || !importance || !posting_offsets || !postings) goto refused_dictionaries;
+  if (!houses || !house_offsets) goto refused_dictionaries;
+  if (house_offsets[header->document_count] != header->house_count) goto refused_dictionaries;
   /* The offsets are checked one at a time, when a word is looked up — walking
      seven million of them here would turn an instant open into a wait. */
   if (posting_offsets[header->word_count] > posting_bytes) goto refused_dictionaries;
@@ -503,6 +531,9 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
   index->size = size;
   index->documents = documents;
   index->importance = importance;
+  index->houses = houses;
+  index->house_offsets = house_offsets;
+  index->house_count = (size_t)header->house_count;
   index->document_count = (size_t)header->document_count;
   index->posting_offsets = posting_offsets;
   index->postings = postings;
@@ -592,6 +623,16 @@ const roaring_bitmap_t *geo_index_word_documents(const GeoIndex *index, size_t r
   return roaring_bitmap_frozen_view(buffer, (size_t)(end - start));
 }
 
+const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t *out_count) {
+  if (out_count) *out_count = 0;
+  if (!index || !index->houses || document >= index->document_count) return NULL;
+  uint32_t start = index->house_offsets[document];
+  uint32_t end = index->house_offsets[document + 1];
+  if (end <= start || end > index->house_count) return NULL;
+  if (out_count) *out_count = end - start;
+  return index->houses + start;
+}
+
 /* =========================================================================
  *  Querying
  * ========================================================================= */
@@ -645,27 +686,68 @@ static roaring_bitmap_t *narrow_by(const roaring_bitmap_t *carried, const QueryG
   return joined;
 }
 
-size_t geo_index_query(
+/** Does this token carry a digit? Then it may be a house number. */
+static bool token_has_digit(const TextToken *token) {
+  for (size_t i = 0; i < token->size; ++i) {
+    if (token->data[i] >= '0' && token->data[i] <= '9') return true;
+  }
+  return false;
+}
+
+/** Compare a written house number with a folded one, letters case aside. */
+static bool number_equal(const char *written, size_t written_size, const TextToken *token) {
+  if (written_size != token->size) return false;
+  for (size_t i = 0; i < written_size; ++i) {
+    char a = written[i];
+    if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+    if (a != token->data[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Look for one number among the houses of a street.
+ *
+ *  The numbers of a street lie ordered by the rank of their spelling, not by
+ *  their text, so this walks them.  A street carries tens of houses, rarely
+ *  more than a few hundred — the walk costs less than the search would.
+ *
+ *  @return Index into the index's houses, or GEO_RANK_NONE.
+ */
+static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextToken *number) {
+  size_t count = 0;
+  const GeoHouse *houses = geo_index_houses(index, document, &count);
+  if (!houses) return GEO_RANK_NONE;
+
+  for (size_t i = 0; i < count; ++i) {
+    size_t written_size = 0;
+    const char *written =
+        geo_dictionary_word(&index->display, houses[i].number_rank, &written_size);
+    if (written && number_equal(written, written_size, number)) {
+      return (uint32_t)((houses - index->houses) + i);
+    }
+  }
+  return GEO_RANK_NONE;
+}
+
+/**
+ * @brief Answer the query's words, optionally leaving the numbers out.
+ *
+ *  @return Number of results written into @p hits.
+ */
+static size_t query_words(
     const GeoIndex *index,
-    TextTokenizer *tokenizer,
-    const char *query,
-    size_t size,
+    const TextTokenizer *tokenizer,
+    bool without_numbers,
     GeoHit *hits,
     size_t limit
 ) {
-  if (!index || !tokenizer || !query || !size || !hits || !limit) return 0;
-
-  /* a query is never a repetition of the one before it */
-  text_tokenizer_init(tokenizer);
-  size_t token_count = text_tokenize(tokenizer, query, size);
-  if (!token_count) return 0;
-
-  /* --- gather the readings of every word the query carries --- */
   QueryGroup groups[GEO_QUERY_GROUP_MAX];
   size_t group_count = 0;
-  for (size_t t = 0; t < token_count; ++t) {
+  for (size_t t = 0; t < tokenizer->token_count; ++t) {
     const TextToken *token = &tokenizer->tokens[t];
     if (token->part) continue; /* pieces of a compound serve the index, not the query */
+    if (without_numbers && token_has_digit(token)) continue;
 
     size_t rank = 0;
     if (!geo_dictionary_find(&index->words, token->data, token->size, &rank)) {
@@ -711,14 +793,9 @@ size_t geo_index_query(
   }
 
   /* --- the first word is carried as it is, the rest narrow it --- */
-  roaring_bitmap_t *carried = NULL;
-  if (groups[0].reading_count == 1) {
-    carried = roaring_bitmap_copy(groups[0].readings[0]);
-  } else {
-    carried = roaring_bitmap_copy(groups[0].readings[0]);
-    for (size_t r = 1; carried && r < groups[0].reading_count; ++r) {
-      roaring_bitmap_or_inplace(carried, groups[0].readings[r]);
-    }
+  roaring_bitmap_t *carried = roaring_bitmap_copy(groups[0].readings[0]);
+  for (size_t r = 1; carried && r < groups[0].reading_count; ++r) {
+    roaring_bitmap_or_inplace(carried, groups[0].readings[r]);
   }
   for (size_t g = 1; carried && g < group_count; ++g) {
     roaring_bitmap_t *narrowed = narrow_by(carried, &groups[g]);
@@ -741,6 +818,7 @@ size_t geo_index_query(
         GeoHit hit = {
             .document = document,
             .matched = (uint32_t)group_count,
+            .house = GEO_RANK_NONE,
             .importance = index->importance[document],
         };
         count = hit_insert(hits, count, limit, hit);
@@ -753,6 +831,57 @@ size_t geo_index_query(
     for (size_t r = 0; r < groups[g].reading_count; ++r) {
       roaring_bitmap_free(groups[g].readings[r]);
     }
+  }
+  return count;
+}
+
+size_t geo_index_query(
+    const GeoIndex *index,
+    TextTokenizer *tokenizer,
+    const char *query,
+    size_t size,
+    GeoHit *hits,
+    size_t limit
+) {
+  if (!index || !tokenizer || !query || !size || !hits || !limit) return 0;
+
+  /* a query is never a repetition of the one before it */
+  text_tokenizer_init(tokenizer);
+  if (!text_tokenize(tokenizer, query, size)) return 0;
+
+  /* --- a number in an address is a house before it is a word.  So the words
+         are asked first without it; only if they answer with nothing does the
+         number get its turn as a word of its own, the way *Straße des 17. Juni*
+         needs it. --- */
+  bool numbered = false;
+  for (size_t t = 0; t < tokenizer->token_count; ++t) {
+    if (!tokenizer->tokens[t].part && token_has_digit(&tokenizer->tokens[t])) { numbered = true; }
+  }
+
+  size_t count = numbered ? query_words(index, tokenizer, true, hits, limit) : 0;
+  if (!count) return query_words(index, tokenizer, false, hits, limit);
+
+  /* --- and now the number finds its door --- */
+  for (size_t h = 0; h < count; ++h) {
+    for (size_t t = 0; t < tokenizer->token_count; ++t) {
+      const TextToken *token = &tokenizer->tokens[t];
+      if (token->part || !token_has_digit(token)) continue;
+      uint32_t house = find_house(index, hits[h].document, token);
+      if (house != GEO_RANK_NONE) {
+        hits[h].house = house;
+        break;
+      }
+    }
+  }
+
+  /* --- whoever asked for a number means the street that has it.  The order
+         among them stays as it was, so weight still decides within. --- */
+  size_t front = 0;
+  for (size_t h = 0; h < count; ++h) {
+    if (hits[h].house == GEO_RANK_NONE) continue;
+    GeoHit found = hits[h];
+    for (size_t back = h; back > front; --back) { hits[back] = hits[back - 1]; }
+    hits[front++] = found;
   }
   return count;
 }

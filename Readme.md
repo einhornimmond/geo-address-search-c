@@ -24,10 +24,15 @@ photon_dump.jsonl.zst  ──►  parse_photon_jsonl_dump  ──►  index.gdx 
 5. **Läuft ein zweites Mal** über den Dump und schreibt Dokumente (ein Ort, eine
    Koordinate, ein Gewicht) und Posting-Listen (Wort → Dokumente). Ein Posting braucht
    den Rang seines Wortes, und den gibt es erst, wenn alle Wörter sortiert sind.
-6. **Schreibt** das Ergebnis als `.gdx`-Datei in genau der Form, in der es gelesen wird.
+6. **Läuft ein drittes Mal** und hängt die Hausnummern an ihre Straßen. Auch das geht
+   erst, wenn die Straßen Dokumente mit Nummern sind — und ein Durchlauf kostet Minuten,
+   während das Zwischenspeichern von 292 Millionen Häusern Gigabyte kostet.
+7. **Schreibt** das Ergebnis als `.gdx`-Datei in genau der Form, in der es gelesen wird.
 
-Hausnummern sind noch nicht Teil des Formats — sie sind die Nutzlast ihrer Straße und
-kommen im nächsten Schritt dazu.
+Was eine Hausnummer trägt, ist eine Adresse — unabhängig davon, was der `address_type`
+sagt. Der Dump führt ein Ferienlager mit Nummer unter `other` und ein Schiffswrack ohne
+Nummer unter `house`. Was keine Nummer hat und zu keiner Ebene der Adresshierarchie
+gehört, ist ein Teich oder ein Radweg und bleibt draußen.
 
 ## Aufruf
 
@@ -55,7 +60,7 @@ parse_photon_jsonl_dump planet.jsonl.zst 8
 parse_photon_jsonl_dump planet.gdx
 
 # suchen — Reihenfolge egal, Abkürzungen und Schreibweisen werden gefaltet
-parse_photon_jsonl_dump planet.gdx "Berlin, Superstr."
+parse_photon_jsonl_dump planet.gdx "Berlin, Superstr. 8"
 parse_photon_jsonl_dump planet.gdx "15328 Bleyen" 5
 ```
 
@@ -63,7 +68,12 @@ Die Anfrage geht durch dieselbe Faltung wie der Index: `Superstr.`, `superstrass
 `SUPERSTRASSE` treffen dasselbe Wort, `München` findet sich auch als `Muenchen` oder
 `Munchen`. Gefunden wird, wo alle Wörter der Anfrage zusammentreffen; Wörter, die der
 Index nicht kennt, werden übergangen statt die ganze Anfrage scheitern zu lassen.
-Sortiert wird nach Photons eigenem `importance`-Gewicht.
+Sortiert wird nach Photons eigenem `importance`-Gewicht; wer nach einer Hausnummer
+fragt, bekommt die Straße, die sie trägt, zuerst.
+
+Eine Zahl in der Anfrage ist zuerst eine Hausnummer und erst danach ein Wort: `Superstraße 8`
+sucht die Straße ohne die 8 und löst die Nummer dort auf. Nur wenn das nichts findet,
+darf die Zahl als Wort auftreten — sonst würde `Straße des 17. Juni` scheitern.
 
 ## Kennzahlen
 
@@ -71,14 +81,16 @@ Gemessen auf dem Planeten-Dump (24,21 GB) und dem Deutschland-Auszug (2,10 GB):
 
 | | Deutschland | Welt |
 | --- | --- | --- |
-| Einträge | 26,7 M | 356,2 M |
-| davon Hausnummern | 22,3 M | 291,9 M |
-| Suchtexte | 31,4 M | 511,6 M |
-| eindeutige Wörter | 596 k | 7,86 M |
-| Laufzeit | 18 s | 3,9 min |
+| Einträge | 26,7 M | 356,3 M |
+| Orte (Dokumente) | 1,6 M | 34,7 M |
+| Hausnummern | 20,6 M | 248,6 M |
+| eindeutige Wörter | 594 k | 7,83 M |
+| Indexdatei | 315 MB | 4,8 GB |
+| Bauzeit | 1,1 min | 15,4 min |
+| Öffnen | 0,25 ms | 0,26 ms |
 
-Die Laufzeit hängt am Dekomprimieren; Falten, Sortieren und Mergen zusammen kosten auf
-dem Planeten unter 6 Sekunden.
+Die Bauzeit hängt am Dekomprimieren — dreimal derselbe Dump. Alles andere zusammen
+kostet auf dem Planeten gut eine Minute.
 
 ## Bauen
 
@@ -115,12 +127,13 @@ Voraussetzungen: Zig ≥ 0.15.1, pthreads, Linux.
 
 | Modul | Aufgabe |
 | --- | --- |
-| `main` | Kommandozeile, zstd-Strom, Threads, zwei Durchläufe |
+| `main` | Kommandozeile, zstd-Strom, Threads, drei Durchläufe |
 | `json_parse` | Photon-Zeilen → `PhotonPlace` (Anzeigefelder + Suchtexte) |
 | `text_tokenize` | Falten, Abkürzungen, Komposita — Index und Anfrage gehen denselben Weg |
 | `name_collector` | Sammeln, sortieren, deduplizieren; k-Way-Merge über die Threads |
 | `prefix_tree` | Byte-weiser Indexbaum: ein Zeichen je Ebene, am Ende ein Index |
 | `doc_collector` | Dokumente und Postings je Thread, Zusammenführung per Zählsortierung |
+| `house_collector` | Hausnummern an ihren Straßen, geordnet je Straße |
 | `geo_index` | Dateiformat, Writer, `mmap`-Loader, Wortsuche, Anfragen über Bitmaps |
 | `meta_area_allocator` | Arena-Ketten für die Textbytes, eine je Thread |
 | `parse_queue`, `line_buffer`, `progress`, `format`, `error` | Infrastruktur |

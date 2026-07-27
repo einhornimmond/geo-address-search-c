@@ -62,34 +62,64 @@ typedef struct GeoDocument {
 /** Set when the document carries a usable coordinate. */
 #define GEO_DOCUMENT_HAS_POINT 0x01u
 
-/** One word, once, in one document. */
-typedef struct GeoPosting {
-  uint32_t word;     /**< Rank in the word dictionary. */
-  uint32_t document; /**< Document number, thread-local until the join. */
-} GeoPosting;
-
 /** Documents of one thread — 512 per bucket, 12 KiB of contiguous records. */
 GRDU_BVEC_DECLARE(geo_document_vec, GeoDocument, 9, extern)
 
-/** Postings of one thread — 4096 per bucket, 32 KiB. */
-GRDU_BVEC_DECLARE(geo_posting_vec, GeoPosting, 12, extern)
+/** Word ranks of one thread — 4096 per bucket, 16 KiB. */
+GRDU_BVEC_DECLARE(geo_word_vec, uint32_t, 12, extern)
+
+/** Where each document's words begin — one entry per document. */
+GRDU_BVEC_DECLARE(geo_start_vec, uint32_t, 12, extern)
+
+/** Words of one document compared against each other before anything is stored. */
+#define POSTING_RUN_MAX 64
+
+/**
+ * @brief One house number on a street.
+ *
+ *  The number itself is a rank in the display dictionary — house numbers repeat
+ *  across the planet beyond counting, and a few hundred thousand distinct
+ *  spellings carry all three hundred million of them.
+ *
+ *  The position stands on its own, in the same fixed point as everything else.
+ *  It was once a step away from the street's centre, which fit into four bytes
+ *  instead of eight — but a street is a line and its centre only a point, and
+ *  every house beyond a few kilometres of that point had to be pulled back to
+ *  where the number range ended.  A door either has a place or it has none;
+ *  four bytes are the wrong thing to save it on.
+ */
+typedef struct GeoHouse {
+  uint32_t number_rank; /**< The number as written, in the display dictionary. */
+  int32_t lat_e7;       /**< Latitude × 10⁷. */
+  int32_t lon_e7;       /**< Longitude × 10⁷. */
+} GeoHouse;
+
+/** A street as a house refers to it, and the document it became. */
+typedef struct GeoStreetKey {
+  uint32_t name;     /**< Street name in the display dictionary. */
+  uint32_t city;     /**< Town, likewise; GEO_RANK_NONE when absent. */
+  uint32_t postcode; /**< Postal code, likewise. */
+  uint32_t document; /**< Where the street ended up after merging. */
+} GeoStreetKey;
 
 /**
  * @brief One thread's harvest of the second pass.
  *
- *  Documents are numbered from 0 upward in the order the thread meets them;
- *  postings refer to those numbers until doc_collector_merge() shifts them.
+ *  Documents are numbered from 0 upward in the order the thread meets them.
+ *
+ *  The words are kept the way they arrive: the entry of one document lies
+ *  behind the entry of the one before it, so a word needs to record only
+ *  *which* word it is — **which document** follows from where it lies.  That
+ *  halves what a connection costs while it is being gathered, and it is by far
+ *  the largest thing in memory when the threads are joined.
  */
-/** Words of one document compared against each other before anything is stored. */
-#define POSTING_RUN_MAX 64
-
 typedef struct DocCollector {
   geo_document_vec documents;
-  geo_posting_vec postings;
-  uint64_t dropped_words;  /**< Tokens the dictionary did not know — 0 in a sound build. */
-  uint64_t dropped_doubles;/**< Repetitions of a word within one document. */
-  uint32_t open_document;  /**< Document the words currently belong to. */
-  uint32_t seen[POSTING_RUN_MAX]; /**< Its words so far. */
+  geo_word_vec words;             /**< Word ranks, grouped by document. */
+  geo_start_vec starts;           /**< First word of each document. */
+  uint64_t dropped_words;         /**< Tokens the dictionary did not know — 0 in a sound build. */
+  uint64_t dropped_doubles;       /**< Repetitions of a word within one document. */
+  uint32_t seen[POSTING_RUN_MAX]; /**< Words of the open document so far. */
   size_t seen_count;
 } DocCollector;
 
@@ -101,11 +131,14 @@ typedef struct DocCollector {
  */
 grd_result doc_collector_init(DocCollector *collector);
 
-/** @brief Release both vectors. Safe to call with NULL. */
+/** @brief Release the vectors. Safe to call with NULL. */
 void doc_collector_free(DocCollector *collector);
 
 /**
  * @brief Open a new document and return its thread-local number.
+ *
+ *  Every word noted afterwards belongs to this document, until the next one
+ *  opens.
  *
  *  @param[in,out] collector  Collector receiving the document.
  *  @param[in]     document   Record to store; copied.
@@ -117,25 +150,24 @@ grd_result doc_collector_add_document(
 );
 
 /**
- * @brief Note that @p word names document @p number.
+ * @brief Note that @p word names the document opened last.
  *
  *  A word already noted for this document is dropped here rather than stored
  *  and removed later — the dirty data offers the same text as city, as state
- *  and as street, and a planet's worth of those doubles is gigabytes.  All
- *  postings of one document arrive together, so a glance at the last
- *  @ref POSTING_RUN_MAX words of the open document settles it.
+ *  and as street, and a planet's worth of those doubles is gigabytes.  A
+ *  glance at the last @ref POSTING_RUN_MAX words of the open document settles
+ *  it.
  *
- *  @param[in,out] collector  Collector receiving the posting.
+ *  @param[in,out] collector  Collector receiving the word.
  *  @param[in]     word       Rank in the word dictionary.
- *  @param[in]     number     Thread-local document number.
  *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_OUT_OF_MEMORY.
  */
-grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word, uint32_t number);
+grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word);
 
 /** @brief Documents collected so far. */
 size_t doc_collector_document_count(const DocCollector *collector);
 
-/** @brief Postings collected so far, duplicates included. */
+/** @brief Word-to-document connections collected so far. */
 size_t doc_collector_posting_count(const DocCollector *collector);
 
 /**
@@ -154,7 +186,49 @@ typedef struct DocSet {
   size_t posting_count;
   uint32_t *posting_offsets;
   size_t word_count;
+  GeoStreetKey *streets; /**< Street keys, ascending, for the houses to find. */
+  size_t street_count;
 } DocSet;
+
+/**
+ * @brief Find the document a house's street became.
+ *
+ *  Four attempts, each letting go of something the dump is unreliable about:
+ *
+ *  1. name, town and postal code — the way it should be;
+ *  2. name and town, the street carrying no code, because the dump often gives
+ *     the code to the house and withholds it from the street;
+ *  3. name and town, any code, because a street running through several codes
+ *     carries one per segment and the house may name a third;
+ *  4. name alone, nearest to the house, because house and street disagree about
+ *     which town they are in — a house on the edge names its postal town, the
+ *     street the municipality it was drawn in.  The coordinate does not
+ *     disagree, so it decides.
+ *
+ *  @param[in] set       Joined set holding the street keys.
+ *  @param[in] name      Street name rank; GEO_RANK_NONE never matches.
+ *  @param[in] city      Town rank, or GEO_RANK_NONE.
+ *  @param[in] postcode  Postal code rank, or GEO_RANK_NONE.
+ *  @return The document number, or GEO_RANK_NONE when no street answers.
+ *
+ *  @whisper A house calls out its street's name and waits to hear where it stands
+ */
+uint32_t doc_set_find_street(
+    const DocSet *set,
+    uint32_t name,
+    uint32_t city,
+    uint32_t postcode,
+    int32_t lat_e7,
+    int32_t lon_e7,
+    int has_point,
+    int *out_relaxed
+);
+
+/** Streets of one name examined at most, when only the distance can decide. */
+#define STREET_NEAREST_MAX 1024
+
+/** 0.02° ≈ 2 km — further than this, a street of the same name is another street. */
+#define STREET_NEAREST_E7 200000
 
 /**
  * @brief Join the threads' harvests into one set, segments merged.

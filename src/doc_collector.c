@@ -9,7 +9,8 @@
 #include <string.h>
 
 GRDU_BVEC_DEFINE(geo_document_vec, GeoDocument, 9, )
-GRDU_BVEC_DEFINE(geo_posting_vec, GeoPosting, 12, )
+GRDU_BVEC_DEFINE(geo_word_vec, uint32_t, 12, )
+GRDU_BVEC_DEFINE(geo_start_vec, uint32_t, 12, )
 
 /* =========================================================================
  *  Per-thread collecting
@@ -19,17 +20,19 @@ grd_result doc_collector_init(DocCollector *collector) {
   if (!collector) return GRD_ERROR_NULL_POINTER;
   collector->dropped_words = 0;
   collector->dropped_doubles = 0;
-  collector->open_document = UINT32_MAX;
   collector->seen_count = 0;
   grd_result result = geo_document_vec_init(&collector->documents, NULL);
   if (result != GRD_SUCCESS) return result;
-  return geo_posting_vec_init(&collector->postings, NULL);
+  result = geo_word_vec_init(&collector->words, NULL);
+  if (result != GRD_SUCCESS) return result;
+  return geo_start_vec_init(&collector->starts, NULL);
 }
 
 void doc_collector_free(DocCollector *collector) {
   if (!collector) return;
   geo_document_vec_free(&collector->documents);
-  geo_posting_vec_free(&collector->postings);
+  geo_word_vec_free(&collector->words);
+  geo_start_vec_free(&collector->starts);
   collector->dropped_words = 0;
 }
 
@@ -38,20 +41,23 @@ grd_result doc_collector_add_document(
 ) {
   if (!collector || !document || !out_number) return GRD_ERROR_NULL_POINTER;
   size_t number = geo_document_vec_size(&collector->documents);
-  grd_result result = geo_document_vec_push_ptr(&collector->documents, document);
+
+  /* the words of this document begin where the words so far end */
+  grd_result result =
+      geo_start_vec_push(&collector->starts, (uint32_t)geo_word_vec_size(&collector->words));
   if (result != GRD_SUCCESS) return result;
+  result = geo_document_vec_push_ptr(&collector->documents, document);
+  if (result != GRD_SUCCESS) return result;
+
+  collector->seen_count = 0; /* a fresh document has heard nothing yet */
   *out_number = (uint32_t)number;
   return GRD_SUCCESS;
 }
 
-grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word, uint32_t number) {
+grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
   if (!collector) return GRD_ERROR_NULL_POINTER;
 
   /* --- the same word, still the same document: it has already been noted --- */
-  if (number != collector->open_document) {
-    collector->open_document = number;
-    collector->seen_count = 0;
-  }
   for (size_t s = 0; s < collector->seen_count; ++s) {
     if (collector->seen[s] == word) {
       ++collector->dropped_doubles;
@@ -60,8 +66,7 @@ grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word, uin
   }
   if (collector->seen_count < POSTING_RUN_MAX) collector->seen[collector->seen_count++] = word;
 
-  GeoPosting posting = {.word = word, .document = number};
-  return geo_posting_vec_push(&collector->postings, posting);
+  return geo_word_vec_push(&collector->words, word);
 }
 
 size_t doc_collector_document_count(const DocCollector *collector) {
@@ -69,7 +74,7 @@ size_t doc_collector_document_count(const DocCollector *collector) {
 }
 
 size_t doc_collector_posting_count(const DocCollector *collector) {
-  return collector ? geo_posting_vec_size(&collector->postings) : 0;
+  return collector ? geo_word_vec_size(&collector->words) : 0;
 }
 
 /* =========================================================================
@@ -143,11 +148,31 @@ static size_t thread_of(const uint32_t *base, size_t collector_count, uint32_t r
   return thread;
 }
 
-/** Where one record's postings begin and how many there are. */
-typedef struct PostingRange {
+/** Where one record's words lie, and in which thread's vector. */
+typedef struct WordRange {
+  const geo_word_vec *words;
   uint32_t start;
   uint32_t count;
-} PostingRange;
+} WordRange;
+
+/** Read the range of a record straight from the thread that collected it. */
+static WordRange word_range_of(
+    DocCollector *const *collectors, const uint32_t *base, size_t collector_count, uint32_t record
+) {
+  size_t thread = thread_of(base, collector_count, record);
+  DocCollector *collector = collectors[thread];
+  uint32_t local = record - base[thread];
+
+  WordRange range = {.words = &collector->words, .start = 0, .count = 0};
+  size_t documents = geo_start_vec_size(&collector->starts);
+  if (local >= documents) return range;
+
+  range.start = *geo_start_vec_get(&collector->starts, local);
+  uint32_t end = local + 1 < documents ? *geo_start_vec_get(&collector->starts, local + 1)
+                                       : (uint32_t)geo_word_vec_size(&collector->words);
+  range.count = end - range.start;
+  return range;
+}
 
 grd_result doc_collector_merge(
     DocSet *out, DocCollector *const *collectors, size_t collector_count, size_t word_count
@@ -173,13 +198,13 @@ grd_result doc_collector_merge(
   /* --- the records move into one array, thread after thread --- */
   GeoDocument *documents = NULL;
   uint32_t *assign = NULL;
+  GeoStreetKey *streets = NULL;
   GeoDocument *records = malloc(record_count * sizeof(*records));
   MergeKey *keys = malloc(record_count * sizeof(*keys));
-  PostingRange *ranges = calloc(record_count, sizeof(*ranges));
   uint32_t *counts = calloc(word_count + 1, sizeof(*counts));
   uint32_t *stamp = calloc(word_count, sizeof(*stamp));
   uint32_t base[64];
-  if (!records || !keys || !ranges || !counts || !stamp) { goto out_of_memory; }
+  if (!records || !keys || !counts || !stamp) { goto out_of_memory; }
 
   size_t written = 0;
   for (size_t c = 0; c < collector_count; ++c) {
@@ -191,17 +216,6 @@ grd_result doc_collector_merge(
       written += count;
     }
     geo_document_vec_free(vec); /* the records live in the flat array now */
-  }
-
-  /* --- where each record's postings lie; they were stored side by side --- */
-  for (size_t c = 0; c < collector_count; ++c) {
-    const geo_posting_vec *vec = &collectors[c]->postings;
-    size_t total = geo_posting_vec_size(vec);
-    for (size_t i = 0; i < total; ++i) {
-      uint32_t record = base[c] + geo_posting_vec_get(vec, i)->document;
-      if (!ranges[record].count) ranges[record].start = (uint32_t)i;
-      ++ranges[record].count;
-    }
   }
 
   /* --- sort the records so that equal places stand together --- */
@@ -311,6 +325,28 @@ grd_result doc_collector_merge(
     }
     i = group_end;
   }
+  /* --- the streets, as the houses will ask for them.  The keys are already
+         sorted by name, town and postal code, so one walk collects them --- */
+  streets = malloc(record_count * sizeof(*streets));
+  if (!streets) { goto out_of_memory; }
+  size_t street_count = 0;
+  for (size_t i = 0; i < record_count;) {
+    size_t end = i + 1;
+    while (end < record_count && same_place(&keys[i], &keys[end])) { ++end; }
+    if (keys[i].type == PHOTON_PLACE_TYPE_STREET && keys[i].name != GEO_RANK_NONE) {
+      streets[street_count].name = keys[i].name;
+      streets[street_count].city = keys[i].city;
+      streets[street_count].postcode = keys[i].postcode;
+      streets[street_count].document = assign[keys[i].record];
+      ++street_count;
+    }
+    i = end;
+  }
+  if (street_count < record_count) {
+    GeoStreetKey *shrunk = realloc(streets, (street_count ? street_count : 1) * sizeof(*streets));
+    if (shrunk) streets = shrunk;
+  }
+
   free(records);
   records = NULL;
   if (document_count < record_count) { /* the merged places left room behind */
@@ -338,11 +374,9 @@ grd_result doc_collector_merge(
         for (size_t m = i; m < group_end; ++m) {
           uint32_t record = keys[m].record;
           if (assign[record] != document) continue;
-          size_t thread = thread_of(base, collector_count, record);
-          const geo_posting_vec *vec = &collectors[thread]->postings;
-          size_t start = ranges[record].start;
-          for (size_t k = 0; k < ranges[record].count; ++k) {
-            uint32_t word = geo_posting_vec_get(vec, start + k)->word;
+          WordRange range = word_range_of(collectors, base, collector_count, record);
+          for (uint32_t k = 0; k < range.count; ++k) {
+            uint32_t word = *geo_word_vec_get(range.words, range.start + k);
             if (stamp[word] == document + 1) continue; /* this document already has it */
             stamp[word] = document + 1;
             if (pass == 0) {
@@ -373,24 +407,28 @@ grd_result doc_collector_merge(
     }
   }
 
-  for (size_t c = 0; c < collector_count; ++c) { geo_posting_vec_free(&collectors[c]->postings); }
+  for (size_t c = 0; c < collector_count; ++c) {
+    geo_word_vec_free(&collectors[c]->words);
+    geo_start_vec_free(&collectors[c]->starts);
+  }
   free(keys);
   free(assign);
-  free(ranges);
   free(counts);
   free(stamp);
 
   out->documents = documents;
   out->document_count = document_count;
   out->posting_count = posting_count;
+  out->streets = streets;
+  out->street_count = street_count;
   return GRD_SUCCESS;
 
 out_of_memory:
   free(records);
   free(documents);
+  free(streets);
   free(assign);
   free(keys);
-  free(ranges);
   free(counts);
   free(stamp);
   free(out->postings);
@@ -399,11 +437,141 @@ out_of_memory:
   return GRD_ERROR_OUT_OF_MEMORY;
 }
 
+/**
+ * @brief Search the street table for one key.
+ *
+ *  @return Index of the entry, or the count when the key is absent.
+ */
+static size_t street_search(
+    const GeoStreetKey *streets, size_t count, uint32_t name, uint32_t city, uint32_t postcode
+) {
+  size_t low = 0, high = count;
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+    const GeoStreetKey *entry = &streets[middle];
+    int order = 0;
+    if (entry->name != name) {
+      order = entry->name < name ? -1 : 1;
+    } else if (entry->city != city) {
+      order = entry->city < city ? -1 : 1;
+    } else if (entry->postcode != postcode) {
+      order = entry->postcode < postcode ? -1 : 1;
+    }
+    if (!order) return middle;
+    if (order < 0) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return count;
+}
+
+/** First entry carrying this name and town, whatever its postal code. */
+static size_t street_first_of_town(
+    const GeoStreetKey *streets, size_t count, uint32_t name, uint32_t city
+) {
+  size_t low = 0, high = count;
+  while (low < high) { /* lower bound of (name, city, anything) */
+    size_t middle = low + (high - low) / 2;
+    const GeoStreetKey *entry = &streets[middle];
+    bool before = entry->name < name || (entry->name == name && entry->city < city);
+    if (before) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  if (low < count && streets[low].name == name && streets[low].city == city) return low;
+  return count;
+}
+
+/** Lower bound of the entries carrying this name, whatever town they name. */
+static size_t street_first_of_name(const GeoStreetKey *streets, size_t count, uint32_t name) {
+  size_t low = 0, high = count;
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+    if (streets[middle].name < name) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/**
+ * @brief Among the streets of this name, the one standing nearest the house.
+ *
+ *  @return Index into the street table, or the count when none is near enough.
+ */
+static size_t street_nearest(const DocSet *set, uint32_t name, int32_t lat_e7, int32_t lon_e7) {
+  size_t best = set->street_count;
+  int64_t best_gap = 0;
+  size_t examined = 0;
+
+  for (size_t i = street_first_of_name(set->streets, set->street_count, name);
+       i < set->street_count && set->streets[i].name == name && examined < STREET_NEAREST_MAX;
+       ++i, ++examined) {
+    const GeoDocument *street = &set->documents[set->streets[i].document];
+    if (!(street->flags & GEO_DOCUMENT_HAS_POINT)) continue;
+
+    int64_t lat_gap = (int64_t)street->lat_e7 - lat_e7;
+    int64_t lon_gap = (int64_t)street->lon_e7 - lon_e7;
+    if (lat_gap < 0) lat_gap = -lat_gap;
+    if (lon_gap < 0) lon_gap = -lon_gap;
+    if (lat_gap > STREET_NEAREST_E7 || lon_gap > STREET_NEAREST_E7) continue;
+
+    int64_t gap = lat_gap + lon_gap;
+    if (best == set->street_count || gap < best_gap) {
+      best = i;
+      best_gap = gap;
+    }
+  }
+  return best;
+}
+
+uint32_t doc_set_find_street(
+    const DocSet *set,
+    uint32_t name,
+    uint32_t city,
+    uint32_t postcode,
+    int32_t lat_e7,
+    int32_t lon_e7,
+    int has_point,
+    int *out_relaxed
+) {
+  if (out_relaxed) *out_relaxed = 0;
+  if (!set || !set->streets || name == GEO_RANK_NONE) return GEO_RANK_NONE;
+
+  size_t found = street_search(set->streets, set->street_count, name, city, postcode);
+  if (found == set->street_count && postcode != GEO_RANK_NONE) {
+    /* the dump gives the code to the house and withholds it from the street */
+    found = street_search(set->streets, set->street_count, name, city, GEO_RANK_NONE);
+    if (found < set->street_count && out_relaxed) *out_relaxed = 1;
+  }
+  if (found == set->street_count) {
+    /* A street running through several postal codes carries one per segment,
+       and the house may name a third.  Within one town a street name means one
+       street, so the code is let go last of all. */
+    found = street_first_of_town(set->streets, set->street_count, name, city);
+    if (found < set->street_count && out_relaxed) *out_relaxed = 2;
+  }
+  if (found == set->street_count && has_point) {
+    /* House and street name different towns.  Only the distance is left, and
+       it is the more trustworthy witness. */
+    found = street_nearest(set, name, lat_e7, lon_e7);
+    if (found < set->street_count && out_relaxed) *out_relaxed = 3;
+  }
+  return found < set->street_count ? set->streets[found].document : GEO_RANK_NONE;
+}
+
 void doc_set_free(DocSet *set) {
   if (!set) return;
   free(set->documents);
   free(set->postings);
   free(set->posting_offsets);
+  free(set->streets);
   memset(set, 0, sizeof(*set));
 }
 

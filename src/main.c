@@ -1,6 +1,7 @@
 #include "error.h"
 #include "format.h"
 #include "geo_index.h"
+#include "house_collector.h"
 #include "json_parse.h"
 #include "json_stats.h"
 #include "line_buffer.h"
@@ -66,7 +67,8 @@ static void buffer_pool_destroy(BufferPool *pool) {
 /** What a walk over the dump is for. */
 typedef enum ParserPass {
   PARSER_PASS_VOCABULARY, /**< Gather the words and the written spellings. */
-  PARSER_PASS_DOCUMENTS   /**< Write documents and postings against them. */
+  PARSER_PASS_DOCUMENTS,  /**< Write documents and postings against them. */
+  PARSER_PASS_HOUSES      /**< Hang the house numbers on the streets they name. */
 } ParserPass;
 
 typedef struct ParserThreadArgs {
@@ -84,6 +86,9 @@ typedef struct ParserThreadArgs {
   const NameSet *display_set;    /**< Second pass: where a spelling finds its rank. */
   DocCollector documents;        /**< Second pass: what this thread found. */
   grd_result document_result;    /**< First failure while collecting documents. */
+  const DocSet *doc_set;         /**< Third pass: where a street became a document. */
+  HouseCollector houses;         /**< Third pass: the numbers this thread met. */
+  grd_result house_result;       /**< First failure while collecting houses. */
   JsonStats stats;
 } ParserThreadArgs;
 
@@ -114,10 +119,17 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
       }
     }
   }
-  /* houses are payload, not answers — their spelling is nobody's display name */
-  if (place->typeEnum == PHOTON_PLACE_TYPE_HOUSE) return;
-  const PhotonString written[] = {place->own_name, place->city, place->postcode};
-  for (size_t i = 0; i < sizeof(written) / sizeof(written[0]); ++i) {
+  /* An answer shows the street, the number, the code and the town — never the
+     name of the house itself.  So a numbered entry contributes what the third
+     pass must recognise by rank, and its own name goes nowhere: a planet's
+     worth of building names would swell the dictionary by twenty million
+     entries nobody ever reads. */
+  const PhotonString written[] = {
+      place->own_name, place->city, place->postcode, place->street, place->house
+  };
+  size_t first = place->house.data ? 1 : 0;
+  size_t count = place->house.data ? sizeof(written) / sizeof(written[0]) : 3;
+  for (size_t i = first; i < count; ++i) {
     grd_result result = name_collector_add(&args->display, written[i].data, written[i].size);
     if (result != GRD_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to keep display text (grd_result %d).", (int)result);
@@ -125,9 +137,49 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
   }
 }
 
+/** Third pass: the house finds its street and hangs its number there. */
+static void collect_house(ParserThreadArgs *args, const PhotonPlace *place) {
+  if (!place->house.data) return; /* whatever the hierarchy calls it, it is no address */
+
+  uint32_t number = display_rank(args->display_set, place->house);
+  if (number == GEO_RANK_NONE) {
+    ++args->houses.without_number;
+    ++args->houses.homeless;
+    return;
+  }
+  uint32_t street = display_rank(args->display_set, place->street);
+  if (street == GEO_RANK_NONE) {
+    ++args->houses.unknown_street;
+    ++args->houses.homeless;
+    return;
+  }
+  int relaxed = 0;
+  uint32_t document = doc_set_find_street(
+      args->doc_set, street, display_rank(args->display_set, place->city),
+      display_rank(args->display_set, place->postcode), place->lat_e7, place->lon_e7,
+      place->has_point, &relaxed
+  );
+  if (document == GEO_RANK_NONE) {
+    ++args->houses.unknown_key; /* the name is known, the combination is not */
+    ++args->houses.homeless;
+    return;
+  }
+  if (relaxed == 1) ++args->houses.recovered_city;
+  if (relaxed == 2) ++args->houses.recovered_postcode;
+  if (relaxed == 3) ++args->houses.recovered_nearest;
+
+  grd_result result = house_collector_add(
+      &args->houses, document, &args->doc_set->documents[document], number, place->lat_e7,
+      place->lon_e7, place->has_point
+  );
+  if (result != GRD_SUCCESS && args->house_result == GRD_SUCCESS) { args->house_result = result; }
+}
+
 /** Second pass: the entry becomes a document, and its words point at it. */
 static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
-  if (place->typeEnum == PHOTON_PLACE_TYPE_HOUSE) return;
+  /* an address hangs on its street; a house-level entry without a number is a
+     named thing, not a place one searches an address for */
+  if (place->house.data || place->typeEnum == PHOTON_PLACE_TYPE_HOUSE) return;
 
   GeoDocument document = {
       .lat_e7 = place->lat_e7,
@@ -156,7 +208,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
         ++args->documents.dropped_words; /* the first pass saw every word — this cannot happen */
         continue;
       }
-      result = doc_collector_add_posting(&args->documents, (uint32_t)rank, number);
+      result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
       if (result != GRD_SUCCESS && args->document_result == GRD_SUCCESS) {
         args->document_result = result;
         return;
@@ -167,11 +219,17 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
 
 static int process_place_callback(const PhotonPlace *place, void *user_data) {
   ParserThreadArgs *args = user_data;
-  if (args->pass == PARSER_PASS_VOCABULARY) {
+  switch (args->pass) {
+  case PARSER_PASS_VOCABULARY:
     json_stats_count_place(&args->stats, place);
     collect_vocabulary(args, place);
-  } else {
+    break;
+  case PARSER_PASS_DOCUMENTS:
     collect_document(args, place);
+    break;
+  case PARSER_PASS_HOUSES:
+    collect_house(args, place);
+    break;
   }
   return 0;
 }
@@ -386,7 +444,7 @@ static int build_index(
    *  First pass: what words exist at all
    * ======================================================================= */
 
-  printf("Durchlauf 1 von 2: Wortschatz sammeln\n");
+  printf("Durchlauf 1 von 3: Wortschatz sammeln\n");
   run_pass(
       PARSER_PASS_VOCABULARY, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
       &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
@@ -461,7 +519,7 @@ static int build_index(
    *  Second pass: places, and which words point at them
    * ======================================================================= */
 
-  printf("\nDurchlauf 2 von 2: Dokumente und Posting-Listen\n");
+  printf("\nDurchlauf 2 von 3: Dokumente und Posting-Listen\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].word_set = &words;
     parser_args[i].display_set = &display;
@@ -507,8 +565,72 @@ static int build_index(
   if (unknown_words) { printf("  Wörter ohne Rang: %" PRIu64 " (sollte 0 sein)\n", unknown_words); }
   grdu_mono_timer_reset(&timeUsed);
 
+  /* =======================================================================
+   *  Third pass: the house numbers, onto the streets that now exist
+   * ======================================================================= */
+
+  printf("\nDurchlauf 3 von 3: Hausnummern\n");
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    parser_args[i].doc_set = &documents;
+    parser_args[i].house_result = GRD_SUCCESS;
+    if (house_collector_init(&parser_args[i].houses) != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to init house collector for parser thread %u.", i);
+    }
+  }
+
+  run_pass(
+      PARSER_PASS_HOUSES, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
+      &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
+  );
+  grdu_mono_timer_reset(&timeUsed);
+
+  HouseCollector *house_collectors[10];
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    if (parser_args[i].house_result != GRD_SUCCESS) {
+      fatal(
+          ERROR_MEMORY, "Parser thread %u failed to collect houses (grd_result %d).", i,
+          (int)parser_args[i].house_result
+      );
+    }
+    house_collectors[i] = &parser_args[i].houses;
+  }
+
+  HouseSet houses;
+  grd_result house_result = house_collector_merge(
+      &houses, house_collectors, parser_thread_count, documents.document_count
+  );
+  if (house_result != GRD_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to join the houses (grd_result %d).", (int)house_result);
+  }
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  printf(
+      "Hausnummern: %zu an %zu Straßen — geordnet in %s\n", houses.house_count,
+      documents.street_count, timeUsedBuffer
+  );
+  if (houses.homeless) {
+    printf(
+        "  ohne Straße im Index: %" PRIu64 " (%.2f %%)\n", houses.homeless,
+        100.0 * (double)houses.homeless / (double)(houses.homeless + houses.house_count)
+    );
+    printf(
+        "    davon ohne Hausnummer: %" PRIu64 ", Straßenname unbekannt: %" PRIu64
+        ", Kombination unbekannt: %" PRIu64 "\n",
+        houses.without_number, houses.unknown_street, houses.unknown_key
+    );
+  }
+  if (houses.recovered_city || houses.recovered_postcode || houses.recovered_nearest) {
+    printf(
+        "  erst ohne PLZ: %" PRIu64 ", erst über Name und Ort: %" PRIu64
+        ", erst über die Nähe: %" PRIu64 "\n",
+        houses.recovered_city, houses.recovered_postcode, houses.recovered_nearest
+    );
+  }
+  if (houses.pointless) { printf("  ohne eigene Koordinate: %" PRIu64 "\n", houses.pointless); }
+  grdu_mono_timer_reset(&timeUsed);
+
   /* --- the result lies down in the shape it will be read in --- */
-  grd_result write_result = geo_index_write(index_path, &words, &display, &documents, words.total);
+  grd_result write_result =
+      geo_index_write(index_path, &words, &display, &documents, &houses, words.total);
   if (write_result != GRD_SUCCESS) {
     fatal(ERROR_IO, "Failed to write index '%s' (grd_result %d).", index_path, (int)write_result);
   }
@@ -517,10 +639,12 @@ static int build_index(
 
   printf("Cleaning up...\n");
 
+  house_set_free(&houses);
   doc_set_free(&documents);
   name_set_free(&words);
   name_set_free(&display);
   for (unsigned i = 0; i < parser_thread_count; ++i) {
+    house_collector_free(&parser_args[i].houses);
     doc_collector_free(&parser_args[i].documents);
     name_collector_free(&parser_args[i].words);
     name_collector_free(&parser_args[i].display);
@@ -570,14 +694,23 @@ static void print_hits(const GeoIndex *index, const GeoHit *hits, size_t count, 
   printf("Treffer für '%s':\n", query);
   for (size_t i = 0; i < count; ++i) {
     const GeoDocument *document = &index->documents[hits[i].document];
+    int32_t lat = document->lat_e7;
+    int32_t lon = document->lon_e7;
     printf("  ");
     print_display(index, document->name_rank);
+    if (hits[i].house != GEO_RANK_NONE) { /* the number stands on the street */
+      const GeoHouse *house = &index->houses[hits[i].house];
+      printf(" ");
+      print_display(index, house->number_rank);
+      lat = house->lat_e7;
+      lon = house->lon_e7;
+    }
     printf(", ");
     print_display(index, document->postcode_rank);
     printf(" ");
     print_display(index, document->city_rank);
     if (document->flags & GEO_DOCUMENT_HAS_POINT) {
-      printf("  →  %.7f, %.7f", document->lat_e7 / 1.0e7, document->lon_e7 / 1.0e7);
+      printf("  →  %.7f, %.7f", lat / 1.0e7, lon / 1.0e7);
     } else {
       printf("  →  ohne Koordinate");
     }
@@ -611,6 +744,7 @@ static int open_index(const char *index_path, const char *query, size_t result_l
   );
   printf("  Schreibweisen:  %zu (%s Text)\n", index.display.word_count, displayBuffer);
   printf("  Dokumente:      %zu\n", index.document_count);
+  printf("  Hausnummern:    %zu\n", index.house_count);
   printf("  Postings:       %zu\n", index.posting_count);
   printf("  Begriffe beim Bauen gesehen: %" PRIu64 "\n", index.total_terms);
 

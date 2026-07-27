@@ -20,6 +20,8 @@
  *  [ importance      ] one weight per place, apart from the records
  *  [ posting offsets ] word_count + 1 byte offsets into the postings
  *  [ postings        ] one frozen Roaring bitmap per word, 32-byte aligned
+ *  [ houses          ] house numbers with their own coordinate
+ *  [ house offsets   ] document_count + 1 entries into the houses
  *  @endcode
  *
  *  Two dictionaries, because the two jobs disagree: a query types
@@ -60,6 +62,7 @@
 
 #include "doc_collector.h"
 #include "gradido_blockchain_core/result.h"
+#include "house_collector.h"
 #include "name_collector.h"
 #include "prefix_tree.h"
 #include "text_tokenize.h"
@@ -68,7 +71,7 @@
 #define GEO_INDEX_MAGIC "GRDGEOIX"
 
 /** Format version; a reader refuses anything it does not know. */
-#define GEO_INDEX_VERSION 4u
+#define GEO_INDEX_VERSION 6u
 
 /** Written as 0x01020304 — a reader on the other byte order sees it reversed. */
 #define GEO_INDEX_BYTE_ORDER 0x01020304u
@@ -87,11 +90,13 @@ typedef enum GeoIndexSectionKind {
   GEO_INDEX_SECTION_DOCUMENTS = 7,       /**< @ref GeoDocument records. */
   GEO_INDEX_SECTION_POSTING_OFFSETS = 8, /**< uint64 byte offsets, word_count + 1 of them. */
   GEO_INDEX_SECTION_POSTINGS = 9,        /**< One serialized bitmap per word. */
-  GEO_INDEX_SECTION_IMPORTANCE = 10      /**< uint16 per document, for ranking alone. */
+  GEO_INDEX_SECTION_IMPORTANCE = 10,     /**< uint16 per document, for ranking alone. */
+  GEO_INDEX_SECTION_HOUSES = 11,         /**< @ref GeoHouse records, by street. */
+  GEO_INDEX_SECTION_HOUSE_OFFSETS = 12   /**< uint32, document_count + 1 of them. */
 } GeoIndexSectionKind;
 
 /** Sections the writer always produces. */
-enum { GEO_INDEX_SECTION_COUNT = 10 };
+enum { GEO_INDEX_SECTION_COUNT = 12 };
 
 /** Where one section sits in the file. */
 typedef struct GeoIndexSection {
@@ -122,13 +127,15 @@ typedef struct GeoIndexHeader {
   uint64_t display_group_count; /**< Prefix groups of the display dictionary. */
   uint64_t document_count;      /**< Places one can find. */
   uint64_t posting_count;       /**< Word-to-document connections. */
+  uint64_t house_count;         /**< House numbers hanging on the streets. */
   uint64_t total_terms;         /**< Terms seen while building — reporting only. */
 } GeoIndexHeader;
 
-static_assert(sizeof(GeoIndexHeader) == 88, "GeoIndexHeader layout changed");
+static_assert(sizeof(GeoIndexHeader) == 96, "GeoIndexHeader layout changed");
 static_assert(sizeof(GeoIndexSection) == 24, "GeoIndexSection layout changed");
 static_assert(sizeof(GeoIndexGroup) == 12, "GeoIndexGroup layout changed");
 static_assert(sizeof(GeoDocument) == 24, "GeoDocument layout changed");
+static_assert(sizeof(GeoHouse) == 12, "GeoHouse layout changed");
 
 /**
  * @brief One dictionary inside the mapping: sorted words, reachable by rank or by text.
@@ -161,6 +168,9 @@ typedef struct GeoIndex {
   const char *postings;            /**< Serialized bitmaps, one per word. */
   size_t posting_bytes;            /**< Length of the bitmap blob. */
   size_t posting_count;            /**< Word-to-document connections held in it. */
+  const GeoHouse *houses;          /**< House numbers, ordered by street. */
+  const uint32_t *house_offsets;   /**< document_count + 1 entries into @c houses. */
+  size_t house_count;
   uint64_t total_terms;
 } GeoIndex;
 
@@ -175,6 +185,7 @@ typedef struct GeoIndex {
  *  @param[in] words        Folded words, merged and sorted.
  *  @param[in] display      Written spellings, merged and sorted.
  *  @param[in] documents    Joined documents and postings.
+ *  @param[in] houses       Joined house numbers, ordered by street.
  *  @param[in] total_terms  Terms seen while building, kept for the report.
  *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument,
  *          GRD_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB,
@@ -184,7 +195,11 @@ typedef struct GeoIndex {
  *  @whisper The work of minutes lies down in the order it will be read
  */
 grd_result geo_index_write(
-    const char *path, const NameSet *words, const NameSet *display, const DocSet *documents,
+    const char *path,
+    const NameSet *words,
+    const NameSet *display,
+    const DocSet *documents,
+    const HouseSet *houses,
     uint64_t total_terms
 );
 
@@ -262,8 +277,21 @@ const roaring_bitmap_t *geo_index_word_documents(const GeoIndex *index, size_t r
 typedef struct GeoHit {
   uint32_t document;   /**< Index into the documents section. */
   uint32_t matched;    /**< Query words this document carries. */
+  uint32_t house;      /**< The house number found on it, or GEO_RANK_NONE. */
   uint16_t importance; /**< The document's weight, copied for sorting. */
 } GeoHit;
+
+/**
+ * @brief Borrow the house numbers standing on one document.
+ *
+ *  @param[in]  index      Opened index; must not be NULL.
+ *  @param[in]  document   Document number.
+ *  @param[out] out_count  Receives how many houses stand there.
+ *  @return The first house, ordered by the rank of its number, or NULL.
+ */
+const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t *out_count);
+
+
 
 /**
  * @brief Answer a query with the places that carry all of its words.

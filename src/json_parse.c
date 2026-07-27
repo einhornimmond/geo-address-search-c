@@ -163,7 +163,6 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   p->type = plain(entry, "address_type");
   if (!p->type) { return RESULT_ERROR_MISSING_TYPE; }
   p->typeEnum = detectTypeEnum(p->type);
-  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) { return RESULT_SKIP; }
   if (PHOTON_PLACE_TYPE_UNKNOWN == p->typeEnum) { return RESULT_ERROR_UNKNOWN_TYPE; }
 
   p->country_code = plain(entry, "country_code");
@@ -174,8 +173,10 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   if (yyjson_is_num(importance)) { p->importance = yyjson_get_num(importance); }
 
   /* houses are payload of their street — their repeated parent text belongs
-     to the street's document, not into the term stream a fifth time */
-  const int indexed = p->typeEnum != PHOTON_PLACE_TYPE_HOUSE;
+     to the street's document, not into the term stream a fifth time.  The
+     number itself is read before this decision, because it decides it. */
+  p->house = string_of(yyjson_obj_get(entry, "housenumber"));
+  const int indexed = p->typeEnum != PHOTON_PLACE_TYPE_HOUSE && !p->house.data;
 
   /* --- one pass over the address block: roles for the answer, text for the index --- */
   yyjson_val *address = yyjson_obj_get(entry, "address");
@@ -242,10 +243,24 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
     }
   }
 
+  /* --- some fields sit beside the address block, not inside it: the postal
+         code does, and so does the house number --- */
+  if (!p->house.data) p->house = string_of(yyjson_obj_get(entry, "housenumber"));
+  if (!p->street.data) p->street = string_of(yyjson_obj_get(entry, "street"));
+
+  /* A house number makes an address, whatever the hierarchy calls the entry —
+     the dump files a holiday camp with a number under "other" and a shipwreck
+     without one under "house".  What carries no number and belongs to no level
+     of the address hierarchy is a pond or a cycleway, and stays outside. */
+  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum && !p->house.data) { return RESULT_SKIP; }
+
   /* --- the entry's own name also fills the role it stands for --- */
   switch (p->typeEnum) {
   case PHOTON_PLACE_TYPE_HOUSE:
-    if (!p->house.data) p->house = p->own_name;
+    /* A house without a number is not an address but a place with a name — a
+       shipwreck, a shop, a monument.  It keeps its name and stays out of the
+       house numbers; the address_type only says how deep in the hierarchy it
+       sits, not what kind of thing it is. */
     break;
   case PHOTON_PLACE_TYPE_STREET:
     p->street = p->own_name;
