@@ -686,6 +686,84 @@ static roaring_bitmap_t *narrow_by(const roaring_bitmap_t *carried, const QueryG
   return joined;
 }
 
+/** Shortest prefix that is expanded; below that the range is the whole alphabet. */
+#define GEO_QUERY_PREFIX_MIN 3
+
+/** Words one prefix may pull in; beyond that it is no longer a hint but a shrug. */
+#define GEO_QUERY_PREFIX_TERMS 4096
+
+/**
+ * @brief Where a word stands relative to a prefix.
+ *
+ *  @return <0 before it, 0 when the word begins with it, >0 after it.  A word
+ *          shorter than the prefix sorts before it, which is what makes the
+ *          two binary searches below delimit exactly the words that start
+ *          with it.
+ */
+static int compare_prefix(const char *word, size_t word_size, const char *prefix, size_t size) {
+  size_t shared = word_size < size ? word_size : size;
+  int order = shared ? memcmp(word, prefix, shared) : 0;
+  if (order) return order;
+  return word_size < size ? -1 : 0;
+}
+
+/** First rank whose word is not before @p prefix, or past it when @p after is set. */
+static size_t prefix_bound(
+    const GeoDictionary *dictionary, const char *prefix, size_t size, bool after
+) {
+  size_t low = 0, high = dictionary->word_count;
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+    size_t word_size = 0;
+    const char *word = geo_dictionary_word(dictionary, middle, &word_size);
+    int order = compare_prefix(word, word_size, prefix, size);
+    if (order < 0 || (after && order == 0)) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/**
+ * @brief Every document named by a word that begins with @p prefix.
+ *
+ *  The dictionary is sorted, so the words sharing a beginning stand together
+ *  and two binary searches delimit them.  Their document sets are then joined
+ *  — which is what a bitmap does best, and what a search typing one letter at
+ *  a time needs on every keystroke.
+ *
+ *  A prefix matching more than @ref GEO_QUERY_PREFIX_TERMS words is refused
+ *  rather than cut off.  Cutting would take the first few thousand words in
+ *  alphabetical order and quietly drop the rest — *mar* would then find
+ *  *marabu* and never *marienplatz*, and nothing in the answer would say so.
+ *  A refused word simply narrows nothing, which the other words of the query
+ *  survive.
+ *
+ *  @return The joined set, or NULL when no word begins with @p prefix or too
+ *          many do.
+ */
+static roaring_bitmap_t *prefix_documents(const GeoIndex *index, const char *prefix, size_t size) {
+  if (size < GEO_QUERY_PREFIX_MIN) return NULL;
+  size_t first = prefix_bound(&index->words, prefix, size, false);
+  size_t last = prefix_bound(&index->words, prefix, size, true);
+  if (last - first > GEO_QUERY_PREFIX_TERMS) return NULL;
+
+  roaring_bitmap_t *joined = NULL;
+  for (size_t rank = first; rank < last; ++rank) {
+    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
+    if (!documents) continue;
+    if (!joined) {
+      joined = roaring_bitmap_copy(documents);
+    } else {
+      roaring_bitmap_or_inplace(joined, documents);
+    }
+    roaring_bitmap_free(documents);
+  }
+  return joined;
+}
+
 /** Does this token carry a digit? Then it may be a house number. */
 static bool token_has_digit(const TextToken *token) {
   for (size_t i = 0; i < token->size; ++i) {
@@ -739,9 +817,23 @@ static size_t query_words(
     const GeoIndex *index,
     const TextTokenizer *tokenizer,
     bool without_numbers,
+    bool prefix_last,
     GeoHit *hits,
     size_t limit
 ) {
+  /* --- the word being typed is the last one; it may still grow --- */
+  uint16_t typing = 0;
+  bool any = false;
+  for (size_t t = 0; t < tokenizer->token_count; ++t) {
+    const TextToken *token = &tokenizer->tokens[t];
+    if (token->part) continue;
+    if (without_numbers && token_has_digit(token)) continue;
+    if (!any || token->group > typing) {
+      typing = token->group;
+      any = true;
+    }
+  }
+
   QueryGroup groups[GEO_QUERY_GROUP_MAX];
   size_t group_count = 0;
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
@@ -749,12 +841,21 @@ static size_t query_words(
     if (token->part) continue; /* pieces of a compound serve the index, not the query */
     if (without_numbers && token_has_digit(token)) continue;
 
+    /* A whole word is read as it stands; the one still being typed is read as
+       a beginning as well, so *Marienpl* finds what *Marienplatz* would. */
+    const roaring_bitmap_t *readings[2] = {NULL, NULL};
+    size_t reading_count = 0;
+
     size_t rank = 0;
-    if (!geo_dictionary_find(&index->words, token->data, token->size, &rank)) {
-      continue; /* a word nobody ever wrote cannot narrow anything down */
+    if (geo_dictionary_find(&index->words, token->data, token->size, &rank)) {
+      readings[reading_count] = geo_index_word_documents(index, rank);
+      if (readings[reading_count]) ++reading_count;
     }
-    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
-    if (!documents) continue;
+    if (prefix_last && token->group == typing) {
+      readings[reading_count] = prefix_documents(index, token->data, token->size);
+      if (readings[reading_count]) ++reading_count;
+    }
+    if (!reading_count) continue; /* a word nobody ever wrote cannot narrow anything down */
 
     /* readings of the same word join the same group */
     QueryGroup *group = NULL;
@@ -763,7 +864,7 @@ static size_t query_words(
     }
     if (!group) {
       if (group_count >= GEO_QUERY_GROUP_MAX) {
-        roaring_bitmap_free(documents);
+        for (size_t r = 0; r < reading_count; ++r) { roaring_bitmap_free(readings[r]); }
         break;
       }
       group = &groups[group_count++];
@@ -771,13 +872,15 @@ static size_t query_words(
       group->weight = 0;
       group->source = token->group;
     }
-    if (group->reading_count >= sizeof(group->readings) / sizeof(group->readings[0])) {
-      roaring_bitmap_free(documents);
-      continue;
+    for (size_t r = 0; r < reading_count; ++r) {
+      if (group->reading_count >= sizeof(group->readings) / sizeof(group->readings[0])) {
+        roaring_bitmap_free(readings[r]);
+        continue;
+      }
+      uint64_t weight = roaring_bitmap_get_cardinality(readings[r]);
+      group->readings[group->reading_count++] = readings[r];
+      if (weight > group->weight) group->weight = weight;
     }
-    uint64_t weight = roaring_bitmap_get_cardinality(documents);
-    group->readings[group->reading_count++] = documents;
-    if (weight > group->weight) group->weight = weight;
   }
   if (!group_count) return 0;
 
@@ -840,6 +943,7 @@ size_t geo_index_query(
     TextTokenizer *tokenizer,
     const char *query,
     size_t size,
+    bool prefix_last,
     GeoHit *hits,
     size_t limit
 ) {
@@ -858,8 +962,8 @@ size_t geo_index_query(
     if (!tokenizer->tokens[t].part && token_has_digit(&tokenizer->tokens[t])) { numbered = true; }
   }
 
-  size_t count = numbered ? query_words(index, tokenizer, true, hits, limit) : 0;
-  if (!count) return query_words(index, tokenizer, false, hits, limit);
+  size_t count = numbered ? query_words(index, tokenizer, true, prefix_last, hits, limit) : 0;
+  if (!count) return query_words(index, tokenizer, false, prefix_last, hits, limit);
 
   /* --- and now the number finds its door --- */
   for (size_t h = 0; h < count; ++h) {

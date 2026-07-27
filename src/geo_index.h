@@ -311,6 +311,11 @@ const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t 
  *  @param[in,out] tokenizer  Scratch space; reset by this call.
  *  @param[in]     query      Free text, words in any order.
  *  @param[in]     size       Byte length of @p query.
+ *  @param[in]     prefix_last  Read the last word as a beginning as well, so
+ *                            *Marienpl* finds *Marienplatz*.  What someone is
+ *                            still typing wants this; a query they finished
+ *                            does not, because a beginning always matches more
+ *                            than the word itself.
  *  @param[out]    hits       Receives up to @p limit results.
  *  @param[in]     limit      Capacity of @p hits.
  *  @return Number of results written.
@@ -318,7 +323,12 @@ const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t 
  *  @whisper Words that were never spoken together find the one place where they belong
  */
 size_t geo_index_query(
-    const GeoIndex *index, TextTokenizer *tokenizer, const char *query, size_t size, GeoHit *hits,
+    const GeoIndex *index,
+    TextTokenizer *tokenizer,
+    const char *query,
+    size_t size,
+    bool prefix_last,
+    GeoHit *hits,
     size_t limit
 );
 

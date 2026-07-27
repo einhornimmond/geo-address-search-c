@@ -1,3 +1,4 @@
+#include "client.h"
 #include "error.h"
 #include "format.h"
 #include "geo_index.h"
@@ -444,7 +445,7 @@ static int build_index(
    *  First pass: what words exist at all
    * ======================================================================= */
 
-  printf("Durchlauf 1 von 3: Wortschatz sammeln\n");
+  printf("Pass 1 of 3: gathering the vocabulary\n");
   run_pass(
       PARSER_PASS_VOCABULARY, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
       &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
@@ -492,20 +493,17 @@ static int build_index(
     repeated += parser_args[i].tokenizer.repeated;
     dropped += parser_args[i].tokenizer.dropped;
   }
-  printf(
-      "\nTexte: %" PRIu64 " angeboten, %" PRIu64 " als Wiederholung übersprungen\n", inputs,
-      repeated
-  );
-  printf("Wörter: %zu gesehen, %zu eindeutig\n", words.total, words.count);
-  printf("Schreibweisen: %zu gesehen, %zu eindeutig\n", display.total, display.count);
-  printf("  Textspeicher: %s, sortiert und vereinigt in %s\n", nameBytesBuffer, timeUsedBuffer);
-  if (dropped) { printf("  verworfen (kein Platz): %" PRIu64 "\n", dropped); }
+  printf("\nTexts: %" PRIu64 " offered, %" PRIu64 " skipped as repetitions\n", inputs, repeated);
+  printf("Words: %zu seen, %zu distinct\n", words.total, words.count);
+  printf("Spellings: %zu seen, %zu distinct\n", display.total, display.count);
+  printf("  text memory: %s, sorted and joined in %s\n", nameBytesBuffer, timeUsedBuffer);
+  if (dropped) { printf("  dropped (no room): %" PRIu64 "\n", dropped); }
   char treeBytesBuffer[32];
   format_byte_units(
       treeBytesBuffer, sizeof(treeBytesBuffer), prefix_tree_memory(&words.prefixes), 2
   );
   printf(
-      "Prefix-Gruppen: %zu (Index-Tree: Tiefe %u, %zu Ebenen, %s)\n", words.group_count,
+      "Prefix groups: %zu (index tree: depth %u, %zu levels, %s)\n", words.group_count,
       NAME_PREFIX_DEPTH, words.prefixes.levels, treeBytesBuffer
   );
 
@@ -519,7 +517,7 @@ static int build_index(
    *  Second pass: places, and which words point at them
    * ======================================================================= */
 
-  printf("\nDurchlauf 2 von 3: Dokumente und Posting-Listen\n");
+  printf("\nPass 2 of 3: documents and posting lists\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].word_set = &words;
     parser_args[i].display_set = &display;
@@ -559,17 +557,19 @@ static int build_index(
   }
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   printf(
-      "Dokumente: %zu aus %zu Segmenten, Postings: %zu — vereinigt in %s\n",
-      documents.document_count, documents.segment_count, documents.posting_count, timeUsedBuffer
+      "Documents: %zu from %zu segments, postings: %zu — joined in %s\n", documents.document_count,
+      documents.segment_count, documents.posting_count, timeUsedBuffer
   );
-  if (unknown_words) { printf("  Wörter ohne Rang: %" PRIu64 " (sollte 0 sein)\n", unknown_words); }
+  if (unknown_words) {
+    printf("  words without a rank: %" PRIu64 " (should be 0)\n", unknown_words);
+  }
   grdu_mono_timer_reset(&timeUsed);
 
   /* =======================================================================
    *  Third pass: the house numbers, onto the streets that now exist
    * ======================================================================= */
 
-  printf("\nDurchlauf 3 von 3: Hausnummern\n");
+  printf("\nPass 3 of 3: house numbers\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].doc_set = &documents;
     parser_args[i].house_result = GRD_SUCCESS;
@@ -604,28 +604,30 @@ static int build_index(
   }
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   printf(
-      "Hausnummern: %zu an %zu Straßen — geordnet in %s\n", houses.house_count,
+      "House numbers: %zu on %zu streets — ordered in %s\n", houses.house_count,
       documents.street_count, timeUsedBuffer
   );
   if (houses.homeless) {
     printf(
-        "  ohne Straße im Index: %" PRIu64 " (%.2f %%)\n", houses.homeless,
+        "  without a street in the index: %" PRIu64 " (%.2f %%)\n", houses.homeless,
         100.0 * (double)houses.homeless / (double)(houses.homeless + houses.house_count)
     );
     printf(
-        "    davon ohne Hausnummer: %" PRIu64 ", Straßenname unbekannt: %" PRIu64
-        ", Kombination unbekannt: %" PRIu64 "\n",
+        "    of those without a number: %" PRIu64 ", street name unknown: %" PRIu64
+        ", combination unknown: %" PRIu64 "\n",
         houses.without_number, houses.unknown_street, houses.unknown_key
     );
   }
   if (houses.recovered_city || houses.recovered_postcode || houses.recovered_nearest) {
     printf(
-        "  erst ohne PLZ: %" PRIu64 ", erst über Name und Ort: %" PRIu64
-        ", erst über die Nähe: %" PRIu64 "\n",
+        "  found only without the postal code: %" PRIu64 ", only by name and town: %" PRIu64
+        ", only by proximity: %" PRIu64 "\n",
         houses.recovered_city, houses.recovered_postcode, houses.recovered_nearest
     );
   }
-  if (houses.pointless) { printf("  ohne eigene Koordinate: %" PRIu64 "\n", houses.pointless); }
+  if (houses.pointless) {
+    printf("  without a coordinate of their own: %" PRIu64 "\n", houses.pointless);
+  }
   grdu_mono_timer_reset(&timeUsed);
 
   /* --- the result lies down in the shape it will be read in --- */
@@ -635,7 +637,7 @@ static int build_index(
     fatal(ERROR_IO, "Failed to write index '%s' (grd_result %d).", index_path, (int)write_result);
   }
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf("Index geschrieben nach '%s' in %s\n", index_path, timeUsedBuffer);
+  printf("Index written to '%s' in %s\n", index_path, timeUsedBuffer);
 
   printf("Cleaning up...\n");
 
@@ -674,98 +676,98 @@ static int build_index(
  *  @param[in] index_path  File written by a previous build.
  *  @return 0 on success; a failed open ends the program through fatal().
  */
-/** Print one display text, or a placeholder when the entry never carried it. */
-static void print_display(const GeoIndex *index, uint32_t rank) {
-  if (rank == GEO_RANK_NONE) {
+/** Print one borrowed text, or a placeholder when the entry never carried it. */
+static void print_text(const char *text, size_t size) {
+  if (!text || !size) {
     printf("—");
     return;
   }
-  size_t size = 0;
-  const char *text = geo_dictionary_word(&index->display, rank, &size);
-  printf("%.*s", (int)size, text ? text : "");
+  printf("%.*s", (int)size, text);
 }
 
 /** Show what a query found: the place as it is written, and where it lies. */
-static void print_hits(const GeoIndex *index, const GeoHit *hits, size_t count, const char *query) {
+static void print_results(const GeoAddress *found, size_t count, const char *query) {
   if (!count) {
-    printf("Keine Treffer für '%s'.\n", query);
+    printf("No results for '%s'.\n", query);
     return;
   }
-  printf("Treffer für '%s':\n", query);
+  printf("Results for '%s':\n", query);
   for (size_t i = 0; i < count; ++i) {
-    const GeoDocument *document = &index->documents[hits[i].document];
-    int32_t lat = document->lat_e7;
-    int32_t lon = document->lon_e7;
+    const GeoAddress *address = &found[i];
     printf("  ");
-    print_display(index, document->name_rank);
-    if (hits[i].house != GEO_RANK_NONE) { /* the number stands on the street */
-      const GeoHouse *house = &index->houses[hits[i].house];
+    print_text(address->name, address->name_size);
+    if (address->number) {
       printf(" ");
-      print_display(index, house->number_rank);
-      lat = house->lat_e7;
-      lon = house->lon_e7;
+      print_text(address->number, address->number_size);
     }
     printf(", ");
-    print_display(index, document->postcode_rank);
+    print_text(address->postcode, address->postcode_size);
     printf(" ");
-    print_display(index, document->city_rank);
-    if (document->flags & GEO_DOCUMENT_HAS_POINT) {
-      printf("  →  %.7f, %.7f", lat / 1.0e7, lon / 1.0e7);
+    print_text(address->city, address->city_size);
+    if (address->has_point) {
+      printf("  →  %.7f, %.7f", address->latitude, address->longitude);
     } else {
-      printf("  →  ohne Koordinate");
+      printf("  →  no coordinate");
     }
-    printf("  (Typ %u, Gewicht %u)\n", document->type, document->importance);
+    printf("  (kind %u, weight %u)\n", address->kind, address->importance);
   }
 }
 
-static int open_index(const char *index_path, const char *query, size_t result_limit) {
+/**
+ * @brief Map a finished index and report what it holds.
+ *
+ *  Everything here goes through the client library — the same door a server
+ *  would use, so what the command line shows is what an embedder gets.
+ *
+ *  @param[in] index_path    File written by a previous build.
+ *  @param[in] query         Free text to search for, or NULL for counts only.
+ *  @param[in] result_limit  Most results to show.
+ *  @param[in] prefix        Read the last word as a beginning as well.
+ *  @return 0 on success; a failed open ends the program through fatal().
+ */
+static int open_index(const char *index_path, const char *query, size_t result_limit, bool prefix) {
   grdu_mono_timer timeUsed;
   grdu_mono_timer_init();
   grdu_mono_timer_reset(&timeUsed);
 
-  GeoIndex index;
-  grd_result result = geo_index_open(&index, index_path);
-  if (result != GRD_SUCCESS) {
-    fatal(ERROR_IO, "Cannot open index '%s' (grd_result %d).", index_path, (int)result);
+  GeoClient *client = NULL;
+  GeoStatus status = geo_client_open(&client, index_path);
+  if (status != GEO_OK) {
+    fatal(ERROR_IO, "Cannot open index '%s' (GeoStatus %d).", index_path, (int)status);
   }
 
-  char timeUsedBuffer[32], sizeBuffer[32], textBuffer[32], displayBuffer[32], treeBuffer[32];
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  format_byte_units(sizeBuffer, sizeof(sizeBuffer), index.size, 2);
-  format_byte_units(textBuffer, sizeof(textBuffer), index.words.text_size, 2);
-  format_byte_units(displayBuffer, sizeof(displayBuffer), index.display.text_size, 2);
-  format_byte_units(treeBuffer, sizeof(treeBuffer), prefix_tree_memory(&index.words.prefixes), 2);
+  GeoClientInfo info;
+  geo_client_info(client, &info);
 
-  printf("Index '%s' geöffnet in %s\n", index_path, timeUsedBuffer);
-  printf("  Datei:          %s\n", sizeBuffer);
-  printf(
-      "  Wörter:         %zu (%s Text, %zu Prefix-Gruppen, Tree %s)\n", index.words.word_count,
-      textBuffer, index.words.group_count, treeBuffer
-  );
-  printf("  Schreibweisen:  %zu (%s Text)\n", index.display.word_count, displayBuffer);
-  printf("  Dokumente:      %zu\n", index.document_count);
-  printf("  Hausnummern:    %zu\n", index.house_count);
-  printf("  Postings:       %zu\n", index.posting_count);
-  printf("  Begriffe beim Bauen gesehen: %" PRIu64 "\n", index.total_terms);
+  char timeUsedBuffer[32], sizeBuffer[32];
+  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  format_byte_units(sizeBuffer, sizeof(sizeBuffer), info.file_size, 2);
+
+  printf("Index '%s' opened in %s\n", index_path, timeUsedBuffer);
+  printf("  file:           %s (format %u)\n", sizeBuffer, info.format);
+  printf("  words:          %" PRIu64 "\n", info.words);
+  printf("  spellings:      %" PRIu64 "\n", info.spellings);
+  printf("  documents:      %" PRIu64 "\n", info.documents);
+  printf("  house numbers:  %" PRIu64 "\n", info.houses);
+  printf("  postings:       %" PRIu64 "\n", info.postings);
 
   if (query) {
-    TextTokenizer tokenizer;
-    text_tokenizer_init(&tokenizer);
-    GeoHit hits[64];
-    if (result_limit > sizeof(hits) / sizeof(hits[0]))
-      result_limit = sizeof(hits) / sizeof(hits[0]);
+    GeoAddress found[64];
+    if (result_limit > sizeof(found) / sizeof(found[0])) {
+      result_limit = sizeof(found) / sizeof(found[0]);
+    }
 
     grdu_mono_timer queryTime;
     grdu_mono_timer_reset(&queryTime);
-    size_t count = geo_index_query(&index, &tokenizer, query, strlen(query), hits, result_limit);
+    size_t count = geo_client_search(client, query, strlen(query), prefix, found, result_limit);
     grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
 
     printf("\n");
-    print_hits(&index, hits, count, query);
-    printf("Gesucht in %s.\n", timeUsedBuffer);
+    print_results(found, count, query);
+    printf("Searched in %s.\n", timeUsedBuffer);
   }
 
-  geo_index_close(&index);
+  geo_client_close(client);
   return 0;
 }
 
@@ -803,7 +805,7 @@ static void derive_index_path(char *out, size_t size, const char *dump_path) {
   strcpy(out + length, GEO_INDEX_EXTENSION);
 }
 
-/** Vorgabe für die Anzahl gezeigter Treffer. */
+/** How many results are shown unless the caller asks for another number. */
 #define DEFAULT_RESULT_LIMIT 10
 
 static void print_usage(const char *program) {
@@ -811,26 +813,30 @@ static void print_usage(const char *program) {
       ERROR_USAGE,
       "Usage:\n"
       "  %s <photon_dump.jsonl.zst> [index%s] [parser_threads: 1-10]\n"
-      "      Baut den Suchindex aus dem Dump und schreibt ihn als Binärdatei.\n"
-      "      Ohne Zielangabe entsteht der Name aus dem Dump (planet.jsonl.zst -> planet%s).\n"
-      "      Vorgabe für parser_threads: 4.\n"
+      "      Builds the search index from the dump and writes it as a binary file.\n"
+      "      Without a destination the name comes from the dump\n"
+      "      (planet.jsonl.zst -> planet%s). parser_threads defaults to 4.\n"
       "\n"
-      "  %s <index%s> [\"Suchanfrage\"] [max_treffer]\n"
-      "      Lädt einen fertigen Index per mmap, zeigt seine Kennzahlen und —\n"
-      "      wenn eine Anfrage dabeisteht — die Orte, die alle ihre Wörter tragen.\n"
-      "      Die Wörter dürfen in beliebiger Reihenfolge stehen.\n"
-      "      Vorgabe für max_treffer: %d.\n"
+      "  %s <index%s> [\"query\"] [max_results]\n"
+      "      Maps a finished index, shows its counts and — when a query is given —\n"
+      "      the places that carry all of its words, in any order.\n"
+      "      The last word counts as still being typed and is read as a beginning\n"
+      "      as well: \"Marienpl\" finds \"Marienplatz\". A trailing space or comma\n"
+      "      closes it and searches it exactly as it stands.\n"
+      "      max_results defaults to %d.\n"
       "\n"
-      "Der Pfad entscheidet über den Weg: endet die Datei auf %s, wird geladen,\n"
-      "sonst wird gebaut.\n"
+      "The path decides which way it goes: a file ending in %s is loaded,\n"
+      "anything else is built.\n"
       "\n"
-      "Beispiele:\n"
+      "Examples:\n"
       "  %s planet.jsonl.zst 8\n"
-      "  %s planet%s \"Berlin, Superstraße\"\n"
-      "  %s planet%s \"15328 Bleyen\" 5",
+      "  %s planet%s \"Berlin, Superstrasse\"\n"
+      "  %s planet%s \"15328 Bleyen\" 5\n"
+      "  %s planet%s \"Berlin Marienpl\"     (still typing)\n"
+      "  %s planet%s \"Berlin Marienplatz \" (finished)",
       program, GEO_INDEX_EXTENSION, GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION,
       DEFAULT_RESULT_LIMIT, GEO_INDEX_EXTENSION, program, program, GEO_INDEX_EXTENSION, program,
-      GEO_INDEX_EXTENSION
+      GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION
   );
 }
 
@@ -851,7 +857,16 @@ int main(int argc, char *argv[]) {
   if (has_extension(input, GEO_INDEX_EXTENSION)) {
     const char *query = argc >= 3 ? argv[2] : NULL;
     unsigned limit = argc == 4 ? parse_count(argv[3], 1, 64, "max_treffer") : DEFAULT_RESULT_LIMIT;
-    return open_index(input, query, limit);
+
+    /* A word is still being typed unless something closed it: a trailing space
+       or comma says the writer is done with it, and then it is read as it
+       stands rather than as a beginning. */
+    bool prefix = true;
+    if (query && *query) {
+      char last = query[strlen(query) - 1];
+      prefix = last != ' ' && last != ',' && last != ';';
+    }
+    return open_index(input, query, limit, prefix);
   }
 
   /* `dump.jsonl.zst 8` means eight threads, not a file called "8" */

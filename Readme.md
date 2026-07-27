@@ -1,179 +1,268 @@
 # parse_photon_jsonl_dump
 
-Liest einen komprimierten [Photon](https://github.com/komoot/photon)-Dump, baut daraus einen
-Suchindex für Postadressen und legt ihn als Binärdatei ab, die beim Start nur noch
-gemappt wird.
+Reads a compressed [Photon](https://github.com/komoot/photon) dump, builds a search index
+for postal addresses from it, and writes it as a binary file that later runs are merely
+mapped into memory.
 
 ```
 photon_dump.jsonl.zst  ──►  parse_photon_jsonl_dump  ──►  index.gdx  ──►  mmap
-      24 GB                     zwei Durchläufe                            < 1 ms
+      24 GB                     three passes                              < 1 ms
 ```
 
-## Was es tut
+## What it does
 
-1. **Entpackt und liest** den zstd-komprimierten Dump im Strom.
-2. **Parst** jede JSON-Zeile mit [yyjson](https://github.com/ibireme/yyjson) und trennt pro
-   Eintrag zwei Dinge: die Felder, die in einer Antwort stehen (Straße, Hausnummer, PLZ,
-   Ort, Koordinate, `importance`), und den rollenfreien Suchtext.
-3. **Faltet und zerlegt** den Suchtext: Kleinschreibung, Diakritika, `ß → ss`, Umlaute in
-   beiden Schreibweisen (`ü → ue` und `ü → u`), Abkürzungen (`str. → strasse`,
-   `St. → Sankt`) und Komposita (`superstrasse → super + strasse`).
-4. **Sammelt, sortiert und dedupliziert** die Wörter — pro Thread lock-frei, nach Prefix
-   gruppiert, am Ende in einem k-Way-Merge zusammengeführt. Daneben entsteht ein zweites
-   Wörterbuch mit den Originalschreibweisen für die Ausgabe.
-5. **Läuft ein zweites Mal** über den Dump und schreibt Dokumente (ein Ort, eine
-   Koordinate, ein Gewicht) und Posting-Listen (Wort → Dokumente). Ein Posting braucht
-   den Rang seines Wortes, und den gibt es erst, wenn alle Wörter sortiert sind.
-6. **Läuft ein drittes Mal** und hängt die Hausnummern an ihre Straßen. Auch das geht
-   erst, wenn die Straßen Dokumente mit Nummern sind — und ein Durchlauf kostet Minuten,
-   während das Zwischenspeichern von 292 Millionen Häusern Gigabyte kostet.
-7. **Schreibt** das Ergebnis als `.gdx`-Datei in genau der Form, in der es gelesen wird.
+1. **Decompresses and reads** the zstd-compressed dump as a stream.
+2. **Parses** every JSON line with [yyjson](https://github.com/ibireme/yyjson) and splits
+   each entry in two: the fields an answer shows (street, house number, postal code,
+   town, coordinate, `importance`), and the role-free text a query may match.
+3. **Folds and splits** that text: lower case, diacritics, `ß → ss`, umlauts in both
+   spellings (`ü → ue` and `ü → u`), abbreviations (`str. → strasse`, `St. → Sankt`) and
+   compounds (`superstrasse → super + strasse`).
+4. **Collects, sorts and deduplicates** the words — lock-free per thread, grouped by
+   prefix, joined at the end in a k-way merge. A second dictionary keeps the original
+   spellings for display.
+5. **Walks the dump a second time** and writes documents (a place, a coordinate, a
+   weight) and posting lists (word → places). A posting needs the rank of its word, and
+   that exists only once all words are sorted.
+6. **Walks it a third time** and hangs the house numbers on their streets. That, too, is
+   only possible once the streets are documents with numbers — and a pass costs minutes
+   while holding 292 million houses in memory would cost gigabytes.
+7. **Writes** the result as a `.gdx` file in exactly the shape it will be read in.
 
-Was eine Hausnummer trägt, ist eine Adresse — unabhängig davon, was der `address_type`
-sagt. Der Dump führt ein Ferienlager mit Nummer unter `other` und ein Schiffswrack ohne
-Nummer unter `house`. Was keine Nummer hat und zu keiner Ebene der Adresshierarchie
-gehört, ist ein Teich oder ein Radweg und bleibt draußen.
+Whatever carries a house number is an address, regardless of what `address_type` calls
+it. The dump files a holiday camp with a number under `other` and a shipwreck without one
+under `house`. What carries no number and belongs to no level of the address hierarchy is
+a pond or a cycleway, and stays out.
 
-## Aufruf
+## Usage
 
 ```sh
 parse_photon_jsonl_dump <photon_dump.jsonl.zst> [index.gdx] [parser_threads]
-parse_photon_jsonl_dump <index.gdx> ["Suchanfrage"] [max_treffer]
+parse_photon_jsonl_dump <index.gdx> ["query"] [max_results]
 ```
 
-Die Dateiendung entscheidet über den Weg: endet der erste Parameter auf `.gdx`, wird ein
-fertiger Index geladen, sonst wird aus dem Dump gebaut.
+The extension decides which way it goes: a first argument ending in `.gdx` is loaded,
+anything else is built.
 
-| Argument | Beschreibung | Vorgabe |
+| Argument | Meaning | Default |
 | --- | --- | --- |
-| `photon_dump.jsonl.zst` | Quelldump | erforderlich |
-| `index.gdx` | Zieldatei beim Bauen | aus dem Dumpnamen abgeleitet |
-| `parser_threads` | Parser-Threads (1–10) | 4 |
-| `"Suchanfrage"` | Wörter in beliebiger Reihenfolge | ohne: nur Kennzahlen |
-| `max_treffer` | Zahl der gezeigten Treffer | 10 |
+| `photon_dump.jsonl.zst` | Source dump | required |
+| `index.gdx` | Destination when building | derived from the dump name |
+| `parser_threads` | Parser threads (1–10) | 4 |
+| `"query"` | Words in any order | without it: counts only |
+| trailing space | Closes the last word | without it: it counts as still being typed |
+| `max_results` | Results to show | 10 |
 
 ```sh
-# bauen: planet.jsonl.zst -> planet.gdx
+# build: planet.jsonl.zst -> planet.gdx
 parse_photon_jsonl_dump planet.jsonl.zst 8
 
-# laden und Kennzahlen zeigen
+# load and show the counts
 parse_photon_jsonl_dump planet.gdx
 
-# suchen — Reihenfolge egal, Abkürzungen und Schreibweisen werden gefaltet
+# search — order does not matter, spellings and abbreviations are folded
 parse_photon_jsonl_dump planet.gdx "Berlin, Superstr. 8"
 parse_photon_jsonl_dump planet.gdx "15328 Bleyen" 5
 ```
 
-Die Anfrage geht durch dieselbe Faltung wie der Index: `Superstr.`, `superstrasse` und
-`SUPERSTRASSE` treffen dasselbe Wort, `München` findet sich auch als `Muenchen` oder
-`Munchen`. Gefunden wird, wo alle Wörter der Anfrage zusammentreffen; Wörter, die der
-Index nicht kennt, werden übergangen statt die ganze Anfrage scheitern zu lassen.
-Sortiert wird nach Photons eigenem `importance`-Gewicht; wer nach einer Hausnummer
-fragt, bekommt die Straße, die sie trägt, zuerst.
+A query walks the same folding as the index did: `Superstr.`, `superstrasse` and
+`SUPERSTRASSE` meet the same word, and `München` is also found as `Muenchen` or
+`Munchen`. A place is found where all words of the query meet; words the index does not
+know are passed over rather than made to fail the whole query. Results are ordered by
+Photon's own `importance`, and whoever asks for a house number gets the street that
+carries it first.
 
-Eine Zahl in der Anfrage ist zuerst eine Hausnummer und erst danach ein Wort: `Superstraße 8`
-sucht die Straße ohne die 8 und löst die Nummer dort auf. Nur wenn das nichts findet,
-darf die Zahl als Wort auftreten — sonst würde `Straße des 17. Juni` scheitern.
+A number in the query is a house number before it is a word: `Superstraße 8` looks for
+the street without the 8 and resolves the number there. Only if that finds nothing may
+the number appear as a word — otherwise `Straße des 17. Juni` would fail.
 
-## Kennzahlen
+### Autocomplete
 
-Gemessen auf dem Planeten-Dump (24,21 GB) und dem Deutschland-Auszug (2,10 GB):
+The **last** word counts as still being typed and is read as a beginning as well:
+`Altlandsberg Bahnhofstr 12` finds `Bahnhofstraße 12`. A trailing space or comma closes
+the word and searches it exactly as it stands. As a library this is the `prefix_last`
+parameter — `true` for input in progress, `false` for a submitted query.
 
-| | Deutschland | Welt |
+Two limits are known and intended:
+
+- A beginning matching **more than 4096 words** is **refused rather than truncated**.
+  Truncating would take the first thousand in alphabetical order and quietly drop the
+  rest — `mar` would find `marabu` and never `marienplatz`. A refused word narrows
+  nothing; if the word also exists on its own (`mar` is Spanish for sea), the exact
+  reading carries the query.
+- A **single** word as a beginning costs milliseconds instead of microseconds: it unites
+  every matching word and looks through a large result space by weight.
+
+Both could be fixed by intersecting the complete words first and checking the beginning
+against the few candidates afterwards. As long as autocomplete is not in front of users,
+that work does not pay.
+
+## Numbers
+
+Measured on the planet dump (24.21 GB compressed, roughly 500 GB of JSON) and the German
+extract (2.10 GB), four threads:
+
+| | Germany | World |
 | --- | --- | --- |
-| Einträge | 26,7 M | 356,3 M |
-| Orte (Dokumente) | 1,6 M | 34,7 M |
-| Hausnummern | 20,6 M | 248,6 M |
-| eindeutige Wörter | 594 k | 7,83 M |
-| Indexdatei | 315 MB | 4,8 GB |
-| Bauzeit | 1,1 min | 15,4 min |
-| Öffnen | 0,25 ms | 0,26 ms |
+| entries | 26.7 M | 356.3 M |
+| places (documents) | 1.6 M | 34.7 M |
+| house numbers | 20.6 M | 248.6 M |
+| distinct words | 594 k | 7.83 M |
+| index file | 390 MB | 5.6 GB |
+| build time | 1.1 min | 15.8 min |
+| open | 0.25 ms | 0.26 ms |
+| query, warm | ~100 µs | ~120 µs |
 
-Die Bauzeit hängt am Dekomprimieren — dreimal derselbe Dump. Alles andere zusammen
-kostet auf dem Planeten gut eine Minute.
+Build time hangs on decompression — the same dump three times. Everything else together
+costs about a minute on the planet. Peak memory while building is around 13 GB.
 
-## Bauen
+## Building
 
 ```sh
 zig build -Dtarget=x86_64-linux-gnu
 ```
 
-Das Binary landet unter `./zig-out/bin/parse_photon_jsonl_dump`.
+The binary lands in `./zig-out/bin/parse_photon_jsonl_dump`, the client library in
+`./zig-out/lib/` and its header in `./zig-out/include/geoindex/client.h`.
 
-Abhängigkeiten holt das Zig-Buildsystem selbst:
+Only the library, as a shared object:
+
+```sh
+zig build client -Dshared=true --release=fast
+```
+
+There is **no** `-march=native` in the compiler flags any more: it silently overrode the
+target Zig compiles for and produced artifacts that abort with "illegal instruction" on
+foreign machines. To compile for your own machine use `-Dcpu=native`; for shipped modules
+the baseline target stays. CRoaring picks its SIMD paths at runtime regardless.
+
+Dependencies are fetched by the Zig build system:
 [zstd](https://github.com/facebook/zstd),
-[gradido-blockchain-core](https://github.com/gradido/gradido-blockchain-core) (Bucket-Vektor,
-Arena-Allokator, Timer), [yyjson](https://github.com/ibireme/yyjson) und
-[CRoaring](https://github.com/RoaringBitmap/CRoaring) (beide mitgeliefert).
+[gradido-blockchain-core](https://github.com/gradido/gradido-blockchain-core) (bucket
+vector, arena allocator, timer), [yyjson](https://github.com/ibireme/yyjson) and
+[CRoaring](https://github.com/RoaringBitmap/CRoaring) (both vendored).
 
-Voraussetzungen: Zig ≥ 0.15.1, pthreads, Linux.
+Requirements: Zig ≥ 0.15.1, pthreads, Linux.
 
-## Architektur
+## Embedding
+
+`client.h` is the whole surface of the reading library — five functions, an opaque
+handle, its own status enum, `extern "C"` for C++. It depends on nothing but `stdbool`,
+`stddef` and `stdint`.
+
+```c
+#include <geoindex/client.h>
+
+GeoClient *client = NULL;
+if (geo_client_open(&client, "planet.gdx") != GEO_OK) { /* … */ }
+
+GeoAddress found[10];
+size_t count = geo_client_search(client, "Bahnhofstr 12 Altlandsberg", 26, true, found, 10);
+
+char json[4096];
+geo_client_search_json(client, "Bahnhofstr 12 Altlandsberg", 26, true, 10, json, sizeof(json));
+
+geo_client_close(client);
+```
+
+Three properties you can rely on:
+
+- **Nothing fatal.** No `exit`, no output; every failure comes back as a `GeoStatus`. An
+  unreadable file does not take the server down with it.
+- **Concurrent reads.** Any number of threads may search the same client — the scratch a
+  search needs lives on its own stack. Checked with ThreadSanitizer.
+- **Borrowed text.** The strings in a result point into the mapping and are valid until
+  `geo_client_close()`. Copy what should outlive it.
+
+`geo_client_search_json()` exists for the language border: one crossing per query instead
+of one per result field. A buffer that is too small reports the length needed and stays
+NUL-terminated.
+
+The library does **not** link against blockchain-core — only its include path is needed,
+because `geo_index.h` uses `grd_result` internally. Five files are compiled: `client.c`,
+`geo_index.c`, `prefix_tree.c`, `text_tokenize.c` and `roaring.c`.
+
+### From other languages
+
+Bindings live under `bindings/`. For Bun there is a finished one:
+
+```ts
+import { GeoIndex } from "./bindings/bun/index.ts";
+
+using index = GeoIndex.open("planet.gdx");
+const [best] = index.search("Bahnhofstr 12 Altlandsberg");
+```
+
+A query crosses the border as a single FFI call and comes back as JSON — measured at
+**~22 µs** on a warm 390 MB index, `JSON.parse` included. Details in
+[bindings/bun/README.md](bindings/bun/README.md).
+
+## Architecture
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
-│  Hauptthread │────►│  ParseQueue  │────►│ Parser-Threads │
-│  zstd-Strom  │     │  (begrenzt)  │     │ yyjson + Falten│
+│  main thread │────►│  ParseQueue  │────►│ parser threads │
+│  zstd stream │     │  (bounded)   │     │ yyjson + fold  │
 └──────────────┘     └──────────────┘     └────────┬───────┘
-                                                   │ je Thread: sortieren
+                                                   │ each thread sorts its own
                                           ┌────────▼────────┐
-                                          │  k-Way-Merge    │
-                                          │  über Prefixe   │
+                                          │  k-way merge    │
+                                          │  over prefixes  │
                                           └────────┬────────┘
                                           ┌────────▼────────┐
-                                          │  geo_index_write│
+                                          │ geo_index_write │
                                           └─────────────────┘
 ```
 
-| Modul | Aufgabe |
+| Module | Purpose |
 | --- | --- |
-| `main` | Kommandozeile, zstd-Strom, Threads, drei Durchläufe |
-| `json_parse` | Photon-Zeilen → `PhotonPlace` (Anzeigefelder + Suchtexte) |
-| `text_tokenize` | Falten, Abkürzungen, Komposita — Index und Anfrage gehen denselben Weg |
-| `name_collector` | Sammeln, sortieren, deduplizieren; k-Way-Merge über die Threads |
-| `prefix_tree` | Byte-weiser Indexbaum: ein Zeichen je Ebene, am Ende ein Index |
-| `doc_collector` | Dokumente und Postings je Thread, Zusammenführung per Zählsortierung |
-| `house_collector` | Hausnummern an ihren Straßen, geordnet je Straße |
-| `geo_index` | Dateiformat, Writer, `mmap`-Loader, Wortsuche, Anfragen über Bitmaps |
-| `meta_area_allocator` | Arena-Ketten für die Textbytes, eine je Thread |
-| `parse_queue`, `line_buffer`, `progress`, `format`, `error` | Infrastruktur |
+| `main` | Command line, zstd stream, threads, three passes |
+| `json_parse` | Photon lines → `PhotonPlace` (answer fields + search texts) |
+| `text_tokenize` | Folding, abbreviations, compounds — index and query walk the same path |
+| `name_collector` | Collect, sort, deduplicate; k-way merge across threads |
+| `prefix_tree` | Byte-wise index tree: one character per level, an index at the end |
+| `doc_collector` | Documents and postings per thread, joined by counting sort |
+| `house_collector` | House numbers on their streets, ordered per street |
+| `geo_index` | File format, writer, `mmap` loader, word lookup, queries over bitmaps |
+| `client` | The reading library: open, search, close — without the builder |
+| `meta_area_allocator` | Arena chains for the text bytes, one per thread |
+| `parse_queue`, `line_buffer`, `progress`, `format`, `error` | Infrastructure |
 
-## Dateiformat
+## File format
 
 ```
-[ header          ] Magic, Version, Layout-Hash, Byte-Order, Zählwerte
-[ sections        ] je Sektion: Art, Offset, Länge
-[ Wörterbuch      ] groups, offsets, text — gefaltete Wörter, was eine Anfrage trifft
-[ Schreibweisen   ] groups, offsets, text — Original, was eine Antwort zeigt
-[ documents       ] je Ort ein fester Satz: Koordinate, Gewicht, Typ, Anzeige-Ränge
-[ posting offsets ] word_count + 1 Byte-Offsets in die Postings
-[ postings        ] je Wort eine eingefrorene Roaring-Bitmap, 32-Byte-ausgerichtet
+[ header          ] magic, version, layout hash, byte order, counts
+[ sections        ] per section: kind, offset, length
+[ word dictionary ] groups, offsets, text — folded words, what a query meets
+[ display dict.   ] groups, offsets, text — original spelling, what an answer shows
+[ documents       ] one fixed record per place: coordinate, weight, kind, display ranks
+[ importance      ] one weight per place, apart from the records
+[ posting offsets ] word_count + 1 byte offsets into the postings
+[ postings        ] one frozen Roaring bitmap per word, 32-byte aligned
+[ houses          ] house numbers with their own coordinate, ordered by street
+[ house offsets   ] document_count + 1 entries into the houses
 ```
 
-Zwei Wörterbücher, weil die beiden Aufgaben sich widersprechen: eine Anfrage tippt
-*muenchen*, eine Antwort muss *München* lesen. Gefaltete Wörter teilen sich weit
-häufiger als geschriebene, deshalb bleibt die Suchseite klein.
+The postings are Roaring bitmaps ([CRoaring](https://github.com/RoaringBitmap/CRoaring),
+vendored): a word standing on millions of places then costs a bit per place instead of
+four bytes, and asking whether one of them is *this* place is a bit test instead of a
+walk through gigabytes. The *frozen* format is the memory image itself — nothing is
+decoded when the file opens, a bitmap is viewed where it lies.
 
-Die Postings sind Roaring-Bitmaps ([CRoaring](https://github.com/RoaringBitmap/CRoaring),
-mitgeliefert): ein Wort auf Millionen Orten kostet damit ein Bit je Ort statt vier Byte,
-und die Frage „steht dieser Ort darauf" ist ein Bit-Test statt einer Suche durch Gigabyte.
-Das *frozen*-Format ist das Speicherabbild selbst — beim Öffnen wird nichts dekodiert,
-eine Bitmap wird dort betrachtet, wo sie liegt.
+No pointers, only `uint32` indices and offsets; fixed field widths with `static_assert`;
+the header checks magic, version, byte order, layout hash and file size before a byte is
+read. That is why loading is an `mmap` and costs nothing regardless of file size.
 
-Keine Zeiger, nur `uint32`-Indizes und Offsets; feste Feldbreiten mit `static_assert`;
-Header prüft Magic, Version, Byte-Reihenfolge, Layout-Hash und Dateigröße, bevor ein Byte
-gelesen wird. Deshalb ist Laden ein `mmap` und kostet unabhängig von der Dateigröße nichts.
-
-## Entwicklung
+## Development
 
 ```sh
-./lint.sh     # clang-format über src/
-doxygen       # API-Dokumentation
+./lint.sh     # clang-format over src/
+doxygen       # API documentation
 ```
 
-Kommentare folgen dem Zwei-Schichten-Standard aus [AGENTS.md](AGENTS.md): präzise
-technische Spezifikation, dazu wo passend eine `@whisper`-Zeile.
+Comments follow the two-layer standard from [AGENTS.md](AGENTS.md): a precise technical
+specification, plus a `@whisper` line where one fits.
 
-## Lizenz
+## License
 
-Siehe die Lizenzdateien in `third_party/` für die mitgelieferten Abhängigkeiten.
+See the license files in `third_party/` for the vendored dependencies.

@@ -5,23 +5,81 @@ const c_flags = &.{
     "-std=c23",
     "-D_POSIX_C_SOURCE=199309L",
     "-pthread",
-    "-march=native",
     "-Wall",
     "-Wextra",
     "-Wpedantic",
 };
 
+/// What the client needs to read an index file — and nothing else.
+/// The builder (main, parser, collectors) stays out, as do yyjson and zstd.
+const client_sources = [_][]const u8{
+    "client.c",
+    "geo_index.c",
+    "prefix_tree.c",
+    "text_tokenize.c",
+};
+
 pub fn build(b: *std.Build) !void {
-    const target = b.standardTargetOptions(.{});
+    // A bare `zig build` would compile for "native" and reach into /usr/include,
+    // which needs kernel headers this project does not otherwise depend on.
+    // Naming the ABI keeps the host's architecture but makes Zig use its own
+    // libc headers; -Dtarget=… still overrides it for cross builds.
+    const target = b.standardTargetOptions(.{ .default_target = .{ .abi = .gnu } });
     const optimize = b.standardOptimizeOption(.{});
     // make a list of targets that have include files and c source files
     var cdbTargets: std.ArrayList(*std.Build.Step.Compile) = .empty;
 
     // options
     const disable_avx512 = b.option(bool, "ROARING_DISABLE_AVX512", "Disable AVX512 in CRoaring") orelse autoDetectDisableAvx512(target);
+    const shared = b.option(bool, "shared", "Build the client as a shared library (default: static)") orelse false;
 
     const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
     const blockchain_core = b.dependency("blockchain_core", .{ .target = target, .optimize = optimize });
+
+    // CRoaring is compiled by both artifacts, with the same flags
+    var roaring_flags: std.ArrayList([]const u8) = .empty;
+    try roaring_flags.appendSlice(b.allocator, c_flags);
+    if (disable_avx512) {
+        try roaring_flags.append(b.allocator, "-DCROARING_COMPILER_SUPPORTS_AVX512=0");
+    }
+
+    // =====================================================================
+    //  Client library: open and search
+    // =====================================================================
+
+    const lib = b.addLibrary(.{
+        .name = "geoindex",
+        .linkage = if (shared) .dynamic else .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    lib.linkLibC();
+    lib.root_module.addCMacro("_GNU_SOURCE", "1");
+
+    // Only the headers of blockchain-core are needed (grd_result), not the library
+    lib.addIncludePath(blockchain_core.path("include"));
+    lib.addIncludePath(b.path("third_party/CRoaring/include"));
+    lib.addCSourceFiles(.{
+        .root = b.path("third_party/CRoaring"),
+        .files = &.{"roaring.c"},
+        .flags = roaring_flags.items,
+    });
+    lib.addCSourceFiles(.{
+        .root = b.path("src"),
+        .files = &client_sources,
+        .flags = c_flags,
+    });
+    lib.installHeader(b.path("src/client.h"), "geoindex/client.h");
+
+    b.installArtifact(lib);
+    cdbTargets.append(b.allocator, lib) catch @panic("OOM");
+
+    // =====================================================================
+    //  Builder: turn a dump into an index file
+    // =====================================================================
 
     const exe = b.addExecutable(.{ .name = "parse_photon_jsonl_dump", .root_module = b.createModule(.{
         .target = target,
@@ -53,21 +111,13 @@ pub fn build(b: *std.Build) !void {
     exe.addIncludePath(b.path("third_party/stb"));
 
     // roaring bitmaps
-    const lib_flags: []const []const u8 = if (disable_avx512) &[_][]const u8{"-DCROARING_COMPILER_SUPPORTS_AVX512=0"} else &[_][]const u8{};
-    var flags_list: std.ArrayList([]const u8) = .empty;
-    try flags_list.appendSlice(b.allocator, c_flags);
-
-    // lib_flags hinzufügen (nur wenn sie nicht leer sind)
-    if (lib_flags.len > 0) {
-        try flags_list.appendSlice(b.allocator, lib_flags);
-    }
     exe.addIncludePath(b.path("third_party/CRoaring/include"));
     exe.addCSourceFiles(.{
         .root = b.path("third_party/CRoaring"),
         .files = &.{
             "roaring.c",
         },
-        .flags = flags_list.items,
+        .flags = roaring_flags.items,
     });
 
     // Project sources
@@ -87,6 +137,10 @@ pub fn build(b: *std.Build) !void {
 
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
+
+    // zig build client — the library alone, without the builder
+    const client_step = b.step("client", "Build only the client library");
+    client_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
 
     const cdbTargetsSlice = cdbTargets.toOwnedSlice(b.allocator) catch @panic("OOM");
     const buildStep = zcc.createStep(b, "cdb", cdbTargetsSlice);
@@ -147,13 +201,13 @@ fn addDirSources(
 fn autoDetectDisableAvx512(target: std.Build.ResolvedTarget) bool {
     const cpu_arch = target.result.cpu.arch;
 
-    // AVX512 ist nur auf x86_64 verfügbar
+    // AVX512 only exists on x86_64
     if (cpu_arch != .x86_64) {
         std.log.info("Non-x86_64 target detected ({s}), disabling AVX512 in CRoaring", .{@tagName(cpu_arch)});
         return true;
     }
 
-    // Für x86_64 prüfen, ob die benötigten Features unterstützt werden
+    // On x86_64, check whether the required features are supported
     const cpu_features = target.result.cpu.features;
     const has_avx512f = cpu_features.isEnabled(@intFromEnum(std.Target.x86.Feature.avx512f));
     const has_avx512dq = cpu_features.isEnabled(@intFromEnum(std.Target.x86.Feature.avx512dq));

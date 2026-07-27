@@ -84,28 +84,26 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
 }
 
 void json_stats_print(const JsonStats *stats) {
-  printf("\nGespeicherte Adresshierarchie:\n");
-  printf("  Länder:         %" PRIu64 "\n", stats->countries);
-  printf("  Bundesländer:   %" PRIu64 "\n", stats->states);
-  printf("  Landkreise:     %" PRIu64 "\n", stats->counties);
-  printf("  Städte:         %" PRIu64 "\n", stats->cities);
-  printf("  Bezirke:        %" PRIu64 "\n", stats->districts);
-  printf("  Locales:        %" PRIu64 "\n", stats->localities);
-  printf("  Straßen:        %" PRIu64 "\n", stats->streets);
-  printf("  Adressen:       %" PRIu64 "\n", stats->houses);
-  printf("  Sonstige:  %" PRIu64 "\n", stats->other);
+  printf("\nAddress hierarchy kept:\n");
+  printf("  countries:      %" PRIu64 "\n", stats->countries);
+  printf("  states:         %" PRIu64 "\n", stats->states);
+  printf("  counties:       %" PRIu64 "\n", stats->counties);
+  printf("  cities:         %" PRIu64 "\n", stats->cities);
+  printf("  districts:      %" PRIu64 "\n", stats->districts);
+  printf("  localities:     %" PRIu64 "\n", stats->localities);
+  printf("  streets:        %" PRIu64 "\n", stats->streets);
+  printf("  addresses:      %" PRIu64 "\n", stats->houses);
+  printf("  other:          %" PRIu64 "\n", stats->other);
   printf(
-      "\nPlace-Objekte: %" PRIu64 ", gespeicherte Einträge: %" PRIu64 ", JSON-Datensätze: %" PRIu64
-      "\n",
+      "\nPlace objects: %" PRIu64 ", entries kept: %" PRIu64 ", JSON records: %" PRIu64 "\n",
       stats->place_records, stats->place_entries, stats->records
   );
   if (stats->invalid_records) {
-    printf("Ungültige oder unvollständige Einträge: %" PRIu64 "\n", stats->invalid_records);
+    printf("Malformed or incomplete entries: %" PRIu64 "\n", stats->invalid_records);
   }
   if (stats->search_dropped) {
     printf(
-        "Abgeschnittene Suchbegriffe: %" PRIu64 " von %" PRIu64 " — PHOTON_PLACE_SEARCH_MAX "
-        "erhöhen\n",
+        "Search terms cut off: %" PRIu64 " of %" PRIu64 " — raise PHOTON_PLACE_SEARCH_MAX\n",
         stats->search_dropped, stats->search_terms + stats->search_dropped
     );
   }
