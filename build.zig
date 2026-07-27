@@ -32,6 +32,11 @@ pub fn build(b: *std.Build) !void {
     // options
     const disable_avx512 = b.option(bool, "ROARING_DISABLE_AVX512", "Disable AVX512 in CRoaring") orelse autoDetectDisableAvx512(target);
     const shared = b.option(bool, "shared", "Build the client as a shared library (default: static)") orelse false;
+    const node_headers = b.option(
+        []const u8,
+        "node-headers",
+        "Directory holding node_api.h (default: bindings/node/node_modules/node-api-headers/include)",
+    ) orelse "bindings/node/node_modules/node-api-headers/include";
 
     const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
     const blockchain_core = b.dependency("blockchain_core", .{ .target = target, .optimize = optimize });
@@ -76,6 +81,53 @@ pub fn build(b: *std.Build) !void {
 
     b.installArtifact(lib);
     cdbTargets.append(b.allocator, lib) catch @panic("OOM");
+
+    // =====================================================================
+    //  Node addon: the same client behind a N-API surface
+    // =====================================================================
+
+    const addon = b.addLibrary(.{
+        .name = "geoindex-node",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    addon.linkLibC();
+    addon.root_module.addCMacro("_GNU_SOURCE", "1");
+    addon.root_module.addCMacro("NAPI_VERSION", "8");
+
+    // The N-API symbols are resolved by the Node process that loads the addon,
+    // so they stay undefined here. On macOS the linker needs to be told;
+    // on Linux and Windows this is the default for a shared library.
+    addon.addIncludePath(b.path(node_headers));
+    addon.addIncludePath(b.path("src"));
+    addon.addIncludePath(blockchain_core.path("include"));
+    addon.addIncludePath(b.path("third_party/CRoaring/include"));
+    addon.addCSourceFiles(.{
+        .root = b.path("third_party/CRoaring"),
+        .files = &.{"roaring.c"},
+        .flags = roaring_flags.items,
+    });
+    addon.addCSourceFiles(.{
+        .root = b.path("src"),
+        .files = &client_sources,
+        .flags = c_flags,
+    });
+    addon.addCSourceFiles(.{
+        .root = b.path("bindings/node"),
+        .files = &.{"binding.c"},
+        .flags = c_flags,
+    });
+
+    // Node insists on the .node extension, so the artifact is installed under
+    // that name rather than as libgeoindex-node.so.
+    const install_addon = b.addInstallFileWithDir(addon.getEmittedBin(), .lib, "geoindex.node");
+
+    const node_step = b.step("node", "Build the Node addon (bindings/node)");
+    node_step.dependOn(&install_addon.step);
 
     // =====================================================================
     //  Builder: turn a dump into an index file

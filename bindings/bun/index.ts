@@ -13,79 +13,13 @@ import { dlopen, FFIType, ptr, suffix } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** How a library call ended. Mirrors `GeoStatus` from client.h. */
-export enum GeoStatus {
-  Ok = 0,
-  Argument = 1,
-  File = 2,
-  Format = 3,
-  Memory = 4,
-}
+import { GeoPlaceKind, GeoStatus, STATUS_TEXT } from "../kinds.js";
+import type { GeoAddress, GeoIndexInfo, SearchOptions } from "../index";
 
-/** What kind of place a result is. The numbers are part of the file format. */
-export enum GeoPlaceKind {
-  None = 0,
-  Country = 1,
-  State = 2,
-  County = 3,
-  City = 4,
-  Street = 5,
-  House = 6,
-  Other = 7,
-  District = 8,
-  Locality = 9,
-  StateCity = 10,
-  IndependentCity = 11,
-}
-
-/** A place that was found. Missing fields are `null`, not empty. */
-export interface GeoAddress {
-  /** Street or place name, spelled as the source data spells it. */
-  name: string | null;
-  /** House number — set only when the query named one and the place carries it. */
-  number: string | null;
-  postcode: string | null;
-  city: string | null;
-  /** Degrees; `null` when the place never carried a coordinate. */
-  lat: number | null;
-  lon: number | null;
-  kind: GeoPlaceKind;
-  /** Weight of the place, 0 … 65535 — the larger, the more significant. */
-  importance: number;
-  /** How many words of the query this place carries. */
-  matched: number;
-}
-
-/** Counts of an opened index file. */
-export interface GeoIndexInfo {
-  fileSize: number;
-  documents: number;
-  houses: number;
-  words: number;
-  spellings: number;
-  postings: number;
-  format: number;
-}
-
-export interface SearchOptions {
-  /** Most results to return (the library caps at 256). Defaults to 10. */
-  limit?: number;
-  /**
-   * Read the last word as a beginning as well, for input someone is still
-   * typing: `Marienpl` then finds `Marienplatz`. Defaults to `true`.
-   *
-   * Pass `false` for a query they submitted — a beginning always matches more
-   * than the word itself.
-   */
-  prefix?: boolean;
-}
-
-const STATUS_TEXT: Record<number, string> = {
-  [GeoStatus.Argument]: "invalid argument",
-  [GeoStatus.File]: "file cannot be read or mapped",
-  [GeoStatus.Format]: "not an index this build can read",
-  [GeoStatus.Memory]: "out of memory",
-};
+/* The constants and types live one level up, so both bindings answer with the
+   same numbers and the same shapes — see ../index.d.ts. */
+export { GeoPlaceKind, GeoStatus };
+export type { GeoAddress, GeoIndexInfo, SearchOptions } from "../index";
 
 /** Size of `GeoClientInfo`: six `uint64` and one `uint32`, padded. */
 const INFO_SIZE = 56;
@@ -176,11 +110,11 @@ export class GeoIndex {
   /**
    * Map an index file.
    *
-   * @param path         Path to the `.gdx` file.
-   * @param libraryPath  Where the shared library lives, if it is not found by itself.
+   * @param path        Path to the `.gdx` file.
+   * @param nativePath  Where the shared library lives, if it is not found by itself.
    */
-  static open(path: string, libraryPath?: string): GeoIndex {
-    const api = symbols(libraryPath);
+  static open(path: string, nativePath?: string): GeoIndex {
+    const api = symbols(nativePath);
     const out = new BigUint64Array(1);
     const status = api.geo_client_open(ptr(out), ptr(cString(path)));
     if (status !== GeoStatus.Ok) {

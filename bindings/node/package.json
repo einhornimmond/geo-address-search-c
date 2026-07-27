@@ -1,0 +1,21 @@
+{
+  "name": "@gradido/geoindex-node",
+  "version": "0.1.0",
+  "description": "Node binding for the geo index: an address in, a coordinate out",
+  "type": "module",
+  "main": "index.js",
+  "types": "../index.d.ts",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": ["index.js", "binding.c", "geoindex.node", "README.md"],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "node-api-headers": "^1.1.0"
+  },
+  "scripts": {
+    "example": "node example.js"
+  }
+}

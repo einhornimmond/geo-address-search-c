@@ -4,7 +4,7 @@
   "description": "Bun binding for the geo index: an address in, a coordinate out",
   "type": "module",
   "main": "index.ts",
-  "types": "index.ts",
+  "types": "../index.d.ts",
   "exports": {
     ".": "./index.ts"
   },

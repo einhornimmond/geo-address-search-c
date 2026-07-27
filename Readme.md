@@ -184,18 +184,30 @@ because `geo_index.h` uses `grd_result` internally. Five files are compiled: `cl
 
 ### From other languages
 
-Bindings live under `bindings/`. For Bun there is a finished one:
+Bindings live under `bindings/`. Bun and Node present the **same** `GeoIndex` class,
+described by one declaration file — [`bindings/index.d.ts`](bindings/index.d.ts) — and
+sharing their constants through [`bindings/kinds.js`](bindings/kinds.js):
 
 ```ts
-import { GeoIndex } from "./bindings/bun/index.ts";
+import { GeoIndex } from "./bindings/bun/index.ts";   // Bun, through bun:ffi
+import { GeoIndex } from "./bindings/node/index.js";  // Node, through a N-API addon
 
-using index = GeoIndex.open("planet.gdx");
+const index = GeoIndex.open("planet.gdx");
 const [best] = index.search("Bahnhofstr 12 Altlandsberg");
+index.close();
 ```
 
-A query crosses the border as a single FFI call and comes back as JSON — measured at
-**~22 µs** on a warm 390 MB index, `JSON.parse` included. Details in
-[bindings/bun/README.md](bindings/bun/README.md).
+A query crosses the border as a single call and comes back as JSON — measured at **~22 µs**
+on a warm 390 MB index with Bun, `JSON.parse` included.
+
+```sh
+zig build client -Dshared=true --release=fast   # libgeoindex.so, for Bun
+cd bindings/node && npm install                 # N-API headers
+zig build node --release=fast                   # geoindex.node, for Node
+```
+
+Details in [bindings/bun/README.md](bindings/bun/README.md) and
+[bindings/node/README.md](bindings/node/README.md).
 
 ## Architecture
 
