@@ -8,9 +8,15 @@
 
 /** Bucket vector bodies — exactly one translation unit defines them. */
 GRDU_BVEC_DEFINE(name_vec, NameRef, NAME_VEC_BUCKET_LOG2, )
+GRDU_BVEC_DEFINE(name_group_vec, name_vec, NAME_GROUP_VEC_BUCKET_LOG2, )
 
 /** Shared remainder of every name that is fully carried by its prefix. */
 static const char name_empty_suffix[] = "";
+
+/** Keys are compared over their whole width; the padding beyond the depth is always 0. */
+static inline int key_compare(const uint8_t *lhs, const uint8_t *rhs) {
+  return memcmp(lhs, rhs, sizeof(PrefixKey));
+}
 
 /* =========================================================================
  *  Per-thread collecting
@@ -19,37 +25,74 @@ static const char name_empty_suffix[] = "";
 grd_result name_collector_init(NameCollector *collector, MetaAreaAllocator *alloc) {
   if (!collector || !alloc) return GRD_ERROR_NULL_POINTER;
 
-  collector->prefixes = calloc(NAME_PREFIX_COUNT, sizeof(*collector->prefixes));
-  if (!collector->prefixes) return GRD_ERROR_OUT_OF_MEMORY;
-
+  grd_result result = prefix_tree_init(&collector->prefixes, NAME_PREFIX_DEPTH);
+  if (result != GRD_SUCCESS) return result;
   /* NULL → malloc/free for the vectors' own bookkeeping */
-  for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) { name_vec_init(&collector->prefixes[p], NULL); }
+  result = name_group_vec_init(&collector->groups, NULL);
+  if (result != GRD_SUCCESS) return result;
   collector->alloc = alloc;
   collector->size = 0;
+  collector->seen = 0;
+  collector->recent_next = 0;
+  /* an unused slot must not match an empty name */
+  for (unsigned slot = 0; slot < NAME_RECENT_SLOTS; ++slot) {
+    collector->recent[slot].size = SIZE_MAX;
+    collector->recent[slot].rest = NULL;
+  }
   return GRD_SUCCESS;
 }
 
 grd_result name_collector_add(NameCollector *collector, const char *name, size_t name_size) {
   if (!collector) return GRD_ERROR_NULL_POINTER;
   if (!name) return GRD_SUCCESS;
+  ++collector->seen;
 
-  unsigned prefix = name_prefix_index(name, name_size);
-  size_t carried = name_size < 2 ? name_size : 2; /* bytes the index already holds */
-  size_t rest = name_size - carried;
+  PrefixKey key;
+  prefix_tree_key(name, name_size, NAME_PREFIX_DEPTH, key);
+  size_t carried = name_size < NAME_PREFIX_DEPTH ? name_size : NAME_PREFIX_DEPTH;
+  size_t rest_size = name_size - carried;
+
+  /* --- the same name again, right behind itself: let it pass --- */
+  for (unsigned slot = 0; slot < NAME_RECENT_SLOTS; ++slot) {
+    const NameRecent *recent = &collector->recent[slot];
+    if (recent->size != name_size) continue;
+    if (memcmp(recent->key, key, NAME_PREFIX_DEPTH) != 0) continue;
+    if (rest_size && memcmp(recent->rest, name + carried, rest_size) != 0) continue;
+    return GRD_SUCCESS;
+  }
+
+  size_t group_index = 0;
+  grd_result result = prefix_tree_intern(&collector->prefixes, key, &group_index, NULL);
+  if (result != GRD_SUCCESS) return result;
+
+  /* indices are handed out densely, so at most one group is ever missing —
+     opening it here also repairs a group left behind by an earlier failure */
+  while (name_group_vec_size(&collector->groups) <= group_index) {
+    name_vec *group = NULL;
+    result = name_group_vec_emplace(&collector->groups, &group);
+    if (result != GRD_SUCCESS) return result;
+    name_vec_init(group, NULL);
+  }
 
   NameRef stored = name_empty_suffix;
-  if (rest) {
+  if (rest_size) {
     uint8_t *copy = NULL;
-    grd_result result = meta_area_alloc(collector->alloc, &copy, rest + 1);
+    result = meta_area_alloc(collector->alloc, &copy, rest_size + 1);
     if (result != GRD_SUCCESS) return result;
-    memcpy(copy, name + carried, rest);
-    copy[rest] = '\0';
+    memcpy(copy, name + carried, rest_size);
+    copy[rest_size] = '\0';
     stored = (NameRef)copy;
   }
 
-  grd_result result = name_vec_push(&collector->prefixes[prefix], stored);
+  result = name_vec_push(name_group_vec_get(&collector->groups, group_index), stored);
   if (result != GRD_SUCCESS) return result;
   ++collector->size;
+
+  NameRecent *recent = &collector->recent[collector->recent_next];
+  memcpy(recent->key, key, sizeof(PrefixKey));
+  recent->rest = stored;
+  recent->size = name_size;
+  collector->recent_next = (collector->recent_next + 1) % NAME_RECENT_SLOTS;
   return GRD_SUCCESS;
 }
 
@@ -57,24 +100,28 @@ size_t name_collector_size(const NameCollector *collector) {
   return collector ? collector->size : 0;
 }
 
-size_t name_collector_used_prefixes(const NameCollector *collector) {
-  if (!collector || !collector->prefixes) return 0;
-  size_t used = 0;
-  for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) {
-    if (name_vec_size(&collector->prefixes[p])) ++used;
-  }
-  return used;
+size_t name_collector_seen(const NameCollector *collector) {
+  return collector ? collector->seen : 0;
+}
+
+size_t name_collector_prefix_count(const NameCollector *collector) {
+  return collector ? prefix_tree_count(&collector->prefixes) : 0;
 }
 
 void name_collector_free(NameCollector *collector) {
   if (!collector) return;
-  if (collector->prefixes) {
-    for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) { name_vec_free(&collector->prefixes[p]); }
-    free(collector->prefixes);
-    collector->prefixes = NULL;
+  for (size_t g = 0, groups = name_group_vec_size(&collector->groups); g < groups; ++g) {
+    name_vec_free(name_group_vec_get(&collector->groups, g));
   }
+  name_group_vec_free(&collector->groups);
+  prefix_tree_free(&collector->prefixes);
   collector->alloc = NULL;
   collector->size = 0;
+  collector->recent_next = 0;
+  for (unsigned slot = 0; slot < NAME_RECENT_SLOTS; ++slot) {
+    collector->recent[slot].size = SIZE_MAX;
+    collector->recent[slot].rest = NULL;
+  }
 }
 
 /* =========================================================================
@@ -99,104 +146,136 @@ static size_t unique_in_place(const char **group, size_t count) {
  *  Settling — the collecting thread puts its own stream in order
  * ========================================================================= */
 
+/** What the tree walk fills while the run takes shape. */
+typedef struct FinishContext {
+  const NameCollector *collector;
+  const char **flat;
+  NameGroup *groups;
+  size_t written;     /**< Names placed so far. */
+  size_t group_count; /**< Groups closed so far. */
+} FinishContext;
+
+/** Gather one prefix group, sort it, let this thread's doubles fall away. */
+static int finish_visit(const uint8_t *key, size_t index, void *user_data) {
+  FinishContext *ctx = user_data;
+  const name_vec *vec = name_group_vec_get(&ctx->collector->groups, index);
+  size_t start = ctx->written;
+
+  for (size_t b = 0, buckets = name_vec_bucket_count(vec); b < buckets; ++b) {
+    size_t count = name_vec_bucket_size(vec, b);
+    memcpy(ctx->flat + ctx->written, name_vec_bucket_data(vec, b), count * sizeof(*ctx->flat));
+    ctx->written += count;
+  }
+
+  size_t raw = ctx->written - start;
+  if (!raw) return 0;
+  qsort(ctx->flat + start, raw, sizeof(*ctx->flat), compare_names);
+  ctx->written = start + unique_in_place(ctx->flat + start, raw);
+
+  NameGroup *group = &ctx->groups[ctx->group_count++];
+  memcpy(group->key, key, sizeof(PrefixKey));
+  group->start = start;
+  group->count = ctx->written - start;
+  return 0;
+}
+
 grd_result name_collector_finish(NameCollector *collector, NameRun *run) {
   if (!collector || !run) return GRD_ERROR_NULL_POINTER;
   memset(run, 0, sizeof(*run));
-  if (!collector->prefixes) return GRD_ERROR_NULL_POINTER;
 
-  size_t total = collector->size;
-  if (!total) {
-    /* an empty run still needs its boundaries, so readers need no special case */
-    run->offsets = calloc(NAME_PREFIX_COUNT + 1, sizeof(*run->offsets));
-    return run->offsets ? GRD_SUCCESS : GRD_ERROR_OUT_OF_MEMORY;
+  size_t total = collector->size;   /* names actually stored */
+  size_t seen = collector->seen;    /* names offered, for the caller's report */
+  size_t group_count = prefix_tree_count(&collector->prefixes);
+  if (!total || !group_count) {
+    name_collector_free(collector);
+    return GRD_SUCCESS;
   }
   if (total > SIZE_MAX / sizeof(const char *)) return GRD_ERROR_OUT_OF_MEMORY;
 
   const char **flat = malloc(total * sizeof(*flat));
-  size_t *offsets = malloc((NAME_PREFIX_COUNT + 1) * sizeof(*offsets));
-  if (!flat || !offsets) {
+  NameGroup *groups = malloc(group_count * sizeof(*groups));
+  if (!flat || !groups) {
     free(flat);
-    free(offsets);
+    free(groups);
     return GRD_ERROR_OUT_OF_MEMORY;
   }
 
-  /* --- group by group: gather, sort, let this thread's doubles fall away --- */
-  size_t written = 0;
-  for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) {
-    const name_vec *vec = &collector->prefixes[p];
-    size_t start = written;
-    offsets[p] = start;
-    for (size_t b = 0, buckets = name_vec_bucket_count(vec); b < buckets; ++b) {
-      size_t count = name_vec_bucket_size(vec, b);
-      memcpy(flat + written, name_vec_bucket_data(vec, b), count * sizeof(*flat));
-      written += count;
-    }
-    size_t raw = written - start;
-    if (!raw) continue;
-    qsort(flat + start, raw, sizeof(*flat), compare_names);
-    written = start + unique_in_place(flat + start, raw);
-  }
-  offsets[NAME_PREFIX_COUNT] = written;
+  FinishContext ctx = {.collector = collector, .flat = flat, .groups = groups};
+  prefix_tree_foreach(&collector->prefixes, finish_visit, &ctx);
 
-  /* the vectors have handed everything over — give their memory back now,
+  /* tree and vectors have handed everything over — give their memory back now,
      while the other threads are still sorting and the peak matters */
-  for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) { name_vec_free(&collector->prefixes[p]); }
-  free(collector->prefixes);
-  collector->prefixes = NULL;
+  name_collector_free(collector);
 
-  if (written < total) {
-    const char **shrunk = realloc(flat, written * sizeof(*flat));
+  if (ctx.written < total) {
+    const char **shrunk = realloc(flat, ctx.written * sizeof(*flat));
     if (shrunk) flat = shrunk;
   }
 
   run->names = flat;
-  run->offsets = offsets;
-  run->count = written;
-  run->total = total;
+  run->groups = groups;
+  run->group_count = ctx.group_count;
+  run->count = ctx.written;
+  run->total = seen;
   return GRD_SUCCESS;
 }
 
 void name_run_free(NameRun *run) {
   if (!run) return;
   free(run->names);
-  free(run->offsets);
+  free(run->groups);
   memset(run, 0, sizeof(*run));
 }
 
 /* =========================================================================
- *  Joining — k-way merge over the sorted runs, prefix by prefix
+ *  Joining — k-way merge over the sorted runs, group by group
  * ========================================================================= */
 
-/** One worker's share of the prefix range, plus everything it writes into. */
+/** One key of the union, with the runs that carry it. */
+typedef struct MergeGroup {
+  PrefixKey key;
+  size_t start;                /**< Where the group may write into the flat array. */
+  size_t raw;                  /**< Names entering the merge — the group's weight. */
+  size_t produced;             /**< Distinct names written. */
+  size_t source[NAME_RUN_MAX]; /**< Group index per run, SIZE_MAX when absent. */
+} MergeGroup;
+
+/** One worker's share of the union, plus everything it writes into. */
 typedef struct MergeWorker {
-  const NameRun *const *runs; /**< Sorted runs to merge. */
-  size_t run_count;           /**< Number of runs, ≤ NAME_RUN_MAX. */
-  const char **flat;          /**< Destination array, shared but never overlapping. */
-  const size_t *starts;       /**< Raw start offset of every prefix group. */
-  size_t *produced;           /**< Receives the distinct count per prefix. */
-  size_t first_prefix;        /**< First prefix of this share. */
-  size_t end_prefix;          /**< One past the last prefix of this share. */
+  const NameRun *const *runs;
+  size_t run_count;
+  const char **flat;   /**< Destination, shared but never overlapping. */
+  MergeGroup *union_groups;
+  size_t first_group;  /**< First group of this share. */
+  size_t end_group;    /**< One past the last group of this share. */
 } MergeWorker;
 
 /**
- * @brief Merge one prefix group of all runs into @p dst.
+ * @brief Merge one key's names across all runs into @p dst.
  *
  *  Linear scan over the k heads — with k ≤ 16 that is cheaper and kinder to
  *  the cache than a heap.  Equal names collapse as they are emitted.
  *
  *  @return Number of distinct names written.
  */
-static size_t merge_prefix_group(const MergeWorker *worker, size_t prefix, const char **dst) {
-  const char *const *groups[NAME_RUN_MAX];
+static size_t merge_group_names(
+    const MergeWorker *worker, const MergeGroup *group, const char **dst
+) {
+  const char *const *slices[NAME_RUN_MAX];
   size_t heads[NAME_RUN_MAX];
   size_t sizes[NAME_RUN_MAX];
 
   for (size_t r = 0; r < worker->run_count; ++r) {
-    const NameRun *run = worker->runs[r];
-    size_t start = run->offsets[prefix];
-    groups[r] = run->names + start;
+    size_t source = group->source[r];
+    if (source == SIZE_MAX) {
+      slices[r] = NULL;
+      sizes[r] = 0;
+    } else {
+      const NameRun *run = worker->runs[r];
+      slices[r] = run->names + run->groups[source].start;
+      sizes[r] = run->groups[source].count;
+    }
     heads[r] = 0;
-    sizes[r] = run->offsets[prefix + 1] - start;
   }
 
   size_t written = 0;
@@ -205,14 +284,13 @@ static size_t merge_prefix_group(const MergeWorker *worker, size_t prefix, const
     size_t best = worker->run_count;
     for (size_t r = 0; r < worker->run_count; ++r) {
       if (heads[r] >= sizes[r]) continue;
-      if (best == worker->run_count ||
-          strcmp(groups[r][heads[r]], groups[best][heads[best]]) < 0) {
+      if (best == worker->run_count || strcmp(slices[r][heads[r]], slices[best][heads[best]]) < 0) {
         best = r;
       }
     }
     if (best == worker->run_count) break;
 
-    const char *name = groups[best][heads[best]++];
+    const char *name = slices[best][heads[best]++];
     if (!last || (last != name && strcmp(last, name) != 0)) {
       dst[written++] = name;
       last = name;
@@ -221,33 +299,80 @@ static size_t merge_prefix_group(const MergeWorker *worker, size_t prefix, const
   return written;
 }
 
-/** Merge every prefix of one share; the entry point of a merge thread. */
+/** Merge every group of one share; the entry point of a merge thread. */
 static void *merge_worker_run(void *arg) {
   MergeWorker *worker = arg;
-  for (size_t p = worker->first_prefix; p < worker->end_prefix; ++p) {
-    worker->produced[p] = merge_prefix_group(worker, p, worker->flat + worker->starts[p]);
+  for (size_t g = worker->first_group; g < worker->end_group; ++g) {
+    MergeGroup *group = &worker->union_groups[g];
+    group->produced = merge_group_names(worker, group, worker->flat + group->start);
   }
   return NULL;
 }
 
 /**
- * @brief Cut the prefix range into @p worker_count shares of similar weight.
+ * @brief Build the union of all runs' group lists, in ascending key order.
  *
- *  Walks the per-prefix counts and closes a share whenever the accumulated
- *  weight reaches its fair portion of @p total.  Boundaries stay monotonic;
- *  empty shares are legitimate when few prefixes carry everything.
+ *  Every run's list is already sorted, so one linear pass suffices.  Each
+ *  union entry records where the key appears and how much weight it carries.
+ *
+ *  @return Number of union entries; @p raw_total receives the total weight.
  */
-static void partition_prefixes(
-    const size_t *counts, size_t total, unsigned worker_count, size_t *bounds
+static size_t build_union(
+    const NameRun *const *runs, size_t run_count, MergeGroup *union_groups, size_t *raw_total
+) {
+  size_t heads[NAME_RUN_MAX] = {0};
+  size_t union_count = 0;
+  size_t total = 0;
+
+  for (;;) {
+    const uint8_t *smallest = NULL;
+    for (size_t r = 0; r < run_count; ++r) {
+      if (heads[r] >= runs[r]->group_count) continue;
+      const uint8_t *key = runs[r]->groups[heads[r]].key;
+      if (!smallest || key_compare(key, smallest) < 0) smallest = key;
+    }
+    if (!smallest) break;
+
+    MergeGroup *group = &union_groups[union_count++];
+    memcpy(group->key, smallest, sizeof(PrefixKey));
+    group->start = total;
+    group->raw = 0;
+    group->produced = 0;
+    for (size_t r = 0; r < run_count; ++r) {
+      group->source[r] = SIZE_MAX;
+      if (heads[r] < runs[r]->group_count &&
+          key_compare(runs[r]->groups[heads[r]].key, group->key) == 0) {
+        group->source[r] = heads[r];
+        group->raw += runs[r]->groups[heads[r]].count;
+        ++heads[r];
+      }
+    }
+    total += group->raw;
+  }
+
+  *raw_total = total;
+  return union_count;
+}
+
+/**
+ * @brief Cut the union into @p worker_count shares of similar weight.
+ *
+ *  Walks the groups and closes a share whenever the accumulated weight
+ *  reaches its fair portion of @p total.  Boundaries stay monotonic; empty
+ *  shares are legitimate when few groups carry everything.
+ */
+static void partition_groups(
+    const MergeGroup *union_groups, size_t union_count, size_t total, unsigned worker_count,
+    size_t *bounds
 ) {
   bounds[0] = 0;
   unsigned closed = 0;
   size_t acc = 0;
-  for (size_t p = 0; p < NAME_PREFIX_COUNT && closed + 1 < worker_count; ++p) {
-    acc += counts[p];
-    if (acc * worker_count >= total * (size_t)(closed + 1)) { bounds[++closed] = p + 1; }
+  for (size_t g = 0; g < union_count && closed + 1 < worker_count; ++g) {
+    acc += union_groups[g].raw;
+    if (acc * worker_count >= total * (size_t)(closed + 1)) { bounds[++closed] = g + 1; }
   }
-  while (closed < worker_count) { bounds[++closed] = NAME_PREFIX_COUNT; }
+  while (closed < worker_count) { bounds[++closed] = union_count; }
 }
 
 grd_result name_run_merge(
@@ -255,47 +380,40 @@ grd_result name_run_merge(
 ) {
   if (!out) return GRD_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
+  grd_result result = prefix_tree_init(&out->prefixes, NAME_PREFIX_DEPTH);
+  if (result != GRD_SUCCESS) return result;
   if (run_count && !runs) return GRD_ERROR_NULL_POINTER;
   if (run_count > NAME_RUN_MAX) return GRD_ERROR_INVALID_PARAM;
 
-  size_t input = 0;  /* names entering the merge, per-thread duplicates already gone */
-  size_t total = 0;  /* names ever collected, for the caller's report */
+  size_t input = 0;       /* names entering the merge, per-thread doubles already gone */
+  size_t total = 0;       /* names ever collected, for the caller's report */
+  size_t group_bound = 0; /* upper bound for the union: no key can appear more often */
   for (size_t r = 0; r < run_count; ++r) {
-    if (!runs[r] || !runs[r]->offsets) return GRD_ERROR_NULL_POINTER;
+    if (!runs[r]) return GRD_ERROR_NULL_POINTER;
     input += runs[r]->count;
     total += runs[r]->total;
+    group_bound += runs[r]->group_count;
   }
   out->total = total;
-  if (!input) return GRD_SUCCESS;
+  if (!input || !group_bound) return GRD_SUCCESS;
   if (input > SIZE_MAX / sizeof(const char *)) return GRD_ERROR_OUT_OF_MEMORY;
 
   if (worker_count < 1) worker_count = 1;
   if (worker_count > NAME_RUN_MAX) worker_count = NAME_RUN_MAX;
 
   const char **flat = malloc(input * sizeof(*flat));
-  size_t *offsets = malloc((NAME_PREFIX_COUNT + 1) * sizeof(*offsets));
-  size_t *produced = calloc(NAME_PREFIX_COUNT, sizeof(*produced));
-  if (!flat || !offsets || !produced) {
+  MergeGroup *union_groups = malloc(group_bound * sizeof(*union_groups));
+  if (!flat || !union_groups) {
     free(flat);
-    free(offsets);
-    free(produced);
+    free(union_groups);
     return GRD_ERROR_OUT_OF_MEMORY;
   }
 
-  /* --- where each group may write: the raw sum of its runs, gaps included --- */
   size_t raw_total = 0;
-  for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) {
-    offsets[p] = raw_total;
-    for (size_t r = 0; r < run_count; ++r) {
-      raw_total += runs[r]->offsets[p + 1] - runs[r]->offsets[p];
-    }
-    produced[p] = raw_total - offsets[p]; /* weight of the group, for the partition */
-  }
-  offsets[NAME_PREFIX_COUNT] = raw_total;
+  size_t union_count = build_union(runs, run_count, union_groups, &raw_total);
 
   size_t bounds[NAME_RUN_MAX + 1];
-  partition_prefixes(produced, raw_total, worker_count, bounds);
-  memset(produced, 0, NAME_PREFIX_COUNT * sizeof(*produced));
+  partition_groups(union_groups, union_count, raw_total, worker_count, bounds);
 
   MergeWorker workers[NAME_RUN_MAX];
   pthread_t threads[NAME_RUN_MAX];
@@ -305,10 +423,9 @@ grd_result name_run_merge(
         .runs = runs,
         .run_count = run_count,
         .flat = flat,
-        .starts = offsets,
-        .produced = produced,
-        .first_prefix = bounds[w],
-        .end_prefix = bounds[w + 1],
+        .union_groups = union_groups,
+        .first_group = bounds[w],
+        .end_group = bounds[w + 1],
     };
   }
   /* share 0 stays with the caller; a thread that refuses to start is simply
@@ -326,19 +443,40 @@ grd_result name_run_merge(
   }
 
   /* --- close the gaps the dissolved duplicates left between the groups --- */
-  size_t written = 0;
-  size_t used_prefixes = 0;
-  for (size_t p = 0; p < NAME_PREFIX_COUNT; ++p) {
-    size_t start = offsets[p];
-    size_t count = produced[p];
-    offsets[p] = written;
-    if (!count) continue;
-    if (written != start) { memmove(flat + written, flat + start, count * sizeof(*flat)); }
-    written += count;
-    ++used_prefixes;
+  NameGroup *groups = malloc(union_count * sizeof(*groups));
+  if (!groups) {
+    free(flat);
+    free(union_groups);
+    return GRD_ERROR_OUT_OF_MEMORY;
   }
-  offsets[NAME_PREFIX_COUNT] = written;
-  free(produced);
+
+  size_t written = 0;
+  size_t group_count = 0;
+  for (size_t g = 0; g < union_count; ++g) {
+    const MergeGroup *merged = &union_groups[g];
+    if (!merged->produced) continue;
+    if (written != merged->start) {
+      memmove(flat + written, flat + merged->start, merged->produced * sizeof(*flat));
+    }
+    NameGroup *group = &groups[group_count];
+    memcpy(group->key, merged->key, sizeof(PrefixKey));
+    group->start = written;
+    group->count = merged->produced;
+
+    size_t index = 0;
+    result = prefix_tree_intern(&out->prefixes, group->key, &index, NULL);
+    if (result != GRD_SUCCESS) {
+      free(flat);
+      free(groups);
+      free(union_groups);
+      prefix_tree_free(&out->prefixes);
+      memset(out, 0, sizeof(*out));
+      return result;
+    }
+    ++group_count;
+    written += merged->produced;
+  }
+  free(union_groups);
 
   if (written < input) {
     const char **shrunk = realloc(flat, written * sizeof(*flat));
@@ -346,9 +484,9 @@ grd_result name_run_merge(
   }
 
   out->names = flat;
-  out->offsets = offsets;
+  out->groups = groups;
+  out->group_count = group_count;
   out->count = written;
-  out->used_prefixes = used_prefixes;
   return GRD_SUCCESS;
 }
 
@@ -356,34 +494,39 @@ grd_result name_run_merge(
  *  Reading the merged set
  * ========================================================================= */
 
-const char *const *name_set_group(const NameSet *set, unsigned prefix, size_t *out_count) {
-  if (out_count) *out_count = 0;
-  if (!set || !set->offsets || prefix >= NAME_PREFIX_COUNT) return NULL;
+const NameGroup *name_set_find(const NameSet *set, const char *name, size_t name_size) {
+  if (!set || !set->groups) return NULL;
+  PrefixKey key;
+  prefix_tree_key(name, name_size, NAME_PREFIX_DEPTH, key);
+  size_t index = 0;
+  if (!prefix_tree_find(&set->prefixes, key, &index) || index >= set->group_count) return NULL;
+  return &set->groups[index];
+}
 
-  size_t start = set->offsets[prefix];
-  size_t count = set->offsets[prefix + 1] - start;
-  if (!count) return NULL;
-  if (out_count) *out_count = count;
-  return set->names + start;
+const NameGroup *name_set_group_at(const NameSet *set, size_t group_index) {
+  if (!set || !set->groups || group_index >= set->group_count) return NULL;
+  return &set->groups[group_index];
+}
+
+const char *const *name_set_group_names(const NameSet *set, const NameGroup *group) {
+  if (!set || !set->names || !group) return NULL;
+  return set->names + group->start;
 }
 
 size_t name_set_compose(
-    const NameSet *set, unsigned prefix, size_t index, char *buffer, size_t buffer_size
+    const NameSet *set, const NameGroup *group, size_t index, char *buffer, size_t buffer_size
 ) {
-  size_t count = 0;
-  const char *const *group = name_set_group(set, prefix, &count);
   if (buffer && buffer_size) buffer[0] = '\0';
-  if (!group || index >= count) return 0;
+  if (!set || !set->names || !group || index >= group->count) return 0;
 
-  /* the prefix gives back what it carried: one byte, two, or none at all */
-  char head[2];
+  /* the key gives back what it carried; trailing padding was never part of a name */
+  char head[PREFIX_TREE_DEPTH_MAX];
   size_t head_len = 0;
-  unsigned first = (prefix >> 8) & 0xffu;
-  unsigned second = prefix & 0xffu;
-  if (first) head[head_len++] = (char)first;
-  if (second) head[head_len++] = (char)second;
+  for (unsigned d = 0; d < NAME_PREFIX_DEPTH && group->key[d]; ++d) {
+    head[head_len++] = (char)group->key[d];
+  }
 
-  const char *rest = group[index];
+  const char *rest = set->names[group->start + index];
   size_t rest_len = strlen(rest);
   size_t full_len = head_len + rest_len;
   if (!buffer || !buffer_size) return full_len;
@@ -400,7 +543,8 @@ size_t name_set_compose(
 void name_set_free(NameSet *set) {
   if (!set) return;
   free(set->names);
-  free(set->offsets);
+  free(set->groups);
+  prefix_tree_free(&set->prefixes);
   memset(set, 0, sizeof(*set));
 }
 

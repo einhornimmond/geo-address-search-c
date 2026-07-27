@@ -9,24 +9,33 @@
 #include <yyjson.h>
 
 /* =========================================================================
- *  Localisation helpers — moved from storage_stats.c
+ *  Field helpers
  * ========================================================================= */
 
-static const char *localized(yyjson_val *object, const char *german_key, const char *fallback_key, size_t* size) {
-  yyjson_val *value = yyjson_obj_get(object, german_key);
-  if (fallback_key && !yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
+static PhotonString string_of(yyjson_val *value) {
+  PhotonString result = {NULL, 0};
   if (yyjson_is_str(value)) {
-    if (size) {
-      *size = yyjson_get_len(value);
-    }
-    return yyjson_get_str(value);
+    result.data = yyjson_get_str(value);
+    result.size = yyjson_get_len(value);
   }
-  return NULL;
+  return result;
 }
 
-static const char *place_name(yyjson_val *place, size_t* size) {
+static PhotonString localized(yyjson_val *object, const char *german_key, const char *fallback_key) {
+  yyjson_val *value = yyjson_obj_get(object, german_key);
+  if (fallback_key && !yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
+  return string_of(value);
+}
+
+static const char *plain(yyjson_val *object, const char *key) {
+  yyjson_val *value = yyjson_obj_get(object, key);
+  return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
+}
+
+static PhotonString place_name(yyjson_val *place) {
   yyjson_val *names = yyjson_obj_get(place, "name");
-  return yyjson_is_obj(names) ? localized(names, "name:de", "name", size) : NULL;
+  PhotonString empty = {NULL, 0};
+  return yyjson_is_obj(names) ? localized(names, "name:de", "name") : empty;
 }
 
 static PhotonPlaceType detectTypeEnum(const char* type)
@@ -55,6 +64,78 @@ static PhotonPlaceType detectTypeEnum(const char* type)
   return PHOTON_PLACE_TYPE_UNKNOWN;
 }
 
+/* =========================================================================
+ *  Role-free search strings
+ * ========================================================================= */
+
+/**
+ * @brief Remember @p text as something one might type, unless it is already there.
+ *
+ *  The dump repeats itself within an entry — `city` and `city:de` usually
+ *  carry the same text, and a street may be named like its city.  A linear
+ *  scan over at most @ref PHOTON_PLACE_SEARCH_MAX entries settles that; the
+ *  list is short enough that nothing cleverer would pay off.
+ */
+static void search_add(PhotonPlace *p, PhotonString text) {
+  if (!text.data || !text.size) return;
+  for (uint8_t i = 0; i < p->search_count; ++i) {
+    if (p->search[i].size == text.size && memcmp(p->search[i].data, text.data, text.size) == 0) {
+      return;
+    }
+  }
+  if (p->search_count >= PHOTON_PLACE_SEARCH_MAX) {
+    if (p->search_dropped < UINT8_MAX) ++p->search_dropped;
+    return;
+  }
+  p->search[p->search_count++] = text;
+}
+
+/** Take every string value of an object — keys are irrelevant, the text is not. */
+static void search_add_object(PhotonPlace *p, yyjson_val *object) {
+  if (!yyjson_is_obj(object)) return;
+  yyjson_obj_iter iter;
+  yyjson_obj_iter_init(object, &iter);
+  yyjson_val *key;
+  while ((key = yyjson_obj_iter_next(&iter))) {
+    search_add(p, string_of(yyjson_obj_iter_get_val(key)));
+  }
+}
+
+/** Take every string of an array — the `other` list of alternate names. */
+static void search_add_array(PhotonPlace *p, yyjson_val *array) {
+  if (!yyjson_is_arr(array)) return;
+  size_t index, max;
+  yyjson_val *item;
+  yyjson_arr_foreach(array, index, max, item) { search_add(p, string_of(item)); }
+}
+
+/* =========================================================================
+ *  Address roles that survive into an answer
+ * ========================================================================= */
+
+typedef enum AddressRole {
+  ADDRESS_ROLE_NONE,
+  ADDRESS_ROLE_CITY,
+  ADDRESS_ROLE_STREET,
+  ADDRESS_ROLE_POSTCODE,
+  ADDRESS_ROLE_HOUSE,
+  ADDRESS_ROLE_CITY_DE,   /**< localized variant, preferred over the plain one */
+  ADDRESS_ROLE_STREET_DE
+} AddressRole;
+
+/** Recognise the four keys an answer needs; everything else stays role-free. */
+static AddressRole address_role(const char *key, size_t key_size) {
+  switch (key_size) {
+  case 4: return memcmp(key, "city", 4) == 0 ? ADDRESS_ROLE_CITY : ADDRESS_ROLE_NONE;
+  case 6: return memcmp(key, "street", 6) == 0 ? ADDRESS_ROLE_STREET : ADDRESS_ROLE_NONE;
+  case 7: return memcmp(key, "city:de", 7) == 0 ? ADDRESS_ROLE_CITY_DE : ADDRESS_ROLE_NONE;
+  case 8: return memcmp(key, "postcode", 8) == 0 ? ADDRESS_ROLE_POSTCODE : ADDRESS_ROLE_NONE;
+  case 9: return memcmp(key, "street:de", 9) == 0 ? ADDRESS_ROLE_STREET_DE : ADDRESS_ROLE_NONE;
+  case 11: return memcmp(key, "housenumber", 11) == 0 ? ADDRESS_ROLE_HOUSE : ADDRESS_ROLE_NONE;
+  default: return ADDRESS_ROLE_NONE;
+  }
+}
+
 typedef enum ResultType {
   RESULT_SUCCESS,
   RESULT_SKIP,
@@ -68,15 +149,91 @@ typedef enum ResultType {
 static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   memset(p, 0, sizeof(*p));
 
-  p->type = localized(entry, "address_type", NULL, NULL);
-  if (!p->type) {
-    return RESULT_ERROR_MISSING_TYPE;
-  }
+  p->type = plain(entry, "address_type");
+  if (!p->type) { return RESULT_ERROR_MISSING_TYPE; }
   p->typeEnum = detectTypeEnum(p->type);
-  p->country_code = localized(entry, "country_code", NULL, NULL);
-  p->own_name = place_name(entry, &p->own_name_size);
-  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) {
-    return RESULT_SKIP;
+  if (PHOTON_PLACE_TYPE_OTHER == p->typeEnum) { return RESULT_SKIP; }
+  if (PHOTON_PLACE_TYPE_UNKNOWN == p->typeEnum) { return RESULT_ERROR_UNKNOWN_TYPE; }
+
+  p->country_code = plain(entry, "country_code");
+  p->own_name = place_name(entry);
+  p->postcode = string_of(yyjson_obj_get(entry, "postcode"));
+
+  yyjson_val *importance = yyjson_obj_get(entry, "importance");
+  if (yyjson_is_num(importance)) { p->importance = yyjson_get_num(importance); }
+
+  /* houses are payload of their street — their repeated parent text belongs
+     to the street's document, not into the term stream a fifth time */
+  const int indexed = p->typeEnum != PHOTON_PLACE_TYPE_HOUSE;
+
+  /* --- one pass over the address block: roles for the answer, text for the index --- */
+  yyjson_val *address = yyjson_obj_get(entry, "address");
+  if (yyjson_is_obj(address)) {
+    yyjson_obj_iter iter;
+    yyjson_obj_iter_init(address, &iter);
+    yyjson_val *key;
+    while ((key = yyjson_obj_iter_next(&iter))) {
+      yyjson_val *value = yyjson_obj_iter_get_val(key);
+      if (yyjson_is_arr(value)) { /* "other": alternate names, no role */
+        if (indexed) search_add_array(p, value);
+        continue;
+      }
+      PhotonString text = string_of(value);
+      if (!text.data) continue;
+      const char *key_text = yyjson_get_str(key);
+      size_t key_size = yyjson_get_len(key);
+
+      switch (address_role(key_text, key_size)) {
+      case ADDRESS_ROLE_CITY:
+        if (!p->city.data) p->city = text;
+        break;
+      case ADDRESS_ROLE_CITY_DE: p->city = text; break;
+      case ADDRESS_ROLE_STREET:
+        if (!p->street.data) p->street = text;
+        break;
+      case ADDRESS_ROLE_STREET_DE: p->street = text; break;
+      case ADDRESS_ROLE_POSTCODE:
+        if (!p->postcode.data) p->postcode = text;
+        break;
+      case ADDRESS_ROLE_HOUSE: p->house = text; break;
+      default: break;
+      }
+      /* Parent text enters the dictionary through the parent's own entry —
+         "Brandenburg" is a state document of its own. Carrying every language
+         variant of every ancestor on every child would multiply the term
+         stream thirtyfold and add not a single word. Only the unlocalized
+         form stays, as a safety net for parents the dump never lists. */
+      if (indexed && !memchr(key_text, ':', key_size)) { search_add(p, text); }
+    }
+  }
+
+  if (indexed) {
+    search_add_object(p, yyjson_obj_get(entry, "name"));
+    /* many entries carry their postcode beside the address block, not inside
+       it — and a postcode is one of the strongest filters a query can bring */
+    search_add(p, p->postcode);
+    if (p->house.data) {
+      /* a number that slipped in through the address block adds nothing */
+      for (uint8_t i = 0; i < p->search_count; ++i) {
+        if (p->search[i].size == p->house.size &&
+            memcmp(p->search[i].data, p->house.data, p->house.size) == 0) {
+          p->search[i] = p->search[--p->search_count];
+          break;
+        }
+      }
+    }
+  }
+
+  /* --- the entry's own name also fills the role it stands for --- */
+  switch (p->typeEnum) {
+  case PHOTON_PLACE_TYPE_HOUSE:
+    if (!p->house.data) p->house = p->own_name;
+    break;
+  case PHOTON_PLACE_TYPE_STREET: p->street = p->own_name; break;
+  case PHOTON_PLACE_TYPE_CITY:
+  case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
+  case PHOTON_PLACE_TYPE_INDEPENDENT_CITY: p->city = p->own_name; break;
+  default: break;
   }
 
   /* --- centroid --- */
@@ -84,13 +241,11 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   if (yyjson_is_arr(centroid) && yyjson_arr_size(centroid) == 2) {
     double lon = yyjson_get_real(yyjson_arr_get(centroid, 0));
     double lat = yyjson_get_real(yyjson_arr_get(centroid, 1));
+    p->has_point = 1;
     p->lon_e7 = (int32_t)round(lon * 1.0e7);
     p->lat_e7 = (int32_t)round(lat * 1.0e7);
   }
 
-  if (p->typeEnum == PHOTON_PLACE_TYPE_UNKNOWN) {
-    return RESULT_ERROR_UNKNOWN_TYPE;
-  }
   return RESULT_SUCCESS;
 }
 
@@ -99,7 +254,7 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
  * ========================================================================= */
 bool photon_place_has_point(const PhotonPlace* place)
 {
-  return place->lat_e7 && place->lon_e7;
+  return place->has_point;
 }
 
 int json_parse_line(
@@ -195,6 +350,12 @@ int json_parse_line(
  *  Debug serialisation — PhotonPlace → JSON string (via yyjson mutable API)
  * ========================================================================= */
 
+static void add_string_field(
+    yyjson_mut_doc *doc, yyjson_mut_val *root, const char *key, PhotonString text
+) {
+  if (text.data) yyjson_mut_obj_add_strn(doc, root, key, text.data, text.size);
+}
+
 char *photon_place_to_json(const PhotonPlace *place) {
     static __thread char buf[4096];
     if (!place) {
@@ -217,11 +378,23 @@ char *photon_place_to_json(const PhotonPlace *place) {
     yyjson_mut_doc_set_root(doc, root);
 
     if (place->type)         yyjson_mut_obj_add_str(doc, root, "type",         place->type);
-    if (place->own_name)     yyjson_mut_obj_add_str(doc, root, "name",         place->own_name);
+    add_string_field(doc, root, "name",     place->own_name);
+    add_string_field(doc, root, "street",   place->street);
+    add_string_field(doc, root, "house",    place->house);
+    add_string_field(doc, root, "postcode", place->postcode);
+    add_string_field(doc, root, "city",     place->city);
     if (place->country_code) yyjson_mut_obj_add_str(doc, root, "country_code", place->country_code);
 
+    yyjson_mut_obj_add_real(doc, root, "importance", place->importance);
     yyjson_mut_obj_add_int(doc, root, "lon_e7",      place->lon_e7);
     yyjson_mut_obj_add_int(doc, root, "lat_e7",      place->lat_e7);
+    yyjson_mut_obj_add_bool(doc, root, "has_point",  place->has_point);
+
+    yyjson_mut_val *search = yyjson_mut_arr(doc);
+    for (uint8_t i = 0; i < place->search_count; ++i) {
+      yyjson_mut_arr_add_strn(doc, search, place->search[i].data, place->search[i].size);
+    }
+    yyjson_mut_obj_add_val(doc, root, "search", search);
 
     size_t len = 0;
     const char *json = yyjson_mut_write(doc, 0, &len);

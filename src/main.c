@@ -68,9 +68,12 @@ typedef struct {
 static int process_place_callback(const PhotonPlace *place, void *user_data) {
   ProcessLineCtx *ctx = user_data;
   json_stats_count_place(ctx->stats, place);
-  grd_result result = name_collector_add(ctx->names, place->own_name, place->own_name_size);
-  if (result != GRD_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to keep place name (grd_result %d).", (int)result);
+  /* every text of the entry that someone might type — houses contribute none */
+  for (uint8_t i = 0; i < place->search_count; ++i) {
+    grd_result result = name_collector_add(ctx->names, place->search[i].data, place->search[i].size);
+    if (result != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep search term (grd_result %d).", (int)result);
+    }
   }
   return 0;
 }
@@ -308,14 +311,18 @@ int main(int argc, char *argv[]) {
   char nameBytesBuffer[32];
   format_byte_units(nameBytesBuffer, sizeof(nameBytesBuffer), meta_allocated, 2);
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  size_t stored = 0;
+  for (unsigned i = 0; i < parser_thread_count; ++i) { stored += parser_args[i].run.count; }
   printf(
-      "\nNamen: %zu gesammelt, %zu eindeutig (%s Namensspeicher) in %s\n",
+      "\nSuchbegriffe: %zu gesehen, %zu eindeutig (%s Textspeicher) in %s\n",
       names.total, names.count, nameBytesBuffer, timeUsedBuffer
   );
+  printf("  davon je Thread eindeutig: %zu\n", stored);
+  char treeBytesBuffer[32];
+  format_byte_units(treeBytesBuffer, sizeof(treeBytesBuffer), prefix_tree_memory(&names.prefixes), 2);
   printf(
-      "Prefix-Buckets belegt: %zu von %zu (%.2f %%)\n",
-      names.used_prefixes, NAME_PREFIX_COUNT,
-      100.0 * (double)names.used_prefixes / (double)NAME_PREFIX_COUNT
+      "Prefix-Gruppen: %zu (Index-Tree: Tiefe %u, %zu Ebenen, %s)\n",
+      names.group_count, NAME_PREFIX_DEPTH, names.prefixes.levels, treeBytesBuffer
   );
   grdu_mono_timer_reset(&timeUsed);
 

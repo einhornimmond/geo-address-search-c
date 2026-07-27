@@ -36,6 +36,8 @@ void json_stats_count_document(JsonStats *stats, const void *result) {
 
 void json_stats_count_place(JsonStats *stats, const PhotonPlace *place) {
   count_address_type(stats, place->typeEnum);
+  stats->search_terms += place->search_count;
+  stats->search_dropped += place->search_dropped;
 }
 
 void json_stats_add(JsonStats *total, const JsonStats *addend) {
@@ -51,6 +53,8 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
   total->streets += addend->streets;
   total->houses += addend->houses;
   total->other += addend->other;
+  total->search_terms += addend->search_terms;
+  total->search_dropped += addend->search_dropped;
   total->state_cities += addend->state_cities;
   total->independent_cities += addend->independent_cities;
   total->invalid_records += addend->invalid_records;
@@ -75,5 +79,12 @@ void json_stats_print(const JsonStats *stats) {
   );
   if (stats->invalid_records) {
     printf("Ungültige oder unvollständige Einträge: %" PRIu64 "\n", stats->invalid_records);
+  }
+  if (stats->search_dropped) {
+    printf(
+        "Abgeschnittene Suchbegriffe: %" PRIu64 " von %" PRIu64 " — PHOTON_PLACE_SEARCH_MAX "
+        "erhöhen\n",
+        stats->search_dropped, stats->search_terms + stats->search_dropped
+    );
   }
 }
