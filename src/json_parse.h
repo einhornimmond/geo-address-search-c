@@ -39,19 +39,11 @@ typedef struct PhotonPlace {
   PhotonPlaceType typeEnum;
   const char *own_name;     /**< place display name ("name:de" or "name")    */
   const char *country_code; /**< ISO 3166-1 alpha-2 country code             */
-  const char *country;      /**< country display name                        */
-  const char *state;        /**< state display name                          */
-  const char *county;       /**< county display name                         */
-  const char *city;         /**< city display name                           */
-  const char *suburb;
-  const char *postcode;     /**< postcode string                             */
-  const char *street;       /**< street display name                         */
-  const char *house;        /**< housenumber                                 */
   int32_t lon_e7;           /**< longitude × 10⁷                             */
   int32_t lat_e7;           /**< latitude  × 10⁷                             */
-  int has_point;            /**< centroid data is present                     */
-  int unsupported;          /**< addresslines present but no address object   */
 } PhotonPlace;
+
+bool photon_place_has_point(const PhotonPlace* place);
 
 /** Callback invoked once per Place content entry. */
 typedef int (*PhotonPlaceCallback)(const PhotonPlace *place, void *user_data);

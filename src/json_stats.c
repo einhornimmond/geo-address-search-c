@@ -36,20 +36,6 @@ void json_stats_count_document(JsonStats *stats, const void *result) {
 
 void json_stats_count_place(JsonStats *stats, const PhotonPlace *place) {
   count_address_type(stats, place->typeEnum);
-
-  /* --- postcode sanity check (fatal if missing after threshold) --- */
-  if (!stats->postcode_checked) {
-    if (place->postcode) {
-      stats->postcode_checked = 1;
-    } else if (stats->place_entries > 50000) {
-      /*fatal(
-          ERROR_JSON,
-          "postcode field not found in Photon data after %" PRIu64
-          " entries – dataset may lack postcode information.",
-          stats->place_entries
-          );*/
-    }
-  }
 }
 
 void json_stats_add(JsonStats *total, const JsonStats *addend) {

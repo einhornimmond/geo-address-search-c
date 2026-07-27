@@ -6,7 +6,6 @@
 #include "meta_area_allocator.h"
 #include "parse_queue.h"
 #include "progress.h"
-#include "storage_stats.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -62,29 +61,28 @@ static void buffer_pool_destroy(BufferPool *pool) {
 
 typedef struct {
   JsonStats *stats;
-  StorageStats *storage;
+
 } ProcessLineCtx;
 
 static int process_place_callback(const PhotonPlace *place, void *user_data) {
   ProcessLineCtx *ctx = user_data;
   json_stats_count_place(ctx->stats, place);
-  return storage_stats_record(ctx->storage, place);
+  return 0;
 }
 
 static void process_json_line(
     const char *line,
     size_t len,
-    JsonStats *stats,
-    StorageStats *storage_stats
+    JsonStats *stats
 ) {
-  ProcessLineCtx ctx = {stats, storage_stats};
+  ProcessLineCtx ctx = {stats};
   JsonParseResult result;
   json_parse_line(line, len, process_place_callback, &ctx, &result);
   json_stats_count_document(stats, &result);
 }
 
 static void process_batch(
-    const ParseBatch *batch, JsonStats *stats, StorageStats *storage_stats
+    const ParseBatch *batch, JsonStats *stats
 ) {
   const char *line = batch->buffer->buffer;
   const char *end = line + batch->len;
@@ -93,7 +91,7 @@ static void process_batch(
     const char *newline = memchr(line, '\n', (size_t)(end - line));
     size_t len = newline ? (size_t)(newline - line) : (size_t)(end - line);
     if (len > 0 && line[len - 1] == '\r') { --len; }
-    if (len > 0) { process_json_line(line, len, stats, storage_stats); }
+    if (len > 0) { process_json_line(line, len, stats); }
     line = newline ? newline + 1 : end;
   }
 }
@@ -103,14 +101,13 @@ typedef struct ParserThreadArgs {
   BufferPool *pool;
   MetaAreaAllocator *meta_alloc;
   JsonStats stats;
-  StorageStats *storage_stats;
 } ParserThreadArgs;
 
 static void *parser_thread(void *arg) {
   ParserThreadArgs *args = arg;
   ParseBatch batch;
   while (parse_queue_pop(args->queue, &batch)) {
-    process_batch(&batch, &args->stats, args->storage_stats);
+    process_batch(&batch, &args->stats);
     buffer_pool_release(args->pool, batch.buffer);
   }
   return NULL;
@@ -136,17 +133,16 @@ int main(int argc, char *argv[]) {
   grdu_mono_timer timeUsedAll;
   grdu_mono_timer_reset(&timeUsedAll);
 
-  if (argc < 3 || argc > 4) {
+  if (argc < 2 || argc > 3) {
     fatal(
-        ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> <output.sql> [parser_threads: 1-2]", argv[0]
+        ERROR_USAGE, "Usage: %s <photon_dump.jsonl.zst> [parser_threads: 1-2]", argv[0]
     );
   }
 
   grdu_mono_timer_init();
 
-  const char *output_filename = argv[2];
 
-  unsigned parser_thread_count = 1;
+  unsigned parser_thread_count = 4;
   if (argc == 4) {
     char *end;
     unsigned long value = strtoul(argv[3], &end, 10);
@@ -191,9 +187,6 @@ int main(int argc, char *argv[]) {
     parser_args[i].queue = parse_queue;
     parser_args[i].pool = &buffer_pool;
     parser_args[i].meta_alloc = meta_alloc;
-    parser_args[i].storage_stats = storage_stats_create(meta_alloc);
-    if (!parser_args[i].storage_stats)
-      fatal(ERROR_MEMORY, "Failed to allocate storage statistics.");
     if (pthread_create(&parser_threads[i], NULL, parser_thread, &parser_args[i]) != 0) {
       fatal(ERROR_MEMORY, "Failed to create parser thread %u.", i);
     }
@@ -263,23 +256,18 @@ int main(int argc, char *argv[]) {
   grdu_mono_timer_reset(&timeUsed);
 
   JsonStats stats = {0};
-  StorageStats *storage_stats = storage_stats_create(meta_alloc);
-  if (!storage_stats) fatal(ERROR_MEMORY, "Failed to allocate merged storage statistics.");
+
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     json_stats_add(&stats, &parser_args[i].stats);
-    storage_stats_merge(storage_stats, parser_args[i].storage_stats);
-    storage_stats_destroy(parser_args[i].storage_stats);
   }
 
   json_stats_print(&stats);
-  storage_stats_print(storage_stats);
 
   grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   printf("Joining stats finished in %s...\n", timeUsedBuffer);
   grdu_mono_timer_reset(&timeUsed);
 
   printf("Cleaning up...\n");
-  storage_stats_destroy(storage_stats);
 
   meta_area_allocator_destroy(meta_alloc);
   parse_queue_destroy(parse_queue);
