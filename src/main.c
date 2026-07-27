@@ -107,6 +107,8 @@ typedef struct ParserThreadArgs {
   BufferPool *pool;
   MetaAreaAllocator *meta_alloc; /**< Private arena — the allocator is not thread-safe. */
   NameCollector names;           /**< Every own_name this thread has met. */
+  NameRun run;                   /**< The same names, sorted once the queue ran dry. */
+  grd_result finish_result;      /**< Outcome of the thread's own sorting pass. */
   JsonStats stats;
 } ParserThreadArgs;
 
@@ -117,6 +119,9 @@ static void *parser_thread(void *arg) {
     process_batch(&batch, &args->stats, &args->names);
     buffer_pool_release(args->pool, batch.buffer);
   }
+  /* the queue has run dry — sort what this thread gathered while the others
+     do the same, so the join finds nothing but ordered runs */
+  args->finish_result = name_collector_finish(&args->names, &args->run);
   return NULL;
 }
 
@@ -280,16 +285,22 @@ int main(int argc, char *argv[]) {
   printf("Joining stats finished in %s...\n", timeUsedBuffer);
   grdu_mono_timer_reset(&timeUsed);
 
-  /* --- the per-thread name streams flow together, sort, and lose their doubles --- */
-  const NameCollector *collectors[10];
+  /* --- the sorted per-thread runs flow together and lose their last doubles --- */
+  const NameRun *runs[10];
   size_t meta_allocated = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    collectors[i] = &parser_args[i].names;
+    if (parser_args[i].finish_result != GRD_SUCCESS) {
+      fatal(
+          ERROR_MEMORY, "Parser thread %u failed to sort its place names (grd_result %d).", i,
+          (int)parser_args[i].finish_result
+      );
+    }
+    runs[i] = &parser_args[i].run;
     meta_allocated += meta_area_total_allocated(parser_args[i].meta_alloc);
   }
 
   NameSet names;
-  grd_result merge_result = name_collector_merge(&names, collectors, parser_thread_count);
+  grd_result merge_result = name_run_merge(&names, runs, parser_thread_count, parser_thread_count);
   if (merge_result != GRD_SUCCESS) {
     fatal(ERROR_MEMORY, "Failed to merge collected place names (grd_result %d).", (int)merge_result);
   }
@@ -301,12 +312,18 @@ int main(int argc, char *argv[]) {
       "\nNamen: %zu gesammelt, %zu eindeutig (%s Namensspeicher) in %s\n",
       names.total, names.count, nameBytesBuffer, timeUsedBuffer
   );
+  printf(
+      "Prefix-Buckets belegt: %zu von %zu (%.2f %%)\n",
+      names.used_prefixes, NAME_PREFIX_COUNT,
+      100.0 * (double)names.used_prefixes / (double)NAME_PREFIX_COUNT
+  );
   grdu_mono_timer_reset(&timeUsed);
 
   printf("Cleaning up...\n");
 
   name_set_free(&names);
   for (unsigned i = 0; i < parser_thread_count; ++i) {
+    name_run_free(&parser_args[i].run);
     name_collector_free(&parser_args[i].names);
     meta_area_allocator_destroy(parser_args[i].meta_alloc);
   }
