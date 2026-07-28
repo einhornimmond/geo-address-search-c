@@ -44,11 +44,18 @@
             .url = "https://github.com/gradido/gradido-blockchain-core/archive/refs/tags/v0.2.3.tar.gz",
             .hash = "blockchain_core-0.15.2-r94uphBVDwBsHkNBbMx1Uz98cfEogBpIzlYIoSF28EPM",
         },
+        // Only fetched when -Dtests=true asks for it.
+        .googletest = .{
+            .url = "git+https://github.com/allyourcodebase/googletest#e2affdd13730f800aa63772039f2adfa971461b6",
+            .hash = "googletest-1.15.2-vLU55gAVAAC86GD--lNpG3oVHLsJhdB0lFCOCsBEbiAE",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "tests",
         // For example...
         //"LICENSE",
         //"README.md",

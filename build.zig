@@ -19,6 +19,25 @@ const client_sources = [_][]const u8{
     "text_tokenize.c",
 };
 
+/// One test executable per unit of src/, named after the file it exercises.
+/// Adding a unit means adding its test here and writing tests/unit/src/<name>.cpp.
+const unit_tests = [_][]const u8{
+    "test_client",
+    "test_doc_collector",
+    "test_error",
+    "test_format",
+    "test_geo_index",
+    "test_house_collector",
+    "test_json_parse",
+    "test_json_stats",
+    "test_line_buffer",
+    "test_meta_area_allocator",
+    "test_name_collector",
+    "test_parse_queue",
+    "test_prefix_tree",
+    "test_text_tokenize",
+};
+
 pub fn build(b: *std.Build) !void {
     // A bare `zig build` would compile for "native" and reach into /usr/include,
     // which needs kernel headers this project does not otherwise depend on.
@@ -32,6 +51,7 @@ pub fn build(b: *std.Build) !void {
     // options
     const disable_avx512 = b.option(bool, "ROARING_DISABLE_AVX512", "Disable AVX512 in CRoaring") orelse autoDetectDisableAvx512(target);
     const shared = b.option(bool, "shared", "Build the client as a shared library (default: static)") orelse false;
+    const enable_tests = b.option(bool, "tests", "Build the unit tests under tests/unit") orelse false;
     const node_headers = b.option(
         []const u8,
         "node-headers",
@@ -177,7 +197,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     // Project sources
-    try addDirSources(exe, b, "src", c_flags);
+    try addDirSources(exe, b, "src", c_flags, &.{});
 
     cdbTargets.append(b.allocator, exe) catch @panic("OOM");
 
@@ -198,14 +218,100 @@ pub fn build(b: *std.Build) !void {
     const client_step = b.step("client", "Build only the client library");
     client_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
 
+    // =====================================================================
+    //  Unit tests: one executable per unit of src/, built only on request
+    // =====================================================================
+
+    const test_step = b.step("test", "Run unit tests (needs -Dtests=true)");
+
+    if (enable_tests) {
+        // Every unit under test, compiled once and shared by all test binaries.
+        // main.c stays out — it carries the entry point the tests bring
+        // themselves, through gtest_main.
+        const test_lib = b.addLibrary(.{
+            .name = "geoindex_under_test",
+            .linkage = .static,
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        test_lib.linkLibC();
+        test_lib.root_module.addCMacro("_GNU_SOURCE", "1");
+        test_lib.linkLibrary(zstd.artifact("zstd"));
+        test_lib.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+        test_lib.addIncludePath(blockchain_core.path("include"));
+        test_lib.addIncludePath(b.path("third_party/yyjson/src"));
+        test_lib.addIncludePath(b.path("third_party/stb"));
+        test_lib.addIncludePath(b.path("third_party/CRoaring/include"));
+        test_lib.addCSourceFiles(.{
+            .root = b.path("third_party/yyjson/src"),
+            .files = &.{"yyjson.c"},
+            .flags = c_flags,
+        });
+        test_lib.addCSourceFiles(.{
+            .root = b.path("third_party/CRoaring"),
+            .files = &.{"roaring.c"},
+            .flags = roaring_flags.items,
+        });
+        try addDirSources(test_lib, b, "src", c_flags, &.{"main.c"});
+
+        cdbTargets.append(b.allocator, test_lib) catch @panic("OOM");
+
+        const googletest = b.lazyDependency("googletest", .{ .target = target, .optimize = optimize });
+
+        for (unit_tests) |name| {
+            const t = b.addExecutable(.{
+                .name = name,
+                .root_module = b.createModule(.{
+                    .target = target,
+                    .optimize = optimize,
+                }),
+            });
+            t.linkLibCpp();
+            t.linkLibrary(test_lib);
+            t.root_module.addCMacro("_GNU_SOURCE", "1");
+            t.addIncludePath(b.path("src"));
+            t.addIncludePath(b.path("tests/unit/src"));
+            t.addIncludePath(blockchain_core.path("include"));
+            t.addIncludePath(b.path("third_party/yyjson/src"));
+            t.addIncludePath(b.path("third_party/CRoaring/include"));
+            // No -cflags here on purpose: Zig appends the resolved target triple
+            // to that group, and the glibc-versioned form it produces is one
+            // clang++ refuses to parse. The language comes from the extension.
+            t.addCSourceFiles(.{
+                .root = b.path("tests/unit/src"),
+                .files = &.{b.fmt("{s}.cpp", .{name})},
+            });
+            if (googletest) |dep| {
+                t.linkLibrary(dep.artifact("gtest"));
+                t.linkLibrary(dep.artifact("gtest_main"));
+            }
+
+            // Deliberately not handed to the compile-commands step: it appends
+            // a -cflags group carrying Zig's own target triple, and the form
+            // that takes for a native build —
+            // x86_64-unknown-linux.6.1...6.1-gnu.2.36 — is one clang++ refuses
+            // to parse. The C sources under src/ are covered there already, so
+            // what the database loses is the test files themselves.
+            b.installArtifact(t);
+
+            // The fixtures are addressed relative to the project root, so every
+            // test is run from there rather than from the install directory.
+            const run_test = b.addRunArtifact(t);
+            run_test.setCwd(b.path("."));
+            test_step.dependOn(&run_test.step);
+        }
+    } else {
+        const hint = b.addFail("no tests were built — configure with -Dtests=true");
+        test_step.dependOn(&hint.step);
+    }
+
     const cdbTargetsSlice = cdbTargets.toOwnedSlice(b.allocator) catch @panic("OOM");
     const buildStep = zcc.createStep(b, "cdb", cdbTargetsSlice);
 
     buildStep.dependOn(&exe.step);
     b.getInstallStep().dependOn(buildStep);
-
-    // Placeholder for future tests
-    _ = b.step("test", "Run unit tests");
 }
 
 fn addDirSources(
@@ -213,6 +319,7 @@ fn addDirSources(
     b: *std.Build,
     root: []const u8,
     flags: []const []const u8,
+    skip: []const []const u8,
 ) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
@@ -223,12 +330,16 @@ fn addDirSources(
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(b.allocator);
 
-    while (try walker.next()) |entry| {
+    outer: while (try walker.next()) |entry| {
         if (entry.kind != .file)
             continue;
 
         if (!std.mem.endsWith(u8, entry.path, ".c"))
             continue;
+
+        for (skip) |skipped| {
+            if (std.mem.eql(u8, entry.path, skipped)) continue :outer;
+        }
 
         try files.append(
             b.allocator,

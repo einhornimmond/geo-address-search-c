@@ -1,0 +1,9 @@
+{"type":"Place","content":[{"address_type":"street","country_code":"DE","postcode":"80331","importance":0.5,"name":{"name":"Marienplatz","name:de":"Marienplatz","name:en":"Mary's Square"},"address":{"city":"München","city:de":"München","state":"Bayern","state:de":"Bayern","country":"Deutschland","other":["Marienplatz Altstadt"]},"centroid":[11.5755,48.1374]}]}
+{"type":"Place","content":[{"address_type":"locality","country_code":"PL","importance":0.08,"name":{"name":"Osiedle Praha"},"address":{"city":"Warszawa","city:de":"Warschau","state":"Mazowieckie","country":"Polska","country:de":"Polen"},"centroid":[21.084316,52.2533694]}]}
+{"type":"Place","content":[{"address_type":"house","country_code":"DE","housenumber":"17","postcode":"10715","name":{},"address":{"street":"Berliner Straße","city":"Berlin","city:de":"Berlin","postcode":"10715"},"centroid":[13.3283388,52.4869779]}]}
+{"type":"Place","content":[{"address_type":"city","country_code":"CZ","importance":0.9,"name":{"name":"Praha","name:de":"Prag","name:en":"Prague"},"address":{"country":"Česko","country:de":"Tschechien"},"centroid":[14.4378,50.0755]}]}
+{"type":"Place","content":[{"address_type":"country","country_code":"AT","importance":0.95,"name":{"name":"Österreich","name:de":"Österreich","name:en":"Austria"},"address":{},"centroid":[14.55,47.5162]}]}
+{"type":"Place","content":[{"address_type":"other","country_code":"DE","importance":0.1,"name":{"name":"Ententeich"},"address":{"city":"Bonn"},"centroid":[7.098,50.735]}]}
+{"type":"Place","content":[{"address_type":"other","country_code":"DE","housenumber":"3","importance":0.1,"name":{"name":"Ferienlager"},"address":{"street":"Seeweg","city":"Bonn"},"centroid":[7.099,50.736]}]}
+{"type":"NotAPlace","content":[{"address_type":"street","name":{"name":"Wird ignoriert"}}]}
+{"type":"Place"}
