@@ -95,7 +95,7 @@ static void printAssert(void) {
   printHeader("Luna is judging your code...");
 
   fputs(
-      "      /\\___/\\\\\n"
+      "     /\\___/\\\n"
       "    =( ಠ_ಠ )=\n"
       "      /   \\\n"
       "\n"

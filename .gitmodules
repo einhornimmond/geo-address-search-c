@@ -10,3 +10,6 @@
 [submodule "third_party/zstd"]
 	path = third_party/zstd
 	url = https://github.com/facebook/zstd.git
+[submodule "third_party/CRoaring"]
+	path = third_party/CRoaring
+	url = https://github.com/RoaringBitmap/CRoaring.git

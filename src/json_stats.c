@@ -1,81 +1,65 @@
 #include "json_stats.h"
 #include "error.h"
-
+#include "json_parse.h"
 #include <inttypes.h>
 #include <stdio.h>
-#include <string.h>
 
-static void count_address_type(JsonStats *stats, const char *address_type) {
-  if (strcmp(address_type, "country") == 0) {
-    ++stats->countries;
-  } else if (strcmp(address_type, "state") == 0) {
-    ++stats->states;
-  } else if (strcmp(address_type, "county") == 0) {
-    ++stats->counties;
-  } else if (strcmp(address_type, "city") == 0) {
-    ++stats->cities;
-  } else if (strcmp(address_type, "street") == 0) {
-    ++stats->streets;
-  } else if (strcmp(address_type, "house") == 0) {
+static void count_address_type(JsonStats *stats, PhotonPlaceType address_type) {
+  switch (address_type) {
+  case PHOTON_PLACE_TYPE_HOUSE:
     ++stats->houses;
-  } else {
+    break;
+  case PHOTON_PLACE_TYPE_STREET:
+    ++stats->streets;
+    break;
+  case PHOTON_PLACE_TYPE_CITY:
+    ++stats->cities;
+    break;
+  case PHOTON_PLACE_TYPE_STATE:
+    ++stats->states;
+    break;
+  case PHOTON_PLACE_TYPE_COUNTY:
+    ++stats->counties;
+    break;
+  case PHOTON_PLACE_TYPE_LOCALITY:
+    ++stats->localities;
+    break;
+  case PHOTON_PLACE_TYPE_DISTRICT:
+    ++stats->districts;
+    break;
+  case PHOTON_PLACE_TYPE_COUNTRY:
+    ++stats->countries;
+    break;
+  case PHOTON_PLACE_TYPE_OTHER:
     ++stats->other;
+    break;
+  case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
+    ++stats->state_cities;
+    break;
+  case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
+    ++stats->independent_cities;
+    break;
+  default:
+    fatal(ERROR_ASSERT, "None or Unknown address type");
   }
 }
 
-void json_stats_record(JsonStats *stats, yyjson_val *root) {
-  static int postcode_found = 0;
-
+void json_stats_count_document(JsonStats *stats, const void *result) {
+  const JsonParseResult *r = result;
   ++stats->records;
-  if (!yyjson_is_obj(root)) {
+  if (!r->is_valid) {
     ++stats->invalid_records;
     return;
   }
-
-  yyjson_val *type = yyjson_obj_get(root, "type");
-  if (!yyjson_is_str(type) || strcmp(yyjson_get_str(type), "Place") != 0) { return; }
+  if (!r->is_place) return;
   ++stats->place_records;
+  stats->place_entries += r->entry_count;
+}
 
-  yyjson_val *content = yyjson_obj_get(root, "content");
-  if (!yyjson_is_arr(content)) {
-    ++stats->invalid_records;
-    return;
-  }
-
-  size_t index, max;
-  yyjson_val *entry;
-  yyjson_arr_foreach(content, index, max, entry) {
-    if (!yyjson_is_obj(entry)) {
-      ++stats->invalid_records;
-      continue;
-    }
-    ++stats->place_entries;
-
-    yyjson_val *address_type = yyjson_obj_get(entry, "address_type");
-    if (!yyjson_is_str(address_type)) {
-      ++stats->other;
-      continue;
-    }
-    count_address_type(stats, yyjson_get_str(address_type));
-
-    if (!postcode_found) {
-      yyjson_val *postcode = yyjson_obj_get(entry, "postcode");
-      if (!yyjson_is_str(postcode)) {
-        yyjson_val *addr = yyjson_obj_get(entry, "address");
-        if (yyjson_is_obj(addr)) { postcode = yyjson_obj_get(addr, "postcode"); }
-      }
-      if (yyjson_is_str(postcode)) {
-        postcode_found = 1;
-      } else if (stats->place_entries > 50000) {
-        fatal(
-            ERROR_JSON,
-            "postcode field not found in Photon data after %" PRIu64
-            " entries – dataset may lack postcode information.",
-            stats->place_entries
-        );
-      }
-    }
-  }
+void json_stats_count_place(JsonStats *stats, const PhotonPlace *place) {
+  count_address_type(stats, place->typeEnum);
+  stats->search_terms += place->search_count;
+  stats->search_dropped += place->search_dropped;
 }
 
 void json_stats_add(JsonStats *total, const JsonStats *addend) {
@@ -86,27 +70,41 @@ void json_stats_add(JsonStats *total, const JsonStats *addend) {
   total->states += addend->states;
   total->counties += addend->counties;
   total->cities += addend->cities;
+  total->localities += addend->localities;
+  total->districts += addend->districts;
   total->streets += addend->streets;
   total->houses += addend->houses;
   total->other += addend->other;
+  total->search_terms += addend->search_terms;
+  total->search_dropped += addend->search_dropped;
+  total->state_cities += addend->state_cities;
+  total->independent_cities += addend->independent_cities;
   total->invalid_records += addend->invalid_records;
+  if (addend->postcode_checked) total->postcode_checked = 1;
 }
 
 void json_stats_print(const JsonStats *stats) {
-  printf("\nGespeicherte Adresshierarchie:\n");
-  printf("  Länder:         %" PRIu64 "\n", stats->countries);
-  printf("  Bundesländer:   %" PRIu64 "\n", stats->states);
-  printf("  Landkreise:     %" PRIu64 "\n", stats->counties);
-  printf("  Städte:         %" PRIu64 "\n", stats->cities);
-  printf("  Straßen:        %" PRIu64 "\n", stats->streets);
-  printf("  Adressen:       %" PRIu64 "\n", stats->houses);
-  printf("  Sonstige:  %" PRIu64 "\n", stats->other);
+  printf("\nAddress hierarchy kept:\n");
+  printf("  countries:      %" PRIu64 "\n", stats->countries);
+  printf("  states:         %" PRIu64 "\n", stats->states);
+  printf("  counties:       %" PRIu64 "\n", stats->counties);
+  printf("  cities:         %" PRIu64 "\n", stats->cities);
+  printf("  districts:      %" PRIu64 "\n", stats->districts);
+  printf("  localities:     %" PRIu64 "\n", stats->localities);
+  printf("  streets:        %" PRIu64 "\n", stats->streets);
+  printf("  addresses:      %" PRIu64 "\n", stats->houses);
+  printf("  other:          %" PRIu64 "\n", stats->other);
   printf(
-      "\nPlace-Objekte: %" PRIu64 ", gespeicherte Einträge: %" PRIu64 ", JSON-Datensätze: %" PRIu64
-      "\n",
+      "\nPlace objects: %" PRIu64 ", entries kept: %" PRIu64 ", JSON records: %" PRIu64 "\n",
       stats->place_records, stats->place_entries, stats->records
   );
   if (stats->invalid_records) {
-    printf("Ungültige oder unvollständige Einträge: %" PRIu64 "\n", stats->invalid_records);
+    printf("Malformed or incomplete entries: %" PRIu64 "\n", stats->invalid_records);
+  }
+  if (stats->search_dropped) {
+    printf(
+        "Search terms cut off: %" PRIu64 " of %" PRIu64 " — raise PHOTON_PLACE_SEARCH_MAX\n",
+        stats->search_dropped, stats->search_terms + stats->search_dropped
+    );
   }
 }
