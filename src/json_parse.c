@@ -147,6 +147,17 @@ static AddressRole address_role(const char *key, size_t key_size) {
   }
 }
 
+/**
+ * @brief Is this the German reading of an address key — `city:de`, `state:de`, and their kin?
+ *
+ *  A suffix test, nothing more: the key must end in `:de` and carry something
+ *  before it.  Longer tags such as `city:de-formal` are left to the general
+ *  rule, which passes them over.
+ */
+static bool key_is_german(const char *key, size_t key_size) {
+  return key_size > 3 && memcmp(key + key_size - 3, ":de", 3) == 0;
+}
+
 typedef enum ResultType {
   RESULT_SUCCESS,
   RESULT_SKIP,
@@ -220,9 +231,17 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
       /* Parent text enters the dictionary through the parent's own entry —
          "Brandenburg" is a state document of its own. Carrying every language
          variant of every ancestor on every child would multiply the term
-         stream thirtyfold and add not a single word. Only the unlocalized
-         form stays, as a safety net for parents the dump never lists. */
-      if (indexed && !memchr(key_text, ':', key_size)) { search_add(p, text); }
+         stream thirtyfold and add not a single word. Two readings stay. The
+         unlocalized one, as a safety net for parents the dump never lists.
+         And the German one, because that is the form the answer shows: a
+         street in Prague comes back with "Prag" in its city field, and a query
+         repeating what it just read must reach the same street again — the
+         unlocalized "Praha" alone would leave it unfindable by the name it
+         displays. At home both readings are the same text and search_add()
+         keeps one of them; abroad it costs a single term per level. */
+      if (indexed && (key_is_german(key_text, key_size) || !memchr(key_text, ':', key_size))) {
+        search_add(p, text);
+      }
     }
   }
 

@@ -20,8 +20,12 @@ static_assert(
     "kind numbers drifted"
 );
 
-/** Most results one call may ask for; beyond that a search is a listing. */
-#define GEO_CLIENT_LIMIT_MAX 256
+/** Most results one call may ask for; beyond that a search is a listing.
+ *
+ *  Taken from the index rather than chosen again here: the query cannot rank
+ *  more places than @ref GEO_QUERY_LIMIT_MAX at once, and a second number of
+ *  our own would be free to drift past it — silently, and only in the ordering. */
+#define GEO_CLIENT_LIMIT_MAX GEO_QUERY_LIMIT_MAX
 
 struct GeoClient {
   GeoIndex index;
@@ -164,9 +168,7 @@ static void json_put(JsonWriter *writer, const char *text, size_t size) {
 
   writer->needed += size;
   if (writer->needed >= writer->capacity) {
-    if (cur < writer->capacity) {
-      memcpy(&writer->buffer[cur], text, writer->capacity - cur);
-    }
+    if (cur < writer->capacity) { memcpy(&writer->buffer[cur], text, writer->capacity - cur); }
     return;
   }
   memcpy(&writer->buffer[cur], text, size);

@@ -120,8 +120,17 @@ GeoStatus geo_client_info(const GeoClient *client, GeoClientInfo *out);
  *  without diacritics, German abbreviations spelled out or not.  A number is
  *  read as a house number first and as a word only if that finds nothing.
  *
- *  Results come back heaviest first, and a place where the house number was
- *  actually found comes before one where it was not.
+ *  Results are ordered by how far they answer what the query said about *where*
+ *  — a postcode it named counts for more than a town — then, among places that
+ *  answer equally, by whether the house number was actually found there, and
+ *  last by the weight the dump gave the place.  A query that names no town and
+ *  no postcode is answered by weight alone, heaviest first.
+ *
+ *  A postcode — four digits or more, standing on its own — narrows the search
+ *  instead of only sorting it, which is what lets a quiet street outlive a
+ *  famous one that shares its name.  Should it leave nothing standing, it is
+ *  dropped and the query asked again without it, so a wrong one costs a place
+ *  its position, never its presence.
  *
  *  Safe to call from several threads on the same client.
  *
@@ -132,7 +141,10 @@ GeoStatus geo_client_info(const GeoClient *client, GeoClientInfo *out);
  *                           query someone is still typing.  Pass false for one
  *                           they finished — a beginning always matches more.
  *  @param[out] out          Receives up to @p limit results.
- *  @param[in]  limit        Capacity of @p out.
+ *  @param[in]  limit        Capacity of @p out.  At most 256 are ever written,
+ *                           however many are asked for — beyond that a search
+ *                           is a listing, and the ordering could no longer
+ *                           weigh every place it found.
  *  @return Number of results written; 0 when nothing matched.
  *
  *  @whisper Words that were never spoken together find the one place where they belong
@@ -158,7 +170,8 @@ size_t geo_client_search(
  *  @param[in]  query        Free text, UTF-8.
  *  @param[in]  query_size   Byte length of @p query.
  *  @param[in]  prefix_last  As in geo_client_search().
- *  @param[in]  limit        Most results to write.
+ *  @param[in]  limit        Most results to write; capped at 256, as in
+ *                           geo_client_search().
  *  @param[out] buffer       Destination; always NUL-terminated when it has room.
  *  @param[in]  buffer_size  Capacity of @p buffer in bytes.
  *  @return Bytes the whole answer needs without the NUL.  A value ≥

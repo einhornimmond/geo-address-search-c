@@ -772,6 +772,44 @@ static bool token_has_digit(const TextToken *token) {
   return false;
 }
 
+/** Fewest digits a bare number must have before it is read as a postal code. */
+#define GEO_QUERY_CODE_DIGITS 4
+
+/**
+ * @brief Does this token read as a postal code rather than a house number?
+ *
+ *  Digits only, and at least @ref GEO_QUERY_CODE_DIGITS of them.  A house number
+ *  carrying a letter — *12a*, *17-19* — is never one, and neither is a short
+ *  run: the four-digit floor is what separates the codes of Germany, Austria
+ *  and Switzerland from the numbers on their doors.  The rule guesses, and it
+ *  guesses for one part of the world; a wrong guess costs nothing, because a
+ *  code that narrows the answer to nothing is asked again without it.
+ */
+static bool token_is_code(const TextToken *token) {
+  if (token->size < GEO_QUERY_CODE_DIGITS) return false;
+  for (size_t i = 0; i < token->size; ++i) {
+    if (token->data[i] < '0' || token->data[i] > '9') return false;
+  }
+  return true;
+}
+
+/** How the numbers of a query are read while the candidates are gathered. */
+typedef enum NumberReading {
+  /** Every number narrows, the way *Straße des 17. Juni* needs it. */
+  NUMBERS_AS_WORDS,
+  /** No number narrows; each is held back to be looked for as a house number. */
+  NUMBERS_AS_HOUSES,
+  /** Only a postal code narrows; shorter numbers stay house numbers. */
+  NUMBERS_BUT_CODES
+} NumberReading;
+
+/** May this token take part in narrowing the answer down, under @p reading? */
+static bool token_narrows(const TextToken *token, NumberReading reading) {
+  if (reading == NUMBERS_AS_WORDS) return true;
+  if (!token_has_digit(token)) return true;
+  return reading == NUMBERS_BUT_CODES && token_is_code(token);
+}
+
 /** Compare a written house number with a folded one, letters case aside. */
 static bool number_equal(const char *written, size_t written_size, const TextToken *token) {
   if (written_size != token->size) return false;
@@ -809,14 +847,14 @@ static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextT
 }
 
 /**
- * @brief Answer the query's words, optionally leaving the numbers out.
+ * @brief Answer the query's words, reading its numbers as @p reading says.
  *
  *  @return Number of results written into @p hits.
  */
 static size_t query_words(
     const GeoIndex *index,
     const TextTokenizer *tokenizer,
-    bool without_numbers,
+    NumberReading reading,
     bool prefix_last,
     GeoHit *hits,
     size_t limit
@@ -827,7 +865,7 @@ static size_t query_words(
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
     const TextToken *token = &tokenizer->tokens[t];
     if (token->part) continue;
-    if (without_numbers && token_has_digit(token)) continue;
+    if (!token_narrows(token, reading)) continue;
     if (!any || token->group > typing) {
       typing = token->group;
       any = true;
@@ -839,7 +877,7 @@ static size_t query_words(
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
     const TextToken *token = &tokenizer->tokens[t];
     if (token->part) continue; /* pieces of a compound serve the index, not the query */
-    if (without_numbers && token_has_digit(token)) continue;
+    if (!token_narrows(token, reading)) continue;
 
     /* A whole word is read as it stands; the one still being typed is read as
        a beginning as well, so *Marienpl* finds what *Marienplatz* would. */
@@ -938,6 +976,198 @@ static size_t query_words(
   return count;
 }
 
+/* =========================================================================
+ *  Ranking — what the query described, ahead of what the world finds heavy
+ * ========================================================================= */
+
+/** Candidates weighed for every result asked for, before the ranking trims. */
+#define GEO_QUERY_OVERSAMPLE 4
+
+/**
+ * Fewest candidates weighed, however few results were asked for.
+ *
+ * The sample is filled by weight alone, and what it does not hold can no longer
+ * be lifted.  A query naming a postcode may well mean the fortieth-heaviest of
+ * the streets that carry its words — asking for two results must not mean that
+ * only the two heaviest were ever considered.
+ */
+#define GEO_QUERY_SAMPLE_MIN 64
+
+/* The sample is what @ref GEO_QUERY_LIMIT_MAX measures — 256 hits are four
+   kilobytes of stack — so the two are one number, kept in the header where a
+   caller can read it. */
+static_assert(
+    GEO_QUERY_SAMPLE_MIN <= GEO_QUERY_LIMIT_MAX, "the smallest sample outgrew the largest"
+);
+
+/** A postcode the query named — the narrowest thing an address can say. */
+#define GEO_AGREEMENT_POSTCODE 2u
+/** A town the query named. Towns repeat, postcodes far less. */
+#define GEO_AGREEMENT_CITY 1u
+
+/**
+ * @brief The query's own words, kept while the tokenizer turns to other texts.
+ *
+ *  The tokenizer holds one input at a time, and the ranking has to fold the
+ *  names of the candidates through the same door the query came through.  So
+ *  the query's whole words are copied aside first — pieces of compounds stay
+ *  behind, and at most @ref TEXT_BUFFER_MAX bytes are taken, the ceiling the
+ *  tokenizer itself keeps.
+ *
+ *  @whisper What was asked is set down, so the asking survives the answering
+ */
+typedef struct QueryWords {
+  char bytes[TEXT_BUFFER_MAX]; /**< Folded words, laid end to end. */
+  uint16_t start[TEXT_TOKEN_MAX];
+  uint16_t size[TEXT_TOKEN_MAX];
+  size_t count; /**< Words held. */
+  size_t used;  /**< Bytes taken from @c bytes. */
+} QueryWords;
+
+/** Copy the whole words of @p tokenizer aside, in the order they were typed. */
+static void query_words_keep(QueryWords *kept, const TextTokenizer *tokenizer) {
+  kept->count = 0;
+  kept->used = 0;
+  for (size_t t = 0; t < tokenizer->token_count && kept->count < TEXT_TOKEN_MAX; ++t) {
+    const TextToken *token = &tokenizer->tokens[t];
+    if (token->part) continue; /* a piece of a compound is not a word someone typed */
+    if (kept->used + token->size > sizeof(kept->bytes)) break;
+    memcpy(&kept->bytes[kept->used], token->data, token->size);
+    kept->start[kept->count] = (uint16_t)kept->used;
+    kept->size[kept->count] = (uint16_t)token->size;
+    ++kept->count;
+    kept->used += token->size;
+  }
+}
+
+/** Was this word among the ones the query brought? */
+static bool query_words_have(const QueryWords *kept, const char *word, size_t size) {
+  for (size_t w = 0; w < kept->count; ++w) {
+    if (kept->size[w] == size && memcmp(&kept->bytes[kept->start[w]], word, size) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief How many of the query's words stand in the spelling behind @p rank.
+ *
+ *  The text is folded by the same tokenizer the query passed through, so
+ *  *Straße* and *strasse* meet, and the pieces of a compound count as well —
+ *  someone asking for *Leopold* should be recognised by *Leopoldstraße*.
+ *
+ *  @param[in]     index    Opened index; the spelling is borrowed from it.
+ *  @param[in]     rank     Display rank, or GEO_RANK_NONE for a field the
+ *                          document never carried.
+ *  @param[in]     kept     Words of the query.
+ *  @param[in,out] scratch  Tokenizer, overwritten by this call.
+ *  @return Words of the query found in that spelling; 0 when there is none.
+ */
+static unsigned words_in_display(
+    const GeoIndex *index, uint32_t rank, const QueryWords *kept, TextTokenizer *scratch
+) {
+  if (rank == GEO_RANK_NONE) return 0;
+  size_t size = 0;
+  const char *text = geo_dictionary_word(&index->display, rank, &size);
+  if (!text || !size) return 0;
+
+  size_t tokens = text_tokenize(scratch, text, size);
+  unsigned found = 0;
+  for (size_t t = 0; t < tokens; ++t) {
+    if (query_words_have(kept, scratch->tokens[t].data, scratch->tokens[t].size)) ++found;
+  }
+  return found;
+}
+
+/**
+ * @brief How far a document lies where the query said it should.
+ *
+ *  Two questions, and only two: does the query name this document's postcode,
+ *  and does it name its town.  Both are unambiguous — a place either carries
+ *  that postcode or it does not — and neither can be earned by a document that
+ *  merely mentions another place in passing.
+ *
+ *  The name is deliberately left out of this.  A word reaches a document
+ *  through everything its entry carried, its own name as much as the street its
+ *  address block named, and the index cannot tell the two apart: *Domplatte*
+ *  answers to *Dom* without showing it, and so does the *Leopoldstraße* whose
+ *  address block names the Berliner Straße it crosses.  Rewarding a word seen
+ *  in the display name lifts the first case and the second alike, and demotes
+ *  every place whose word came from elsewhere — measured, it costs more than it
+ *  wins.  Telling a name from a mention needs a mark set where the posting is
+ *  made, in the builder, not here.
+ *
+ *  @param[in]     index     Opened index; must not be NULL.
+ *  @param[in]     document  Document number, below @c index->document_count.
+ *  @param[in]     kept      Words of the query.
+ *  @param[in,out] scratch   Tokenizer, overwritten by this call.
+ *  @return 0 … GEO_AGREEMENT_POSTCODE + GEO_AGREEMENT_CITY.  0 when the query
+ *          named no place at all, and then the order the weights gave stands
+ *          untouched.
+ *
+ *  @whisper The words of the asking settle onto the place that was meant
+ */
+static unsigned agreement_of(
+    const GeoIndex *index, uint32_t document, const QueryWords *kept, TextTokenizer *scratch
+) {
+  const GeoDocument *record = &index->documents[document];
+  unsigned score = 0;
+
+  if (words_in_display(index, record->postcode_rank, kept, scratch)) {
+    score += GEO_AGREEMENT_POSTCODE;
+  }
+  if (words_in_display(index, record->city_rank, kept, scratch)) { score += GEO_AGREEMENT_CITY; }
+  return score;
+}
+
+/**
+ * @brief Does @p left stand before @p right?
+ *
+ *  Three keys, in this order: the place the query described; then the house
+ *  number it asked for; then the weight the dump gave it.
+ *
+ *  Town and postcode come first because they tell places apart, while a house
+ *  number tells doors apart inside one.  A street abroad that happens to carry
+ *  the number would otherwise stand before the street in the named town that
+ *  does not — the answer would be a door in the wrong city.  Where the query
+ *  named no place, or named one every candidate shares, the scores are equal
+ *  and the number decides after all, which is what it was meant to do.  With
+ *  no agreement anywhere the last key is the only one left, and the order is
+ *  the one this index has always answered with.
+ */
+static bool ranks_before(
+    const GeoHit *left, unsigned left_score, const GeoHit *right, unsigned right_score
+) {
+  if (left_score != right_score) return left_score > right_score;
+  bool left_house = left->house != GEO_RANK_NONE;
+  bool right_house = right->house != GEO_RANK_NONE;
+  if (left_house != right_house) return left_house;
+  return left->importance > right->importance;
+}
+
+/**
+ * @brief Order @p hits by agreement, house and weight, keeping equals as they lie.
+ *
+ *  An insertion sort: the sample is at most @ref GEO_QUERY_LIMIT_MAX long and
+ *  already nearly in order, which is the case this sort is quickest at, and it
+ *  moves equal hits past nothing — so the order weight gave them survives.
+ */
+static void rank_hits(GeoHit *hits, uint8_t *scores, size_t count) {
+  for (size_t h = 1; h < count; ++h) {
+    GeoHit hit = hits[h];
+    uint8_t score = scores[h];
+    size_t place = h;
+    while (place > 0 && ranks_before(&hit, score, &hits[place - 1], scores[place - 1])) {
+      hits[place] = hits[place - 1];
+      scores[place] = scores[place - 1];
+      --place;
+    }
+    hits[place] = hit;
+    scores[place] = score;
+  }
+}
+
 size_t geo_index_query(
     const GeoIndex *index,
     TextTokenizer *tokenizer,
@@ -948,6 +1178,11 @@ size_t geo_index_query(
     size_t limit
 ) {
   if (!index || !tokenizer || !query || !size || !hits || !limit) return 0;
+  /* Beyond the ceiling a search stops being a search and becomes a listing, and
+     the ranking could no longer hold every candidate at once.  Answering with
+     fewer results is the honest reading of too large a limit — quietly dropping
+     the ranking instead would return the full count in the wrong order. */
+  if (limit > GEO_QUERY_LIMIT_MAX) limit = GEO_QUERY_LIMIT_MAX;
 
   /* a query is never a repetition of the one before it */
   text_tokenizer_init(tokenizer);
@@ -962,31 +1197,88 @@ size_t geo_index_query(
     if (!tokenizer->tokens[t].part && token_has_digit(&tokenizer->tokens[t])) { numbered = true; }
   }
 
-  size_t count = numbered ? query_words(index, tokenizer, true, prefix_last, hits, limit) : 0;
-  if (!count) return query_words(index, tokenizer, false, prefix_last, hits, limit);
+  /* --- more candidates than were asked for, so the ranking has something to
+         choose from.  The place someone means is not always among the heaviest
+         that carry the words, and what is cut here can never be lifted later.
+         A caller who wants more at once than the sample holds is served
+         straight into its own array, as before.
+
+         Both arrays are bounded by the ceiling the limit was clamped to, so
+         however many candidates survive, the ranking below can hold every one
+         of them.  That is the whole point of clamping: a query that answers
+         more places than the sample fits would otherwise have to give the
+         ranking up, and would give it up in silence. --- */
+  GeoHit sample[GEO_QUERY_LIMIT_MAX];
+  GeoHit *pool = hits;
+  size_t pool_limit = limit;
+  if (limit <= GEO_QUERY_LIMIT_MAX / GEO_QUERY_OVERSAMPLE) {
+    pool = sample;
+    pool_limit = limit * GEO_QUERY_OVERSAMPLE;
+    if (pool_limit < GEO_QUERY_SAMPLE_MIN) pool_limit = GEO_QUERY_SAMPLE_MIN;
+  }
+  /* Neither array may be outgrown, whatever the constants above are set to
+     later — this is the one line that makes the ranking's count fit its scores. */
+  if (pool_limit > GEO_QUERY_LIMIT_MAX) pool_limit = GEO_QUERY_LIMIT_MAX;
+
+  /* --- Three readings, each asked only when the one before found nothing.
+         A postal code is the narrowest thing an address carries, so it is let
+         through first: it shrinks the candidates before weight ever cuts them,
+         which is the only way a light place can survive to be ranked at all.
+         Should the code narrow the answer to nothing — the street filed under
+         the neighbouring code, a digit mistyped, a four-digit house number
+         mistaken for a code — it is dropped and the words are asked alone.
+         Only if they too find nothing does every number take its turn as a
+         word, the way *Straße des 17. Juni* needs it. --- */
+  size_t count = 0;
+  if (numbered) {
+    count = query_words(index, tokenizer, NUMBERS_BUT_CODES, prefix_last, pool, pool_limit);
+    if (!count) {
+      count = query_words(index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, pool, pool_limit);
+    }
+  }
+  if (!count) {
+    numbered = false;
+    count = query_words(index, tokenizer, NUMBERS_AS_WORDS, prefix_last, pool, pool_limit);
+  }
+  if (!count) return 0;
 
   /* --- and now the number finds its door --- */
-  for (size_t h = 0; h < count; ++h) {
-    for (size_t t = 0; t < tokenizer->token_count; ++t) {
-      const TextToken *token = &tokenizer->tokens[t];
-      if (token->part || !token_has_digit(token)) continue;
-      uint32_t house = find_house(index, hits[h].document, token);
-      if (house != GEO_RANK_NONE) {
-        hits[h].house = house;
-        break;
+  if (numbered) {
+    for (size_t h = 0; h < count; ++h) {
+      for (size_t t = 0; t < tokenizer->token_count; ++t) {
+        const TextToken *token = &tokenizer->tokens[t];
+        if (token->part || !token_has_digit(token)) continue;
+        uint32_t house = find_house(index, pool[h].document, token);
+        if (house != GEO_RANK_NONE) {
+          pool[h].house = house;
+          break;
+        }
       }
     }
   }
 
-  /* --- whoever asked for a number means the street that has it.  The order
-         among them stays as it was, so weight still decides within. --- */
-  size_t front = 0;
+  /* --- whoever named a town or a postcode means the place that lies there;
+         among the places that answer equally, whoever asked for a number means
+         the street that has it.  Weight decides only where neither says
+         anything, which is where it always did. --- */
+  QueryWords kept;
+  query_words_keep(&kept, tokenizer);
+  /* From here the tokenizer folds the candidates' names, and two of them may
+     well be named alike — the filter that skips a repeated input would let
+     the second one score nothing. */
+  tokenizer->repetition_filter = 0;
+
+  /* pool_limit is bounded above, and hit_insert never returns more than it was
+     given — so count fits, always, and the ranking runs for every query rather
+     than for most of them. */
+  uint8_t scores[GEO_QUERY_LIMIT_MAX];
   for (size_t h = 0; h < count; ++h) {
-    if (hits[h].house == GEO_RANK_NONE) continue;
-    GeoHit found = hits[h];
-    for (size_t back = h; back > front; --back) { hits[back] = hits[back - 1]; }
-    hits[front++] = found;
+    scores[h] = (uint8_t)agreement_of(index, pool[h].document, &kept, tokenizer);
   }
+  rank_hits(pool, scores, count);
+
+  if (count > limit) count = limit;
+  if (pool != hits) { memcpy(hits, pool, count * sizeof(*hits)); }
   return count;
 }
 

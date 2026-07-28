@@ -264,6 +264,17 @@ typedef struct GeoHit {
 } GeoHit;
 
 /**
+ * Most results one query may ask for; a larger limit is answered with this many.
+ *
+ * The ranking weighs every candidate it carries at once, in one array on the
+ * stack, so the ceiling is that array's size and not a matter of taste.  It is
+ * named here rather than kept inside the query for two reasons: a caller has to
+ * size its own array to it, and a second copy of the number living somewhere
+ * else would be free to drift away from this one.
+ */
+enum { GEO_QUERY_LIMIT_MAX = 256 };
+
+/**
  * @brief Borrow the house numbers standing on one document.
  *
  *  @param[in]  index      Opened index; must not be NULL.
@@ -287,7 +298,25 @@ const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t 
  *  silence an otherwise clear address.  If no word is known at all, nothing
  *  is found.
  *
- *  Results come back by importance, heaviest first.
+ *  Three keys order the results.  First how far a place answers what the query
+ *  said about *where*: a postcode it named weighs more than a town, and a place
+ *  that answers neither scores nothing.  Then, among places that agree equally,
+ *  the one carrying the house number that was asked for.  Weight decides only
+ *  where the query described no place at all — as it always did.
+ *
+ *  A bare number of four digits or more is read as a postal code and narrows
+ *  the answer like any other word.  A shorter one, or one carrying a letter, is
+ *  held back as a house number and narrows nothing.  Where the code leaves
+ *  nothing standing — a street filed under the neighbouring one, a digit
+ *  mistyped, a long house number mistaken for a code — it is dropped and the
+ *  words are asked alone; only if those find nothing either does every number
+ *  take its turn as a word.
+ *
+ *  The candidates are gathered by weight before they are ordered, and only a
+ *  bounded sample of them — a place too light to reach that sample cannot be
+ *  lifted by anything the query says about it afterwards.  That is why the code
+ *  narrows rather than merely ranks: it must shrink the field before weight
+ *  cuts it, or the smallest street in the right town never arrives.
  *
  *  @param[in]     index      Opened index; must not be NULL.
  *  @param[in,out] tokenizer  Scratch space; reset by this call.
@@ -299,7 +328,10 @@ const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t 
  *                            does not, because a beginning always matches more
  *                            than the word itself.
  *  @param[out]    hits       Receives up to @p limit results.
- *  @param[in]     limit      Capacity of @p hits.
+ *  @param[in]     limit      Capacity of @p hits.  Anything above
+ *                            @ref GEO_QUERY_LIMIT_MAX is answered with that
+ *                            many — the ranking holds every candidate at once
+ *                            and cannot be asked for more.
  *  @return Number of results written.
  *
  *  @whisper Words that were never spoken together find the one place where they belong
