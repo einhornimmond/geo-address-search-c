@@ -78,6 +78,10 @@ pub fn build(b: *std.Build) !void {
         .flags = c_flags,
     });
     lib.installHeader(b.path("src/client.h"), "geoindex/client.h");
+    // client.h names its enums by inclusion, so they travel with it — the paths
+    // stay relative to client.h, and an installed tree resolves them unaided.
+    lib.installHeader(b.path("src/types/geo_status.h"), "geoindex/types/geo_status.h");
+    lib.installHeader(b.path("src/types/geo_place_kind.h"), "geoindex/types/geo_place_kind.h");
 
     b.installArtifact(lib);
     cdbTargets.append(b.allocator, lib) catch @panic("OOM");

@@ -36,34 +36,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "types/geo_status.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** How a call ended. */
-typedef enum GeoStatus {
-  GEO_OK = 0,           /**< Everything went through. */
-  GEO_ERROR_ARGUMENT,   /**< A pointer was NULL or a size was 0. */
-  GEO_ERROR_FILE,       /**< The file could not be opened or mapped. */
-  GEO_ERROR_FORMAT,     /**< The file is not an index this build can read. */
-  GEO_ERROR_MEMORY      /**< An allocation failed. */
-} GeoStatus;
-
-/** What kind of place a result is; the numbers are part of the file format. */
-typedef enum GeoPlaceKind {
-  GEO_PLACE_NONE = 0,
-  GEO_PLACE_COUNTRY = 1,
-  GEO_PLACE_STATE = 2,
-  GEO_PLACE_COUNTY = 3,
-  GEO_PLACE_CITY = 4,
-  GEO_PLACE_STREET = 5,
-  GEO_PLACE_HOUSE = 6,
-  GEO_PLACE_OTHER = 7,
-  GEO_PLACE_DISTRICT = 8,
-  GEO_PLACE_LOCALITY = 9,
-  GEO_PLACE_STATE_CITY = 10,
-  GEO_PLACE_INDEPENDENT_CITY = 11
-} GeoPlaceKind;
 
 /** An opened index. Create with geo_client_open(), release with geo_client_close(). */
 typedef struct GeoClient GeoClient;

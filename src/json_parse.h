@@ -20,21 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum PhotonPlaceType {
-  PHOTON_PLACE_TYPE_NONE,
-  PHOTON_PLACE_TYPE_COUNTRY,
-  PHOTON_PLACE_TYPE_STATE,
-  PHOTON_PLACE_TYPE_COUNTY,
-  PHOTON_PLACE_TYPE_CITY,
-  PHOTON_PLACE_TYPE_STREET,
-  PHOTON_PLACE_TYPE_HOUSE,
-  PHOTON_PLACE_TYPE_OTHER,
-  PHOTON_PLACE_TYPE_DISTRICT,
-  PHOTON_PLACE_TYPE_LOCALITY,
-  PHOTON_PLACE_TYPE_STATE_COUNTY_CITY,
-  PHOTON_PLACE_TYPE_INDEPENDENT_CITY,
-  PHOTON_PLACE_TYPE_UNKNOWN
-} PhotonPlaceType;
+#include "types/photon_place_type.h"
 
 /** A borrowed string with its byte length — points into the parsed document. */
 typedef struct PhotonString {

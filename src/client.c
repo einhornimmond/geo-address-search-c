@@ -3,7 +3,8 @@
 #include "client.h"
 
 #include "geo_index.h"
-#include "json_parse.h" /* only to nail the kind numbers to the builder's */
+#include "types/geo_place_kind.h"
+#include "types/photon_place_type.h"
 
 #include <stdlib.h>
 #include <string.h>
