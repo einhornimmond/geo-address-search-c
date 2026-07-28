@@ -226,6 +226,11 @@ static napi_value binding_search(napi_env env, napi_callback_info info) {
     handle->capacity = needed + 1;
   }
   free(query);
+  /* The second call fits by construction; should it ever not, this throws
+     rather than reading `needed` bytes out of a smaller buffer. */
+  if (needed >= handle->capacity) {
+    return fail(env, "the answer buffer keeps growing unexpectedly");
+  }
 
   napi_value answer;
   if (napi_create_string_utf8(env, handle->buffer, needed, &answer) != napi_ok) {

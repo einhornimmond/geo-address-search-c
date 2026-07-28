@@ -5,7 +5,6 @@
 #include "geo_index.h"
 #include "json_parse.h" /* only to nail the kind numbers to the builder's */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -160,10 +159,16 @@ typedef struct JsonWriter {
 } JsonWriter;
 
 static void json_put(JsonWriter *writer, const char *text, size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    if (writer->needed + 1 < writer->capacity) { writer->buffer[writer->needed] = text[i]; }
-    ++writer->needed;
+  size_t cur = writer->needed;
+
+  writer->needed += size;
+  if (writer->needed >= writer->capacity) {
+    if (cur < writer->capacity) {
+      memcpy(&writer->buffer[cur], text, writer->capacity - cur);
+    }
+    return;
   }
+  memcpy(&writer->buffer[cur], text, size);
 }
 
 static void json_literal(JsonWriter *writer, const char *text) {
@@ -197,9 +202,11 @@ static void json_string(JsonWriter *writer, const char *text, size_t size) {
       break;
     default:
       if (c < 0x20) { /* control characters have to be spelled out */
-        char escape[7];
-        snprintf(escape, sizeof(escape), "\\u%04x", c);
-        json_literal(writer, escape);
+        static const char HEX[17] = "0123456789abcdef";
+        char escape[6] = {'\\', 'u', '0', '0', '0', '0'};
+        escape[4] = HEX[c >> 4];
+        escape[5] = HEX[c & 0x0f];
+        json_put(writer, escape, sizeof(escape));
       } else {
         json_put(writer, (const char *)&c, 1);
       }
@@ -209,10 +216,94 @@ static void json_string(JsonWriter *writer, const char *text, size_t size) {
   json_literal(writer, "\"");
 }
 
-static void json_number(JsonWriter *writer, const char *format, double value) {
+/** How many decimal digits a value spells out; a decision tree, no loop, no division. */
+static size_t uint64_digits(uint64_t v) {
+  if (v < 100000000ULL) {
+    if (v < 10000ULL) {
+      if (v < 100ULL) { return v < 10ULL ? 1 : 2; }
+      return v < 1000ULL ? 3 : 4;
+    }
+    if (v < 1000000ULL) { return v < 100000ULL ? 5 : 6; }
+    return v < 10000000ULL ? 7 : 8;
+  }
+  if (v < 1000000000000ULL) {
+    if (v < 10000000000ULL) { return v < 1000000000ULL ? 9 : 10; }
+    return v < 100000000000ULL ? 11 : 12;
+  }
+  if (v < 10000000000000000ULL) {
+    if (v < 100000000000000ULL) { return v < 10000000000000ULL ? 13 : 14; }
+    return v < 1000000000000000ULL ? 15 : 16;
+  }
+  if (v < 1000000000000000000ULL) { return v < 100000000000000000ULL ? 17 : 18; }
+  return v < 10000000000000000000ULL ? 19 : 20; /* UINT64_MAX itself spells out 20 */
+}
+
+/** Two digits per step, filled back to front; `digits` has to be uint64_digits(value). */
+static void uint64_digits_write(char *text, uint64_t value, size_t digits) {
+  static const char PAIRS[201] = "00010203040506070809"
+                                 "10111213141516171819"
+                                 "20212223242526272829"
+                                 "30313233343536373839"
+                                 "40414243444546474849"
+                                 "50515253545556575859"
+                                 "60616263646566676869"
+                                 "70717273747576777879"
+                                 "80818283848586878889"
+                                 "90919293949596979899";
+  size_t cursor = digits;
+
+  while (value >= 100) {
+    uint64_t rest = value / 100;
+    uint64_t pair = value - rest * 100;
+    text[--cursor] = PAIRS[pair * 2 + 1];
+    text[--cursor] = PAIRS[pair * 2];
+    value = rest;
+  }
+  if (value < 10) {
+    text[--cursor] = (char)('0' + value);
+  } else {
+    text[--cursor] = PAIRS[value * 2 + 1];
+    text[--cursor] = PAIRS[value * 2];
+  }
+}
+
+static void json_uint(JsonWriter *writer, uint64_t value) {
+  char text[20];
+  size_t digits = uint64_digits(value);
+
+  uint64_digits_write(text, value, digits);
+  json_put(writer, text, digits);
+}
+
+/** Degrees with seven decimals, the way `%.7f` used to spell them. */
+static void json_degrees(JsonWriter *writer, double value) {
+  /* Anything not a real number in range — NaN, infinity — has no JSON spelling. */
+  if (!(value > -1000000.0 && value < 1000000.0)) {
+    json_literal(writer, "null");
+    return;
+  }
+
+  bool negative = value < 0.0;
+  if (negative) value = -value;
+
+  uint64_t scaled = (uint64_t)(value * 10000000.0 + 0.5);
+  uint64_t whole = scaled / 10000000ULL;
+  uint64_t fraction = scaled - whole * 10000000ULL;
+
   char text[32];
-  int written = snprintf(text, sizeof(text), format, value);
-  if (written > 0) json_put(writer, text, (size_t)written);
+  size_t cursor = 0;
+  if (negative && scaled) text[cursor++] = '-';
+
+  size_t digits = uint64_digits(whole);
+  uint64_digits_write(&text[cursor], whole, digits);
+  cursor += digits;
+
+  text[cursor++] = '.';
+  for (size_t i = 0; i < 7; ++i) { text[cursor + i] = '0'; } /* keep the leading zeros */
+  uint64_digits_write(&text[cursor], fraction, 7);
+  cursor += 7;
+
+  json_put(writer, text, cursor);
 }
 
 size_t geo_client_search_json(
@@ -243,18 +334,18 @@ size_t geo_client_search_json(
     json_string(&writer, address->city, address->city_size);
     if (address->has_point) {
       json_literal(&writer, ",\"lat\":");
-      json_number(&writer, "%.7f", address->latitude);
+      json_degrees(&writer, address->latitude);
       json_literal(&writer, ",\"lon\":");
-      json_number(&writer, "%.7f", address->longitude);
+      json_degrees(&writer, address->longitude);
     } else {
       json_literal(&writer, ",\"lat\":null,\"lon\":null");
     }
     json_literal(&writer, ",\"kind\":");
-    json_number(&writer, "%.0f", (double)address->kind);
+    json_uint(&writer, address->kind);
     json_literal(&writer, ",\"importance\":");
-    json_number(&writer, "%.0f", (double)address->importance);
+    json_uint(&writer, address->importance);
     json_literal(&writer, ",\"matched\":");
-    json_number(&writer, "%.0f", (double)address->matched);
+    json_uint(&writer, address->matched);
     json_literal(&writer, "}");
   }
   json_literal(&writer, "]");
