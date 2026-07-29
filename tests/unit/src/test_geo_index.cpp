@@ -34,8 +34,25 @@ size_t Query(const GeoIndex &index, const std::string &text, GeoHit *hits, size_
 size_t QueryStats(const GeoIndex &index, const std::string &text, GeoHit *hits, size_t limit,
                   GeoQueryStats *stats, bool prefix_last = false) {
   TextTokenizer tok;
-  return geo_index_query_stats(&index, &tok, text.c_str(), text.size(), prefix_last, hits, limit,
-                               stats);
+  GeoQueryOptions options{};
+  options.prefix_last = prefix_last;
+  return geo_index_query_options(&index, &tok, text.c_str(), text.size(), &options, hits, limit,
+                                 stats);
+}
+
+/** Degrees as the index keeps them. */
+constexpr int32_t E7(double degrees) { return (int32_t)(degrees * 1.0e7); }
+
+/** The same query again, asked from somewhere. */
+size_t QueryFrom(const GeoIndex &index, const std::string &text, double latitude,
+                 double longitude, GeoHit *hits, size_t limit, GeoQueryStats *stats = nullptr) {
+  TextTokenizer tok;
+  GeoQueryOptions options{};
+  options.has_position = true;
+  options.latitude_e7 = E7(latitude);
+  options.longitude_e7 = E7(longitude);
+  return geo_index_query_options(&index, &tok, text.c_str(), text.size(), &options, hits, limit,
+                                 stats);
 }
 
 std::string DisplayWord(const GeoIndex &index, uint32_t rank) {
@@ -354,6 +371,138 @@ TEST_F(GeoIndexTest, AQueryThatFindsNothingStillSaysWhereItLooked) {
   EXPECT_GT(stats.posting_lists, 0u) << "both words exist; they only never met";
   EXPECT_EQ(stats.narrowed, 0u);
   EXPECT_EQ(stats.results, 0u);
+}
+
+// ---------------------------------------------------------------------------
+//  Where the searcher stands
+// ---------------------------------------------------------------------------
+
+TEST_F(GeoIndexTest, ThePositionDecidesBetweenTwoStreetsOfOneName) {
+  GeoHit hits[8];
+  // Berlin and Potsdam both have a Berliner Straße, and Potsdam's is the
+  // heavier of the two — weight alone would answer with it every time
+  ASSERT_GE(QueryFrom(index, "Berliner Straße ", 52.4869, 13.3283, hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Berlin");
+
+  ASSERT_GE(QueryFrom(index, "Berliner Straße ", 52.3956, 13.0649, hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Potsdam");
+}
+
+TEST_F(GeoIndexTest, TheHeavierPlaceStillWinsWithinOneBand) {
+  GeoHit hits[8];
+  // both Berliner Straßen lie within the widest band of a searcher far away;
+  // inside a band nothing about distance is said, so weight decides as before
+  size_t count = QueryFrom(index, "Berliner Straße ", 48.1374, 11.5755, hits, 8);
+  ASSERT_EQ(count, 2u);
+  EXPECT_GE(hits[0].importance, hits[1].importance);
+}
+
+TEST_F(GeoIndexTest, ANamedTownOutweighsWhereTheSearcherStands) {
+  GeoHit hits[8];
+  // standing in Berlin and asking for Potsdam's: what was said outright wins
+  ASSERT_GE(QueryFrom(index, "Berliner Straße Potsdam ", 52.4869, 13.3283, hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Potsdam");
+}
+
+TEST_F(GeoIndexTest, ThePositionNarrowsBeforeItSorts) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  ASSERT_GE(QueryFrom(index, "Berliner Straße ", 52.4869, 13.3283, hits, 8, &stats), 1u);
+  EXPECT_GT(stats.near_cells, 0u) << "the ring found cells that hold places";
+  EXPECT_GT(stats.near_documents, 0u);
+  EXPECT_EQ(stats.position_dropped, 0u);
+  EXPECT_EQ(stats.narrowed, 1u) << "one of the two survived the ring, not both";
+}
+
+TEST_F(GeoIndexTest, APositionInTheOceanIsLetGoOfRatherThanObeyed) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // nothing in this index stands anywhere near the middle of the Pacific
+  size_t count = QueryFrom(index, "Berliner Straße ", -30.0, -140.0, hits, 8, &stats);
+  EXPECT_EQ(count, 2u) << "the words are answered without the position";
+  EXPECT_EQ(stats.near_cells, 0u);
+  EXPECT_EQ(stats.near_documents, 0u);
+  EXPECT_EQ(stats.position_dropped, 1u);
+  EXPECT_EQ(stats.passes, 1u) << "an empty ring is let go of before a reading is spent on it";
+}
+
+TEST_F(GeoIndexTest, APositionAloneIsNoQuery) {
+  GeoHit hits[8];
+  // words nobody wrote, from a place full of documents: the ring may not stand
+  // in for what was typed
+  EXPECT_EQ(QueryFrom(index, "Kwyjibo Blorf ", 52.4869, 13.3283, hits, 8), 0u);
+}
+
+TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
+  // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
+  // and lies nearer to the searcher than the street that is called that today
+  std::vector<testsupport::MiniPlace> places = {
+      {"Friedrich-Breuer-Straße", "Bonn", "53225", 507391765, 71194806,
+       PHOTON_PLACE_TYPE_STREET, 3500, {}, true, {"Hauptstraße"}},
+      {"Hauptstraße", "Bonn", "53229", 507424804, 71783745, PHOTON_PLACE_TYPE_STREET, 3500},
+  };
+  TempPath path{"formername"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Hauptstraße ", 50.7350, 7.0980, hits, 8), 2u)
+      << "both answer to the word, and both are found";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Hauptstraße")
+      << "what a place is called now outranks what it used to be called";
+
+  // the former name is still an answer — it only stands second
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[1].document].name_rank),
+            "Friedrich-Breuer-Straße");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, WithoutAPositionTheNameIsNotWeighedAtAll) {
+  // the same two places, asked without a position: weight decides as it always
+  // has, and the former name is worth exactly as much as the current one
+  std::vector<testsupport::MiniPlace> places = {
+      {"Friedrich-Breuer-Straße", "Bonn", "53225", 507391765, 71194806,
+       PHOTON_PLACE_TYPE_STREET, 9000, {}, true, {"Hauptstraße"}},
+      {"Hauptstraße", "Bonn", "53229", 507424804, 71783745, PHOTON_PLACE_TYPE_STREET, 3500},
+  };
+  TempPath path{"formernameplain"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Hauptstraße ", hits, 8), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank),
+            "Friedrich-Breuer-Straße")
+      << "the heavier of the two, however it came by the word";
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, APlaceWithoutACoordinateIsRankedLastRatherThanLost) {
+  // the dump does give entries without a centroid; they stand nowhere, so no
+  // ring can hold them — but the words still name them
+  std::vector<testsupport::MiniPlace> places = {
+      {"Feldweg", "Bonn", "53111", 507350000, 70980000, PHOTON_PLACE_TYPE_STREET, 500, {}},
+      {"Feldweg", "Nirgendwo", "00000", 0, 0, PHOTON_PLACE_TYPE_STREET, 60000, {}, false},
+  };
+  TempPath path{"nopoint"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  size_t count = QueryFrom(index, "Feldweg ", 50.735, 7.098, hits, 8, &stats);
+  ASSERT_EQ(count, 1u) << "a place standing nowhere is in no ring";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Bonn")
+      << "and the one that does stand somewhere is the lighter of the two";
+
+  // asked without a position, both are there and weight orders them again
+  GeoHit plain[8];
+  ASSERT_EQ(Query(index, "Feldweg ", plain, 8), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[plain[0].document].city_rank), "Nirgendwo");
+  geo_index_close(&index);
 }
 
 // ---------------------------------------------------------------------------

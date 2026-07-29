@@ -72,8 +72,14 @@
 /** Eight bytes opening every index file. */
 #define GEO_INDEX_MAGIC "GRDGEOIX"
 
-/** Format version; a reader refuses anything it does not know. */
-#define GEO_INDEX_VERSION 6u
+/** Format version; a reader refuses anything it does not know.
+ *
+ *  Version 7 added the cell words that carry a place's position into the
+ *  dictionary.  The layout did not change by a byte — an older file would be
+ *  read without complaint and would answer every query about *near me* with
+ *  nothing, silently, because the words it looks for were never written.  A
+ *  refusal that names the reason is the better failure. */
+#define GEO_INDEX_VERSION 7u
 
 /** Written as 0x01020304 — a reader on the other byte order sees it reversed. */
 #define GEO_INDEX_BYTE_ORDER 0x01020304u
@@ -347,19 +353,49 @@ size_t geo_index_query(
     size_t limit
 );
 
+/** Everything a query carries beyond its words. */
+typedef struct GeoQueryOptions {
+  /** Read the last word as a beginning as well, for a query still being typed. */
+  bool prefix_last;
+  /** When set, @c latitude_e7 and @c longitude_e7 say where the searcher stands. */
+  bool has_position;
+  int32_t latitude_e7;  /**< Latitude × 10⁷. */
+  int32_t longitude_e7; /**< Longitude × 10⁷. */
+} GeoQueryOptions;
+
 /**
- * @brief Answer a query and record what answering it cost.
+ * @brief Answer a query from where the searcher stands, and say what it cost.
  *
- *  The search itself is geo_index_query(); this is the same call with a place
- *  to write its counts.  They are gathered only where @p stats is not NULL, and
- *  the cardinalities that fill the sums are asked for nowhere else — a query
- *  passing NULL runs exactly as it did before.
+ *  The plain search is geo_index_query(); this is the same call with room for a
+ *  position and a place to write its counts.  The counts are gathered only
+ *  where @p stats is not NULL, and the cardinalities that fill their sums are
+ *  asked for nowhere else — a query passing NULL runs exactly as it did before.
+ *
+ *  ### What a position does
+ *
+ *  It narrows before it sorts.  The cells around the searcher are words like
+ *  any other — see @ref geo_cell — so the ring of them intersects the query's
+ *  own words while the candidates are still being gathered.  That is the only
+ *  moment at which a light place standing nearby can survive: applied
+ *  afterwards, a position would arrive to find the sample already filled by
+ *  weight, and the nearest of nine thousand streets of one name is never among
+ *  the heaviest of them.
+ *
+ *  Should nothing stand near the searcher at all — an ocean, a position in a
+ *  country the dump does not cover — the position is let go of and the query
+ *  asked again without it, before any other reading is tried.  A wrong position
+ *  costs a place its order, never its presence.
+ *
+ *  In the ordering, nearness comes after what the query said outright: whoever
+ *  names a town means that town, however far away it lies.  Beyond that,
+ *  distance counts in coarse bands only, so that three streets closer never
+ *  outweighs what a place is.
  *
  *  @param[in]     index      Opened index; must not be NULL.
  *  @param[in,out] tokenizer  Scratch space; reset by this call.
  *  @param[in]     query      Free text, words in any order.
  *  @param[in]     size       Byte length of @p query.
- *  @param[in]     prefix_last  As in geo_index_query().
+ *  @param[in]     options    Prefix reading and position; must not be NULL.
  *  @param[out]    hits       Receives up to @p limit results.
  *  @param[in]     limit      Capacity of @p hits, capped at
  *                            @ref GEO_QUERY_LIMIT_MAX.
@@ -367,14 +403,14 @@ size_t geo_index_query(
  *                            arguments are refused; may be NULL.
  *  @return Number of results written.
  *
- *  @whisper The search says afterwards how far it had to reach
+ *  @whisper What is asked for meets where it is asked from, and the ground answers first
  */
-size_t geo_index_query_stats(
+size_t geo_index_query_options(
     const GeoIndex *index,
     TextTokenizer *tokenizer,
     const char *query,
     size_t size,
-    bool prefix_last,
+    const GeoQueryOptions *options,
     GeoHit *hits,
     size_t limit,
     GeoQueryStats *stats

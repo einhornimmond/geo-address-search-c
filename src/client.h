@@ -159,37 +159,63 @@ size_t geo_client_search(
     size_t limit
 );
 
+/** Everything a search carries beyond its words. */
+typedef struct GeoSearchOptions {
+  /** Read the last word as a beginning as well, for a query still being typed. */
+  bool prefix_last;
+  /** When set, @c latitude and @c longitude say where the searcher stands. */
+  bool has_position;
+  double latitude;  /**< Degrees, −90 … 90. */
+  double longitude; /**< Degrees, −180 … 180. */
+  /** Receives what the search had to touch, or NULL. */
+  GeoQueryStats *stats;
+} GeoSearchOptions;
+
 /**
- * @brief Search, and learn what the search had to touch.
+ * @brief Search from where the searcher stands, and learn what it cost.
  *
- *  The same call as geo_client_search(), with a place to write its counts:
- *  how many posting lists were opened, how many documents they held, how far
- *  the words narrowed them, how many candidates were ranked.  Meant for a
- *  command line or a log that has to explain a slow query — a duration alone
- *  says only that one was slow.
+ *  The same call as geo_client_search(), with room for two things it has no
+ *  place for: a position, and a place to write the counts of the search.
  *
- *  Gathering costs nothing where it is not asked for: geo_client_search() is
- *  this call with @p stats set to NULL, and every count sits behind a check for
- *  that pointer.
+ *  ### The position
+ *
+ *  Given one, the index narrows the candidates to the places around it *before*
+ *  weight cuts them, and orders what is left by coarse distance bands after
+ *  everything the query said outright.  That is what makes a query like
+ *  *Hauptstraße* answer with the one nearby rather than with the heaviest of
+ *  the nine thousand that carry the word.
+ *
+ *  Nearness never overrules a named place: whoever types *Berlin* from Potsdam
+ *  is answered with Berlin.  And where nothing at all stands near the given
+ *  point, the position is dropped and the search runs without it — a wrong
+ *  position costs a place its order, never its presence.
+ *
+ *  ### The counts
+ *
+ *  `options->stats` receives how many posting lists were opened, how many
+ *  documents they held, how far the words narrowed them and how many candidates
+ *  were ranked.  Meant for a command line or a log that has to explain a slow
+ *  query; a duration alone says only that one was slow.  Gathering costs
+ *  nothing where it is not asked for.
  *
  *  @param[in]  client       Opened client; must not be NULL.
  *  @param[in]  query        Free text, UTF-8.
  *  @param[in]  query_size   Byte length of @p query.
- *  @param[in]  prefix_last  As in geo_client_search().
+ *  @param[in]  options      Prefix reading, position and counts; NULL reads as
+ *                           all-default, which is geo_client_search().
  *  @param[out] out          Receives up to @p limit results.
  *  @param[in]  limit        Capacity of @p out; at most 256 are written.
- *  @param[out] stats        Receives the counts, zeroed first even when the
- *                           arguments are refused; may be NULL.
  *  @return Number of results written; 0 when nothing matched.
+ *
+ *  @whisper The ground someone stands on speaks up for the places nearest to them
  */
-size_t geo_client_search_stats(
+size_t geo_client_search_options(
     const GeoClient *client,
     const char *query,
     size_t query_size,
-    bool prefix_last,
+    const GeoSearchOptions *options,
     GeoAddress *out,
-    size_t limit,
-    GeoQueryStats *stats
+    size_t limit
 );
 
 /**

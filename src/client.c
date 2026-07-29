@@ -140,29 +140,48 @@ size_t geo_client_search(
     GeoAddress *out,
     size_t limit
 ) {
-  return geo_client_search_stats(client, query, query_size, prefix_last, out, limit, NULL);
+  GeoSearchOptions options = {.prefix_last = prefix_last};
+  return geo_client_search_options(client, query, query_size, &options, out, limit);
 }
 
-size_t geo_client_search_stats(
+/** Degrees as a caller writes them, in the fixed point the index works in. */
+static int32_t degrees_e7(double degrees, double edge) {
+  if (!(degrees > -edge && degrees < edge)) { /* also catches NaN */
+    degrees = degrees > 0 ? edge : -edge;
+  }
+  return (int32_t)(degrees * 1.0e7 + (degrees < 0 ? -0.5 : 0.5));
+}
+
+size_t geo_client_search_options(
     const GeoClient *client,
     const char *query,
     size_t query_size,
-    bool prefix_last,
+    const GeoSearchOptions *options,
     GeoAddress *out,
-    size_t limit,
-    GeoQueryStats *stats
+    size_t limit
 ) {
+  static const GeoSearchOptions PLAIN = {0};
+  if (!options) options = &PLAIN;
+
+  GeoQueryStats *stats = options->stats;
   if (stats) memset(stats, 0, sizeof(*stats));
   if (!client || !query || !query_size || !out || !limit) return 0;
   if (limit > GEO_CLIENT_LIMIT_MAX) limit = GEO_CLIENT_LIMIT_MAX;
+
+  GeoQueryOptions asked = {
+      .prefix_last = options->prefix_last,
+      .has_position = options->has_position,
+      .latitude_e7 = options->has_position ? degrees_e7(options->latitude, 90.0) : 0,
+      .longitude_e7 = options->has_position ? degrees_e7(options->longitude, 180.0) : 0,
+  };
 
   /* The folding scratch lives here, on this call's own stack — that is what
      makes two threads able to search the same client at the same time. */
   TextTokenizer tokenizer;
   GeoHit hits[GEO_CLIENT_LIMIT_MAX];
 
-  size_t count = geo_index_query_stats(
-      &client->index, &tokenizer, query, query_size, prefix_last, hits, limit, stats
+  size_t count = geo_index_query_options(
+      &client->index, &tokenizer, query, query_size, &asked, hits, limit, stats
   );
   for (size_t i = 0; i < count; ++i) { fill_address(&client->index, &hits[i], &out[i]); }
   return count;

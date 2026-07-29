@@ -156,8 +156,10 @@ TEST_F(ClientTest, ManyThreadsMaySearchAtOnce) {
 TEST_F(ClientTest, TheCountedSearchAnswersLikeThePlainOne) {
   GeoAddress counted[8], plain[8];
   GeoQueryStats stats{};
+  GeoSearchOptions options{};
+  options.stats = &stats;
   const char *q = "Marienplatz München ";
-  size_t a = geo_client_search_stats(client, q, std::strlen(q), false, counted, 8, &stats);
+  size_t a = geo_client_search_options(client, q, std::strlen(q), &options, counted, 8);
   size_t b = Search(q, plain, 8);
   ASSERT_EQ(a, b);
   EXPECT_EQ(stats.results, a);
@@ -165,11 +167,61 @@ TEST_F(ClientTest, TheCountedSearchAnswersLikeThePlainOne) {
   for (size_t i = 0; i < a; ++i) EXPECT_EQ(Name(counted[i]), Name(plain[i]));
 }
 
+TEST_F(ClientTest, NoOptionsAtAllIsThePlainSearch) {
+  GeoAddress found[8];
+  const char *q = "Marienplatz ";
+  EXPECT_GE(geo_client_search_options(client, q, std::strlen(q), nullptr, found, 8), 1u);
+}
+
+TEST_F(ClientTest, APositionLiftsTheStreetNearestToIt) {
+  GeoAddress found[8];
+  GeoSearchOptions options{};
+  options.has_position = true;
+
+  options.latitude = 52.4869; // Berlin
+  options.longitude = 13.3283;
+  const char *q = "Berliner Straße ";
+  ASSERT_GE(geo_client_search_options(client, q, std::strlen(q), &options, found, 8), 1u);
+  EXPECT_EQ(City(found[0]), "Berlin");
+
+  options.latitude = 52.3956; // Potsdam, whose Berliner Straße is the heavier one
+  options.longitude = 13.0649;
+  ASSERT_GE(geo_client_search_options(client, q, std::strlen(q), &options, found, 8), 1u);
+  EXPECT_EQ(City(found[0]), "Potsdam");
+}
+
+TEST_F(ClientTest, DegreesArriveAsTheIndexKeepsThem) {
+  // the client speaks degrees and the index fixed point; a position off by a
+  // rounding step would land in the wrong cell at a cell border
+  GeoAddress found[8];
+  GeoSearchOptions options{};
+  options.has_position = true;
+  options.latitude = 52.4869779;
+  options.longitude = 13.3283388;
+  const char *q = "Berliner Straße ";
+  ASSERT_GE(geo_client_search_options(client, q, std::strlen(q), &options, found, 8), 1u);
+  EXPECT_EQ(City(found[0]), "Berlin");
+}
+
+TEST_F(ClientTest, AnImpossiblePositionIsHeldAtTheEdgeOfTheWorld) {
+  GeoAddress found[8];
+  GeoSearchOptions options{};
+  options.has_position = true;
+  options.latitude = 1000.0; // no such latitude
+  options.longitude = -4000.0;
+  const char *q = "Berliner Straße ";
+  // clamped rather than refused, and nothing stands at the pole, so the
+  // position is dropped and the words answer alone
+  EXPECT_EQ(geo_client_search_options(client, q, std::strlen(q), &options, found, 8), 2u);
+}
+
 TEST(ClientGuards, TheCountsAreClearedBeforeAnythingIsRefused) {
   GeoAddress found[4];
   GeoQueryStats stats{};
+  GeoSearchOptions options{};
+  options.stats = &stats;
   stats.posting_lists = 99;
-  EXPECT_EQ(geo_client_search_stats(nullptr, "x", 1, false, found, 4, &stats), 0u);
+  EXPECT_EQ(geo_client_search_options(nullptr, "x", 1, &options, found, 4), 0u);
   EXPECT_EQ(stats.posting_lists, 0u);
   EXPECT_EQ(stats.results, 0u);
 }

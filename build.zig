@@ -14,6 +14,7 @@ const c_flags = &.{
 /// The builder (main, parser, collectors) stays out, as do yyjson and zstd.
 const client_sources = [_][]const u8{
     "client.c",
+    "geo_cell.c",
     "geo_index.c",
     "prefix_tree.c",
     "text_tokenize.c",
@@ -26,6 +27,7 @@ const unit_tests = [_][]const u8{
     "test_doc_collector",
     "test_error",
     "test_format",
+    "test_geo_cell",
     "test_geo_index",
     "test_house_collector",
     "test_json_parse",

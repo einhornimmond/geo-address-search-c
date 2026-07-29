@@ -78,6 +78,13 @@ struct MiniPlace {
   uint8_t type = PHOTON_PLACE_TYPE_STREET;
   uint16_t importance = 1000;
   std::vector<std::string> houses;
+  /** Clear it for an entry the dump gave no centroid — it then carries no cell
+   *  either, exactly as the builder writes it. */
+  bool has_point = true;
+  /** Names the place also answers to and is no longer shown as: a former name,
+   *  a name in another language.  Searchable, never displayed — which is what
+   *  the dump's `old_name` and `name:xx` fields amount to. */
+  std::vector<std::string> aliases;
 };
 
 /**
@@ -137,11 +144,20 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
   if (name_collector_init(&words, alloc) != GRD_SUCCESS) goto done;
   if (name_collector_init(&display, alloc) != GRD_SUCCESS) goto done;
 
-  /* --- pass one: everything anyone might type, and everything shown back --- */
+  /* --- pass one: everything anyone might type, and everything shown back.
+         The cell a place stands in joins the search words exactly as the
+         builder writes it, or nothing here could be found by position. --- */
   for (const MiniPlace &p : places) {
+    if (p.has_point) {
+      char cell[GEO_CELL_TOKEN_SIZE];
+      size_t cell_size = geo_cell_token(cell, geo_cell_of(p.lat_e7, p.lon_e7));
+      name_collector_add(&words, cell, cell_size);
+      ++total_terms;
+    }
     add_folded(p.name);
     add_folded(p.city);
     add_folded(p.postcode);
+    for (const std::string &alias : p.aliases) add_folded(alias);
     add_written(p.name);
     add_written(p.city);
     add_written(p.postcode);
@@ -168,17 +184,29 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     record.postcode_rank = rank_of(&display_set, p.postcode);
     record.importance = p.importance;
     record.type = p.type;
-    record.flags = GEO_DOCUMENT_HAS_POINT;
+    record.flags = p.has_point ? GEO_DOCUMENT_HAS_POINT : 0u;
 
     uint32_t number = 0;
     if (doc_collector_add_document(&docs, &record, &number) != GRD_SUCCESS) goto done;
 
-    for (const std::string *text : {&p.name, &p.city, &p.postcode}) {
-      if (text->empty()) continue;
-      size_t n = text_tokenize(&tok, text->c_str(), text->size());
-      for (size_t i = 0; i < n; ++i) {
-        size_t rank = 0;
-        if (!name_set_rank(&word_set, tok.tokens[i].data, tok.tokens[i].size, &rank)) continue;
+    {
+      std::vector<const std::string *> texts = {&p.name, &p.city, &p.postcode};
+      for (const std::string &alias : p.aliases) texts.push_back(&alias);
+      for (const std::string *text : texts) {
+        if (text->empty()) continue;
+        size_t n = text_tokenize(&tok, text->c_str(), text->size());
+        for (size_t i = 0; i < n; ++i) {
+          size_t rank = 0;
+          if (!name_set_rank(&word_set, tok.tokens[i].data, tok.tokens[i].size, &rank)) continue;
+          if (doc_collector_add_posting(&docs, (uint32_t)rank) != GRD_SUCCESS) goto done;
+        }
+      }
+    }
+    if (p.has_point) {
+      char cell[GEO_CELL_TOKEN_SIZE];
+      size_t cell_size = geo_cell_token(cell, geo_cell_of(p.lat_e7, p.lon_e7));
+      size_t rank = 0;
+      if (name_set_rank(&word_set, cell, cell_size, &rank)) {
         if (doc_collector_add_posting(&docs, (uint32_t)rank) != GRD_SUCCESS) goto done;
       }
     }

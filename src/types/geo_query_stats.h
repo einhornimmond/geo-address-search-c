@@ -32,8 +32,9 @@ extern "C" {
  *  them in that order: the words are looked up, their posting lists are opened,
  *  the sets narrow one another, and what is left is ranked.
  *
- *  A query may be asked more than once — a postal code that narrowed the answer
- *  to nothing is dropped and the words asked again.  The sums then hold every
+ *  A query may be asked more than once — a position that found nothing nearby
+ *  is let go of, a postal code that narrowed the answer to nothing likewise,
+ *  and the words are asked again without them.  The sums then hold every
  *  reading together, while @c groups and @c narrowed describe the one that
  *  finally answered; @c passes says how many there were.
  */
@@ -50,7 +51,13 @@ typedef struct GeoQueryStats {
   uint64_t weighed;
   /** Results written for the caller. */
   uint64_t results;
-  /** Readings the query needed, 1 … 3. */
+  /** Documents standing in the cells around the searcher; 0 without a position. */
+  uint64_t near_documents;
+  /** Cells around the searcher that any place at all stands in. */
+  uint32_t near_cells;
+  /** 1 when the ring left nothing standing and the position was let go of. */
+  uint32_t position_dropped;
+  /** Readings the query needed, 1 … 6. */
   uint32_t passes;
   /** Words that narrowed in the answering pass, after their readings were joined. */
   uint32_t groups;

@@ -1,6 +1,7 @@
 #include "client.h"
 #include "error.h"
 #include "format.h"
+#include "geo_cell.h"
 #include "geo_index.h"
 #include "house_collector.h"
 #include "json_parse.h"
@@ -109,6 +110,33 @@ static uint16_t quantize_importance(double importance) {
   return (uint16_t)(importance * (double)UINT16_MAX + 0.5);
 }
 
+/**
+ * @brief Will this entry become a document of its own?
+ *
+ *  A house hangs on its street and is no answer by itself; everything else is.
+ *  Both passes have to agree on this, or the second would look for a word the
+ *  first never wrote — so they ask the same question here rather than each
+ *  spelling out its own.
+ */
+static bool place_becomes_document(const PhotonPlace *place) {
+  return !place->house.data && place->typeEnum != PHOTON_PLACE_TYPE_HOUSE;
+}
+
+/**
+ * @brief The word that says where a place stands, or nothing for a place adrift.
+ *
+ *  Only a document that will be searched for gets one, and only where the dump
+ *  gave it a coordinate — a cell word on an entry nobody can find is a posting
+ *  spent on nothing.
+ *
+ *  @param[out] buffer  At least @ref GEO_CELL_TOKEN_SIZE bytes.
+ *  @return Bytes written, or 0 when this place carries no position.
+ */
+static size_t place_cell_token(char *buffer, const PhotonPlace *place) {
+  if (!place->has_point || !place_becomes_document(place)) return 0;
+  return geo_cell_token(buffer, geo_cell_of(place->lat_e7, place->lon_e7));
+}
+
 /** First pass: every text of the entry joins the vocabulary. */
 static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place) {
   for (uint8_t i = 0; i < place->search_count; ++i) {
@@ -121,6 +149,17 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
       }
     }
   }
+  /* The place's cell joins the search words like any other — it is the one word
+     nobody types and every position asks for. */
+  char cell[GEO_CELL_TOKEN_SIZE];
+  size_t cell_size = place_cell_token(cell, place);
+  if (cell_size) {
+    grd_result result = name_collector_add(&args->words, cell, cell_size);
+    if (result != GRD_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep cell word (grd_result %d).", (int)result);
+    }
+  }
+
   /* An answer shows the street, the number, the code and the town — never the
      name of the house itself.  So a numbered entry contributes what the third
      pass must recognise by rank, and its own name goes nowhere: a planet's
@@ -181,7 +220,7 @@ static void collect_house(ParserThreadArgs *args, const PhotonPlace *place) {
 static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   /* an address hangs on its street; a house-level entry without a number is a
      named thing, not a place one searches an address for */
-  if (place->house.data || place->typeEnum == PHOTON_PLACE_TYPE_HOUSE) return;
+  if (!place_becomes_document(place)) return;
 
   GeoDocument document = {
       .lat_e7 = place->lat_e7,
@@ -215,6 +254,21 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
         args->document_result = result;
         return;
       }
+    }
+  }
+
+  /* and the ground it stands on points at it too */
+  char cell[GEO_CELL_TOKEN_SIZE];
+  size_t cell_size = place_cell_token(cell, place);
+  if (cell_size) {
+    size_t rank = 0;
+    if (name_set_rank(args->word_set, cell, cell_size, &rank)) {
+      result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
+      if (result != GRD_SUCCESS && args->document_result == GRD_SUCCESS) {
+        args->document_result = result;
+      }
+    } else {
+      ++args->documents.dropped_words; /* the first pass wrote it — this cannot happen */
     }
   }
 }
@@ -757,10 +811,15 @@ static void print_count(const char *label, uint64_t value) {
  *  @param[in] stats     Counts of the search just run.
  *  @param[in] duration  How long it took, already formatted.
  */
-static void print_query_stats(const GeoQueryStats *stats, const char *duration) {
+static void print_query_stats(const GeoQueryStats *stats, const char *duration, bool near) {
   printf("\nSearched in %s\n", duration);
   print_count("passes:", stats->passes);
   print_count("words that narrowed:", stats->groups);
+  if (near) {
+    print_count("cells around you:", stats->near_cells);
+    print_count("places in them:", stats->near_documents);
+    if (stats->position_dropped) { printf("  %-22s %13s\n", "position:", "dropped"); }
+  }
   print_count("prefix terms seen:", stats->prefix_terms);
   print_count("beginnings refused:", stats->prefix_refused);
   print_count("posting lists read:", stats->posting_lists);
@@ -780,9 +839,16 @@ static void print_query_stats(const GeoQueryStats *stats, const char *duration) 
  *  @param[in] query         Free text to search for, or NULL for counts only.
  *  @param[in] result_limit  Most results to show.
  *  @param[in] prefix        Read the last word as a beginning as well.
+ *  @param[in] near          Where the searcher stands, or NULL.
  *  @return 0 on success; a failed open ends the program through fatal().
  */
-static int open_index(const char *index_path, const char *query, size_t result_limit, bool prefix) {
+static int open_index(
+    const char *index_path,
+    const char *query,
+    size_t result_limit,
+    bool prefix,
+    const GeoSearchOptions *near
+) {
   grdu_mono_timer timeUsed;
   grdu_mono_timer_init();
   grdu_mono_timer_reset(&timeUsed);
@@ -817,15 +883,22 @@ static int open_index(const char *index_path, const char *query, size_t result_l
     /* the counts are gathered while the query runs; asking for them is what
        makes this a debugging tool rather than only a search */
     GeoQueryStats stats;
+    GeoSearchOptions options = near ? *near : (GeoSearchOptions){0};
+    options.prefix_last = prefix;
+    options.stats = &stats;
+
     grdu_mono_timer queryTime;
     grdu_mono_timer_reset(&queryTime);
-    size_t count =
-        geo_client_search_stats(client, query, strlen(query), prefix, found, result_limit, &stats);
+    size_t count = geo_client_search_options(client, query, strlen(query), &options, found,
+                                             result_limit);
     grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
 
     printf("\n");
+    if (options.has_position) {
+      printf("From %.5f, %.5f:\n", options.latitude, options.longitude);
+    }
     print_results(found, count, query);
-    print_query_stats(&stats, timeUsedBuffer);
+    print_query_stats(&stats, timeUsedBuffer, options.has_position);
   }
 
   geo_client_close(client);
@@ -878,13 +951,15 @@ static void print_usage(const char *program) {
       "      Without a destination the name comes from the dump\n"
       "      (planet.jsonl.zst -> planet%s). parser_threads defaults to 4.\n"
       "\n"
-      "  %s <index%s> [\"query\"] [max_results]\n"
+      "  %s <index%s> [\"query\"] [max_results] [lat,lon]\n"
       "      Maps a finished index, shows its counts and — when a query is given —\n"
       "      the places that carry all of its words, in any order.\n"
       "      The last word counts as still being typed and is read as a beginning\n"
       "      as well: \"Marienpl\" finds \"Marienplatz\". A trailing space or comma\n"
       "      closes it and searches it exactly as it stands.\n"
-      "      max_results defaults to %d.\n"
+      "      max_results defaults to %d. Given lat,lon the search narrows to the\n"
+      "      places around that point first and orders what is left by distance,\n"
+      "      after everything the query named outright.\n"
       "\n"
       "The path decides which way it goes: a file ending in %s is loaded,\n"
       "anything else is built.\n"
@@ -894,10 +969,12 @@ static void print_usage(const char *program) {
       "  %s planet%s \"Berlin, Superstrasse\"\n"
       "  %s planet%s \"15328 Bleyen\" 5\n"
       "  %s planet%s \"Berlin Marienpl\"     (still typing)\n"
-      "  %s planet%s \"Berlin Marienplatz \" (finished)",
+      "  %s planet%s \"Berlin Marienplatz \" (finished)\n"
+      "  %s planet%s \"Hauptstrasse \" 5 50.9414,6.9583   (near Cologne cathedral)",
       program, GEO_INDEX_EXTENSION, GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION,
       DEFAULT_RESULT_LIMIT, GEO_INDEX_EXTENSION, program, program, GEO_INDEX_EXTENSION, program,
-      GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION
+      GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION, program, GEO_INDEX_EXTENSION, program,
+      GEO_INDEX_EXTENSION
   );
 }
 
@@ -911,13 +988,40 @@ static unsigned parse_count(const char *text, unsigned low, unsigned high, const
   return (unsigned)value;
 }
 
+/**
+ * @brief Read "50.9414,6.9583" as a position, or end the program saying why not.
+ *
+ *  Two numbers and a comma, in the order every map writes them.  Anything else
+ *  is a mistyped argument rather than a place on earth, and a search silently
+ *  run from nowhere would be the worse answer.
+ */
+static GeoSearchOptions parse_position(const char *text) {
+  char *end = NULL;
+  double latitude = strtod(text, &end);
+  if (end == text || *end != ',') { fatal(ERROR_USAGE, "Position must read as lat,lon."); }
+
+  const char *second = end + 1;
+  double longitude = strtod(second, &end);
+  if (end == second || *end != '\0') { fatal(ERROR_USAGE, "Position must read as lat,lon."); }
+  if (!(latitude >= -90.0 && latitude <= 90.0)) {
+    fatal(ERROR_USAGE, "Latitude must lie between -90 and 90.");
+  }
+  if (!(longitude >= -180.0 && longitude <= 180.0)) {
+    fatal(ERROR_USAGE, "Longitude must lie between -180 and 180.");
+  }
+  return (GeoSearchOptions){.has_position = true, .latitude = latitude, .longitude = longitude};
+}
+
 int main(int argc, char *argv[]) {
-  if (argc < 2 || argc > 4) { print_usage(argv[0]); }
+  if (argc < 2 || argc > 5) { print_usage(argv[0]); }
 
   const char *input = argv[1];
   if (has_extension(input, GEO_INDEX_EXTENSION)) {
     const char *query = argc >= 3 ? argv[2] : NULL;
-    unsigned limit = argc == 4 ? parse_count(argv[3], 1, 64, "max_treffer") : DEFAULT_RESULT_LIMIT;
+    unsigned limit = argc >= 4 ? parse_count(argv[3], 1, 64, "max_treffer") : DEFAULT_RESULT_LIMIT;
+
+    GeoSearchOptions near = {0};
+    if (argc == 5) near = parse_position(argv[4]);
 
     /* A word is still being typed unless something closed it: a trailing space
        or comma says the writer is done with it, and then it is read as it
@@ -927,7 +1031,7 @@ int main(int argc, char *argv[]) {
       char last = query[strlen(query) - 1];
       prefix = last != ' ' && last != ',' && last != ';';
     }
-    return open_index(input, query, limit, prefix);
+    return open_index(input, query, limit, prefix, &near);
   }
 
   /* `dump.jsonl.zst 8` means eight threads, not a file called "8" */

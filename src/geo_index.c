@@ -2,6 +2,8 @@
 
 #include "geo_index.h"
 
+#include "geo_cell.h"
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -655,6 +657,7 @@ typedef struct QueryGroup {
   size_t reading_count;
   uint64_t weight; /**< Documents the widest reading covers; decides the order. */
   uint16_t source; /**< The word of the query these readings came from. */
+  bool borrowed;   /**< The readings belong to someone else and are not freed here. */
 } QueryGroup;
 
 /** Longest a query may be, in words; further words are ignored. */
@@ -777,6 +780,132 @@ static roaring_bitmap_t *prefix_documents(
   return joined;
 }
 
+/* =========================================================================
+ *  Where the searcher stands
+ * ========================================================================= */
+
+/** Cells to either side of the searcher that are asked for; 1 makes a 3 × 3 block. */
+#define GEO_QUERY_NEAR_RADIUS 1
+
+/** Cells one ring may hold. */
+#define GEO_QUERY_NEAR_CELLS \
+  ((2 * GEO_QUERY_NEAR_RADIUS + 1) * (2 * GEO_QUERY_NEAR_RADIUS + 1))
+
+/**
+ * @brief Every document standing in the cells around @p options.
+ *
+ *  The cells are ordinary words, so this is an ordinary lookup — nine of them,
+ *  joined into one set.  What comes back narrows the query like any other word
+ *  and, unlike any other word, it narrows by where a place is rather than by
+ *  what it is called.
+ *
+ *  An index built before the cells existed simply has none of these words, and
+ *  the ring comes back empty; the caller drops the position and asks again.
+ *
+ *  @param[in]     index    Opened index.
+ *  @param[in]     options  Query options; a position must be set.
+ *  @param[in,out] stats    Counts of this query, or NULL.
+ *  @return The joined set, to be freed by the caller, or NULL when no place
+ *          around the searcher is in the index.
+ *
+ *  @whisper The ground underfoot answers before any name is spoken
+ */
+static roaring_bitmap_t *near_documents(
+    const GeoIndex *index, const GeoQueryOptions *options, GeoQueryStats *stats
+) {
+  uint32_t cells[GEO_QUERY_NEAR_CELLS];
+  size_t count = geo_cell_ring(
+      cells, GEO_QUERY_NEAR_CELLS, options->latitude_e7, options->longitude_e7,
+      GEO_QUERY_NEAR_RADIUS
+  );
+
+  roaring_bitmap_t *joined = NULL;
+  for (size_t c = 0; c < count; ++c) {
+    char token[GEO_CELL_TOKEN_SIZE];
+    size_t size = geo_cell_token(token, cells[c]);
+
+    size_t rank = 0;
+    if (!geo_dictionary_find(&index->words, token, size, &rank)) continue;
+    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
+    if (!documents) continue;
+
+    if (stats) {
+      ++stats->near_cells;
+      ++stats->posting_lists;
+      stats->posting_documents += roaring_bitmap_get_cardinality(documents);
+    }
+    if (!joined) {
+      joined = roaring_bitmap_copy(documents);
+    } else {
+      roaring_bitmap_or_inplace(joined, documents);
+    }
+    roaring_bitmap_free(documents);
+  }
+  if (joined && stats) stats->near_documents = roaring_bitmap_get_cardinality(joined);
+  return joined;
+}
+
+/** How far a candidate may stand and still count as near, in degrees × 10⁷. */
+static const int32_t GEO_NEAR_BANDS_E7[] = {
+    180000,  /**< ≈ 2 km — the same quarter. */
+    900000,  /**< ≈ 10 km — the same town. */
+    4500000, /**< ≈ 50 km — the same region. */
+};
+
+/** Bands a candidate may fall into; the last one is everything beyond. */
+#define GEO_NEAR_BAND_COUNT \
+  (sizeof(GEO_NEAR_BANDS_E7) / sizeof(GEO_NEAR_BANDS_E7[0]) + 1)
+
+/**
+ * @brief Longitude shrinks towards the poles; by how much, in sixteenths.
+ *
+ *  A degree of longitude is a degree of latitude times the cosine of where one
+ *  stands.  The table holds that cosine per ten degrees, rounded to sixteenths
+ *  — enough for a comparison that ends in four steps, and it keeps the ranking
+ *  free of a maths library it needs for nothing else.
+ */
+static int32_t longitude_shrink(int32_t lat_e7) {
+  static const uint8_t COSINE[10] = {16, 16, 15, 14, 12, 10, 8, 5, 3, 1};
+  int32_t degrees = lat_e7 / 10000000;
+  if (degrees < 0) degrees = -degrees;
+  size_t step = (size_t)(degrees / 10);
+  if (step > 9) step = 9;
+  return COSINE[step];
+}
+
+/**
+ * @brief Which band a document falls into, seen from where the searcher stands.
+ *
+ *  Coarse on purpose.  A sharp distance ordering would put a nameless field
+ *  path in front of the cathedral three streets further on, and that is not
+ *  what someone typing *Dom* in Cologne means.  Inside a band the keys that
+ *  know what a place *is* — the house number, the weight the dump gave it —
+ *  decide as they did before.
+ *
+ *  @return 0 for the nearest band … GEO_NEAR_BAND_COUNT - 1 for everything else,
+ *          and the last band as well for a document that carries no coordinate.
+ */
+static uint8_t near_band_of(
+    const GeoIndex *index, uint32_t document, const GeoQueryOptions *options
+) {
+  const GeoDocument *record = &index->documents[document];
+  if (!(record->flags & GEO_DOCUMENT_HAS_POINT)) return GEO_NEAR_BAND_COUNT - 1;
+
+  int64_t north = (int64_t)record->lat_e7 - options->latitude_e7;
+  int64_t east = (int64_t)record->lon_e7 - options->longitude_e7;
+  /* the shorter way round the world, for a searcher near the dateline */
+  if (east > 1800000000) east -= 3600000000LL;
+  if (east < -1800000000) east += 3600000000LL;
+  east = east * longitude_shrink(options->latitude_e7) / 16;
+
+  int64_t squared = north * north + east * east;
+  for (size_t band = 0; band + 1 < GEO_NEAR_BAND_COUNT; ++band) {
+    int64_t edge = GEO_NEAR_BANDS_E7[band];
+    if (squared <= edge * edge) return (uint8_t)band;
+  }
+  return GEO_NEAR_BAND_COUNT - 1;
+}
+
 /** Does this token carry a digit? Then it may be a house number. */
 static bool token_has_digit(const TextToken *token) {
   for (size_t i = 0; i < token->size; ++i) {
@@ -862,6 +991,9 @@ static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextT
 /**
  * @brief Answer the query's words, reading its numbers as @p reading says.
  *
+ *  @param[in]     near   Documents around the searcher, or NULL.  Narrows like
+ *                        a word of the query and is borrowed, not consumed —
+ *                        the same ring serves every reading.
  *  @param[in,out] stats  Counts of this query, or NULL.  The sums grow with
  *                        every reading; what describes one pass alone is
  *                        overwritten, so the pass that answers is the one
@@ -873,6 +1005,7 @@ static size_t query_words(
     const TextTokenizer *tokenizer,
     NumberReading reading,
     bool prefix_last,
+    const roaring_bitmap_t *near,
     GeoHit *hits,
     size_t limit,
     GeoQueryStats *stats
@@ -932,7 +1065,8 @@ static size_t query_words(
       if (groups[g].source == token->group) { group = &groups[g]; }
     }
     if (!group) {
-      if (group_count >= GEO_QUERY_GROUP_MAX) {
+      /* one slot is kept free, so the ring around the searcher always fits */
+      if (group_count + 1 >= GEO_QUERY_GROUP_MAX) {
         for (size_t r = 0; r < reading_count; ++r) { roaring_bitmap_free(readings[r]); }
         break;
       }
@@ -940,6 +1074,7 @@ static size_t query_words(
       group->reading_count = 0;
       group->weight = 0;
       group->source = token->group;
+      group->borrowed = false;
     }
     for (size_t r = 0; r < reading_count; ++r) {
       if (group->reading_count >= sizeof(group->readings) / sizeof(group->readings[0])) {
@@ -952,7 +1087,19 @@ static size_t query_words(
     }
   }
   if (stats) stats->groups = (uint32_t)group_count;
+  /* The ring is not a word and cannot stand for one: a query whose words the
+     dictionary does not know would otherwise be answered with everything the
+     searcher is standing next to, which is not what they typed. */
   if (!group_count) return 0;
+
+  if (near) {
+    QueryGroup *group = &groups[group_count++];
+    group->readings[0] = near;
+    group->reading_count = 1;
+    group->weight = roaring_bitmap_get_cardinality(near);
+    group->source = UINT16_MAX;
+    group->borrowed = true;
+  }
 
   /* --- narrowest word first, so the carried set shrinks as early as it can --- */
   for (size_t g = 1; g < group_count; ++g) {
@@ -1002,6 +1149,7 @@ static size_t query_words(
   }
 
   for (size_t g = 0; g < group_count; ++g) {
+    if (groups[g].borrowed) continue; /* the ring outlives this reading */
     for (size_t r = 0; r < groups[g].reading_count; ++r) {
       roaring_bitmap_free(groups[g].readings[r]);
     }
@@ -1154,50 +1302,83 @@ static unsigned agreement_of(
   return score;
 }
 
+/** One candidate as the ranking sees it — the hit itself says nothing of this. */
+typedef struct HitRank {
+  uint8_t agreement; /**< What the query said about *where*, 0 … 3. */
+  uint8_t named;     /**< The place still goes by what was typed; 0 for everyone
+                          when no position was given. */
+  uint8_t band;      /**< How near the searcher stands, 0 = nearest; 0 for everyone
+                          when no position was given. */
+} HitRank;
+
 /**
  * @brief Does @p left stand before @p right?
  *
- *  Three keys, in this order: the place the query described; then the house
- *  number it asked for; then the weight the dump gave it.
+ *  Five keys, in this order: the place the query named; the house number it
+ *  asked for; whether the place still goes by what was typed; how near it lies
+ *  to the searcher; the weight the dump gave it.
  *
- *  Town and postcode come first because they tell places apart, while a house
- *  number tells doors apart inside one.  A street abroad that happens to carry
- *  the number would otherwise stand before the street in the named town that
- *  does not — the answer would be a door in the wrong city.  Where the query
- *  named no place, or named one every candidate shares, the scores are equal
- *  and the number decides after all, which is what it was meant to do.  With
- *  no agreement anywhere the last key is the only one left, and the order is
- *  the one this index has always answered with.
+ *  What was typed comes before where it was typed from.  A town or a postcode
+ *  says outright which place is meant, and no coordinate may argue with that:
+ *  whoever types *Berlin* from Potsdam means Berlin.  A house number likewise —
+ *  it was asked for, while a position is only the ground someone happened to be
+ *  standing on.  Measured against real data the other order reads badly: *Haupt-
+ *  straße 5* answered from Bonn put a street a kilometre nearer, carrying no
+ *  such number, ahead of the Hauptstraße that had one.
+ *
+ *  ### Why the name is weighed at all, and only here
+ *
+ *  A place answers to more than it is called.  The dump gives every name a
+ *  street ever had, and rightly so — whoever types the old one should find the
+ *  street.  But an old name is a weaker answer than the current one, and the
+ *  band is the one key that can lift a place for a reason the query never
+ *  mentioned.  Left unguarded it does: *Hauptstraße* asked from Bonn put the
+ *  Friedrich-Breuer-Straße first, which carried *Hauptstraße* among its former
+ *  names and lay a kilometre nearer than the street that is called that today.
+ *
+ *  So the name is weighed where a position was given and nowhere else.  Without
+ *  one, this key is 0 for every candidate and the order is the one this index
+ *  has always answered with — deliberately, because rewarding a name outright
+ *  was measured there and cost more than it won: a word reaches a place through
+ *  everything its entry carried, and demanding it in the name demotes every
+ *  place that answers legitimately without showing the word.  With a position
+ *  the candidates are already the ones standing nearby, and among those the
+ *  question "is this still its name" is worth asking.
  */
 static bool ranks_before(
-    const GeoHit *left, unsigned left_score, const GeoHit *right, unsigned right_score
+    const GeoHit *left, HitRank left_rank, const GeoHit *right, HitRank right_rank
 ) {
-  if (left_score != right_score) return left_score > right_score;
+  if (left_rank.agreement != right_rank.agreement) {
+    return left_rank.agreement > right_rank.agreement;
+  }
   bool left_house = left->house != GEO_RANK_NONE;
   bool right_house = right->house != GEO_RANK_NONE;
   if (left_house != right_house) return left_house;
+  if (left_rank.named != right_rank.named) return left_rank.named > right_rank.named;
+  if (left_rank.band != right_rank.band) return left_rank.band < right_rank.band;
   return left->importance > right->importance;
 }
 
 /**
- * @brief Order @p hits by agreement, house and weight, keeping equals as they lie.
+ * @brief Order @p hits by agreement, house, nearness and weight, keeping equals
+ *        as they lie.
  *
  *  An insertion sort: the sample is at most @ref GEO_QUERY_LIMIT_MAX long and
  *  already nearly in order, which is the case this sort is quickest at, and it
  *  moves equal hits past nothing — so the order weight gave them survives.
  */
-static void rank_hits(GeoHit *hits, uint8_t *scores, size_t count) {
+static void rank_hits(GeoHit *hits, HitRank *ranks, size_t count) {
   for (size_t h = 1; h < count; ++h) {
     GeoHit hit = hits[h];
-    uint8_t score = scores[h];
+    HitRank rank = ranks[h];
     size_t place = h;
-    while (place > 0 && ranks_before(&hit, score, &hits[place - 1], scores[place - 1])) {
+    while (place > 0 && ranks_before(&hit, rank, &hits[place - 1], ranks[place - 1])) {
       hits[place] = hits[place - 1];
-      scores[place] = scores[place - 1];
+      ranks[place] = ranks[place - 1];
       --place;
     }
     hits[place] = hit;
-    scores[place] = score;
+    ranks[place] = rank;
   }
 }
 
@@ -1210,22 +1391,24 @@ size_t geo_index_query(
     GeoHit *hits,
     size_t limit
 ) {
-  return geo_index_query_stats(index, tokenizer, query, size, prefix_last, hits, limit, NULL);
+  GeoQueryOptions options = {.prefix_last = prefix_last};
+  return geo_index_query_options(index, tokenizer, query, size, &options, hits, limit, NULL);
 }
 
-size_t geo_index_query_stats(
+size_t geo_index_query_options(
     const GeoIndex *index,
     TextTokenizer *tokenizer,
     const char *query,
     size_t size,
-    bool prefix_last,
+    const GeoQueryOptions *options,
     GeoHit *hits,
     size_t limit,
     GeoQueryStats *stats
 ) {
   /* zeroed before anything may fail, so a caller reads counts and not leftovers */
   if (stats) memset(stats, 0, sizeof(*stats));
-  if (!index || !tokenizer || !query || !size || !hits || !limit) return 0;
+  if (!index || !tokenizer || !query || !size || !options || !hits || !limit) return 0;
+  bool prefix_last = options->prefix_last;
   /* Beyond the ceiling a search stops being a search and becomes a listing, and
      the ranking could no longer hold every candidate at once.  Answering with
      fewer results is the honest reading of too large a limit — quietly dropping
@@ -1240,10 +1423,13 @@ size_t geo_index_query_stats(
          are asked first without it; only if they answer with nothing does the
          number get its turn as a word of its own, the way *Straße des 17. Juni*
          needs it. --- */
-  bool numbered = false;
+  bool numbers_present = false;
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
-    if (!tokenizer->tokens[t].part && token_has_digit(&tokenizer->tokens[t])) { numbered = true; }
+    if (!tokenizer->tokens[t].part && token_has_digit(&tokenizer->tokens[t])) {
+      numbers_present = true;
+    }
   }
+  bool numbered = numbers_present;
 
   /* --- more candidates than were asked for, so the ranking has something to
          choose from.  The place someone means is not always among the heaviest
@@ -1277,17 +1463,54 @@ size_t geo_index_query_stats(
          mistaken for a code — it is dropped and the words are asked alone.
          Only if they too find nothing does every number take its turn as a
          word, the way *Straße des 17. Juni* needs it. --- */
+  /* --- and where a position was given, the ring around it is asked for once
+         and carried through every reading below.  It narrows before weight
+         cuts, which is the whole reason it exists: the nearest Hauptstraße is
+         never among the sixty-four heaviest of the nine thousand that carry the
+         word, so a position applied afterwards would arrive to find it gone. --- */
+  roaring_bitmap_t *near = NULL;
+  if (options->has_position) {
+    near = near_documents(index, options, stats);
+    /* Nothing at all around the searcher — an ocean, or an index built before
+       the cells existed.  There is no ring to let go of later, so it is let go
+       of here, and the counts say so rather than showing a position that was
+       never used. */
+    if (!near && stats) stats->position_dropped = 1;
+  }
+
   size_t count = 0;
-  if (numbered) {
-    count = query_words(index, tokenizer, NUMBERS_BUT_CODES, prefix_last, pool, pool_limit, stats);
+  bool near_used = near != NULL;
+  for (int attempt = 0; attempt < 2 && !count; ++attempt) {
+    /* The position is the first thing let go of.  A search that finds nothing
+       nearby was asking about somewhere else — that is a plain reading of the
+       words, while returning nothing at all is not.  Whoever named a town or a
+       postcode said so outright, and those readings come after. */
+    if (attempt) {
+      if (!near) break; /* there was nothing to let go of; the chain already ran */
+      near_used = false;
+      if (stats) stats->position_dropped = 1;
+    }
+    const roaring_bitmap_t *carried_near = near_used ? near : NULL;
+    numbered = numbers_present;
+
+    if (numbered) {
+      count = query_words(
+          index, tokenizer, NUMBERS_BUT_CODES, prefix_last, carried_near, pool, pool_limit, stats
+      );
+      if (!count) {
+        count = query_words(
+            index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, carried_near, pool, pool_limit, stats
+        );
+      }
+    }
     if (!count) {
-      count = query_words(index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, pool, pool_limit, stats);
+      numbered = false;
+      count = query_words(
+          index, tokenizer, NUMBERS_AS_WORDS, prefix_last, carried_near, pool, pool_limit, stats
+      );
     }
   }
-  if (!count) {
-    numbered = false;
-    count = query_words(index, tokenizer, NUMBERS_AS_WORDS, prefix_last, pool, pool_limit, stats);
-  }
+  if (near) roaring_bitmap_free(near);
   if (!count) return 0;
 
   /* --- and now the number finds its door --- */
@@ -1319,11 +1542,23 @@ size_t geo_index_query_stats(
   /* pool_limit is bounded above, and hit_insert never returns more than it was
      given — so count fits, always, and the ranking runs for every query rather
      than for most of them. */
-  uint8_t scores[GEO_QUERY_LIMIT_MAX];
+  HitRank ranks[GEO_QUERY_LIMIT_MAX];
   for (size_t h = 0; h < count; ++h) {
-    scores[h] = (uint8_t)agreement_of(index, pool[h].document, &kept, tokenizer);
+    ranks[h].agreement = (uint8_t)agreement_of(index, pool[h].document, &kept, tokenizer);
+    /* Nearness is weighed even where the ring found nothing and was dropped:
+       the question "which of these is closest" still has an answer, and the
+       band is the only key that can give it.  Its guard travels with it — see
+       ranks_before() for why the name is asked about here and nowhere else. */
+    if (options->has_position) {
+      uint32_t name_rank = index->documents[pool[h].document].name_rank;
+      ranks[h].named = words_in_display(index, name_rank, &kept, tokenizer) ? 1u : 0u;
+      ranks[h].band = near_band_of(index, pool[h].document, options);
+    } else {
+      ranks[h].named = 0;
+      ranks[h].band = 0;
+    }
   }
-  rank_hits(pool, scores, count);
+  rank_hits(pool, ranks, count);
 
   if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;

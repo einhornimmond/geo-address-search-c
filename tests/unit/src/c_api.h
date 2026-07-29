@@ -44,6 +44,7 @@ extern "C" {
 #include "doc_collector.h"
 #include "error.h"
 #include "format.h"
+#include "geo_cell.h"
 #include "geo_index.h"
 #include "house_collector.h"
 #include "json_parse.h"
