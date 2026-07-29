@@ -12,7 +12,7 @@
  * simply ignored the second time.
  */
 
-#include "client.h"
+#include "search/client.h"
 
 #include <node_api.h>
 #include <stdlib.h>

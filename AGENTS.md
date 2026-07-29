@@ -10,7 +10,7 @@ Keep files in third_party as they are and if there is a bug, find a workaround i
 
 ```c
 /** @defgroup grdd_unit grdd_unit
-  *  @ingroup data
+  *  @ingroup foundation
   *  @brief Fixed-point GDD (scale 10^4)
   *  @{
   */
@@ -20,11 +20,12 @@ Keep files in third_party as they are and if there is a bug, find a workaround i
 /** @} */
 ```
 
-- Modules MUST belong to a parent via `@ingroup` with there folder name (`data`, `utils`, etc).
+- Modules MUST belong to a parent via `@ingroup` with there folder name
+  (`foundation`, `parser`, `search`, `types`).
 - If the parent does not exist, DEFINE it once:
 
 ```c
-/** @defgroup data Primary Data Structures */
+/** @defgroup foundation Foundation */
 ```
 
 ----------

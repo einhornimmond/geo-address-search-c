@@ -12,12 +12,16 @@ const c_flags = &.{
 
 /// What the client needs to read an index file — and nothing else.
 /// The builder (main, parser, collectors) stays out, as do yyjson and zstd.
+///
+/// Every source under src/ names its includes from src/ downwards
+/// ("search/geo_index.h", "foundation/error.h"), so every artifact that
+/// compiles one of them carries src/ as an include path.
 const client_sources = [_][]const u8{
-    "client.c",
-    "geo_cell.c",
-    "geo_index.c",
-    "prefix_tree.c",
-    "text_tokenize.c",
+    "search/client.c",
+    "search/geo_cell.c",
+    "search/geo_index.c",
+    "search/prefix_tree.c",
+    "search/text_tokenize.c",
 };
 
 /// One test executable per unit of src/, named after the file it exercises.
@@ -91,6 +95,7 @@ pub fn build(b: *std.Build) !void {
     // headers and grdu_uint64_to_string from its object code, rather than
     // keeping a second copy of a conversion that already exists there.
     lib.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+    lib.addIncludePath(b.path("src"));
     lib.addIncludePath(blockchain_core.path("include"));
     lib.addIncludePath(b.path("third_party/CRoaring/include"));
     lib.addCSourceFiles(.{
@@ -103,7 +108,10 @@ pub fn build(b: *std.Build) !void {
         .files = &client_sources,
         .flags = c_flags,
     });
-    lib.installHeader(b.path("src/client.h"), "geoindex/client.h");
+    // Installed flat, not under search/: the header names only its own types,
+    // and those travel beside it — an embedder writes <geoindex/client.h>
+    // whatever folder the source happens to live in here.
+    lib.installHeader(b.path("src/search/client.h"), "geoindex/client.h");
     // client.h names its shared types by inclusion, so they travel with it — the
     // paths stay relative to client.h, and an installed tree resolves them unaided.
     lib.installHeader(b.path("src/types/geo_status.h"), "geoindex/types/geo_status.h");
@@ -188,6 +196,7 @@ pub fn build(b: *std.Build) !void {
     core.root_module.addCMacro("_GNU_SOURCE", "1");
     core.linkLibrary(zstd.artifact("zstd"));
     core.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+    core.addIncludePath(b.path("src"));
     core.addIncludePath(blockchain_core.path("include"));
     core.addIncludePath(b.path("third_party/yyjson/src"));
     core.addIncludePath(b.path("third_party/stb"));

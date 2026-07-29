@@ -36,27 +36,27 @@
 extern "C" {
 #endif
 
-#include "client.h"
+#include "search/client.h"
 /* client.h names the kinds only in prose — a GeoAddress carries the number, not
    the enum — so the tests that check the numbering take it themselves. */
 #include "types/geo_place_kind.h"
 
-#include "doc_collector.h"
-#include "error.h"
-#include "format.h"
-#include "geo_cell.h"
-#include "geo_index.h"
-#include "house_collector.h"
-#include "json_parse.h"
-#include "json_stats.h"
-#include "line_buffer.h"
-#include "meta_area_allocator.h"
-#include "name_collector.h"
-#include "parse_queue.h"
-#include "place_cache.h"
-#include "prefix_tree.h"
-#include "progress.h"
-#include "text_tokenize.h"
+#include "foundation/error.h"
+#include "foundation/format.h"
+#include "foundation/line_buffer.h"
+#include "foundation/meta_area_allocator.h"
+#include "foundation/progress.h"
+#include "parser/json_parse.h"
+#include "parser/json_stats.h"
+#include "parser/parse_queue.h"
+#include "parser/place_cache.h"
+#include "search/doc_collector.h"
+#include "search/geo_cell.h"
+#include "search/geo_index.h"
+#include "search/house_collector.h"
+#include "search/name_collector.h"
+#include "search/prefix_tree.h"
+#include "search/text_tokenize.h"
 
 #ifdef __cplusplus
 }
