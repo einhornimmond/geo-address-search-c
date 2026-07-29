@@ -161,6 +161,53 @@ pub fn build(b: *std.Build) !void {
     node_step.dependOn(&install_addon.step);
 
     // =====================================================================
+    //  Core: everything under src/ but the entry point, compiled once
+    // =====================================================================
+    //
+    // The builder and the tests want the same objects — every unit of src/,
+    // yyjson and CRoaring beside them.  Compiled per artifact that is the whole
+    // of src/ plus a hundred thousand lines of amalgamated bitmap code, twice.
+    // Gathered here it is built once and linked twice, which is most of what a
+    // cold `-Dtests=true` used to spend its time on.
+    //
+    // The client library above does *not* share it, and must not: it is the
+    // artifact that leaves the house, and it carries the four files a reader
+    // needs rather than the parser, the queue and zstd behind them.
+
+    const core = b.addLibrary(.{
+        .name = "geoindex_core",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    core.linkLibC();
+    core.root_module.addCMacro("_GNU_SOURCE", "1");
+    core.linkLibrary(zstd.artifact("zstd"));
+    core.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+    core.addIncludePath(blockchain_core.path("include"));
+    core.addIncludePath(b.path("third_party/yyjson/src"));
+    core.addIncludePath(b.path("third_party/stb"));
+    core.addIncludePath(b.path("third_party/CRoaring/include"));
+    core.addCSourceFiles(.{
+        .root = b.path("third_party/yyjson/src"),
+        .files = &.{"yyjson.c"},
+        .flags = c_flags,
+    });
+    core.addCSourceFiles(.{
+        .root = b.path("third_party/CRoaring"),
+        .files = &.{"roaring.c"},
+        .flags = roaring_flags.items,
+    });
+    // main.c stays out: it carries an entry point, and the tests bring their
+    // own through gtest_main.
+    try addDirSources(core, b, "src", c_flags, &.{"main.c"});
+
+    cdbTargets.append(b.allocator, core) catch @panic("OOM");
+
+    // =====================================================================
     //  Builder: turn a dump into an index file
     // =====================================================================
 
@@ -172,39 +219,20 @@ pub fn build(b: *std.Build) !void {
     exe.linkLibC();
     exe.linkSystemLibrary("pthread");
     exe.root_module.addCMacro("_GNU_SOURCE", "1");
-
-    // zstd
+    exe.linkLibrary(core);
+    // Linking core hands on its objects, not what it was built against — the
+    // headers main.c reaches for have to be named again here.
     exe.linkLibrary(zstd.artifact("zstd"));
-
-    // gradido blockchain core
-    exe.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+    exe.addIncludePath(b.path("src"));
     exe.addIncludePath(blockchain_core.path("include"));
-
-    // yyjson
     exe.addIncludePath(b.path("third_party/yyjson/src"));
-    exe.addCSourceFiles(.{
-        .root = b.path("third_party/yyjson/src"),
-        .files = &.{
-            "yyjson.c",
-        },
-        .flags = c_flags,
-    });
-
-    // stb
     exe.addIncludePath(b.path("third_party/stb"));
-
-    // roaring bitmaps
     exe.addIncludePath(b.path("third_party/CRoaring/include"));
     exe.addCSourceFiles(.{
-        .root = b.path("third_party/CRoaring"),
-        .files = &.{
-            "roaring.c",
-        },
-        .flags = roaring_flags.items,
+        .root = b.path("src"),
+        .files = &.{"main.c"},
+        .flags = c_flags,
     });
-
-    // Project sources
-    try addDirSources(exe, b, "src", c_flags, &.{});
 
     cdbTargets.append(b.allocator, exe) catch @panic("OOM");
 
@@ -232,39 +260,8 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run unit tests (needs -Dtests=true)");
 
     if (enable_tests) {
-        // Every unit under test, compiled once and shared by all test binaries.
-        // main.c stays out — it carries the entry point the tests bring
-        // themselves, through gtest_main.
-        const test_lib = b.addLibrary(.{
-            .name = "geoindex_under_test",
-            .linkage = .static,
-            .root_module = b.createModule(.{
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-        test_lib.linkLibC();
-        test_lib.root_module.addCMacro("_GNU_SOURCE", "1");
-        test_lib.linkLibrary(zstd.artifact("zstd"));
-        test_lib.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
-        test_lib.addIncludePath(blockchain_core.path("include"));
-        test_lib.addIncludePath(b.path("third_party/yyjson/src"));
-        test_lib.addIncludePath(b.path("third_party/stb"));
-        test_lib.addIncludePath(b.path("third_party/CRoaring/include"));
-        test_lib.addCSourceFiles(.{
-            .root = b.path("third_party/yyjson/src"),
-            .files = &.{"yyjson.c"},
-            .flags = c_flags,
-        });
-        test_lib.addCSourceFiles(.{
-            .root = b.path("third_party/CRoaring"),
-            .files = &.{"roaring.c"},
-            .flags = roaring_flags.items,
-        });
-        try addDirSources(test_lib, b, "src", c_flags, &.{"main.c"});
-
-        cdbTargets.append(b.allocator, test_lib) catch @panic("OOM");
-
+        // Every unit under test is already in `core`, compiled once for the
+        // builder; the tests link the same objects rather than a second copy.
         const googletest = b.lazyDependency("googletest", .{ .target = target, .optimize = optimize });
 
         for (unit_tests) |name| {
@@ -276,7 +273,7 @@ pub fn build(b: *std.Build) !void {
                 }),
             });
             t.linkLibCpp();
-            t.linkLibrary(test_lib);
+            t.linkLibrary(core);
             t.root_module.addCMacro("_GNU_SOURCE", "1");
             t.addIncludePath(b.path("src"));
             t.addIncludePath(b.path("tests/unit/src"));
