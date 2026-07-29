@@ -741,19 +741,32 @@ static size_t prefix_bound(
  *  A refused word simply narrows nothing, which the other words of the query
  *  survive.
  *
+ *  @param[in,out] stats  Counts of this query, or NULL.  The words the prefix
+ *                        covered are added even when it is refused — that count
+ *                        is the reason for the refusal.
  *  @return The joined set, or NULL when no word begins with @p prefix or too
  *          many do.
  */
-static roaring_bitmap_t *prefix_documents(const GeoIndex *index, const char *prefix, size_t size) {
+static roaring_bitmap_t *prefix_documents(
+    const GeoIndex *index, const char *prefix, size_t size, GeoQueryStats *stats
+) {
   if (size < GEO_QUERY_PREFIX_MIN) return NULL;
   size_t first = prefix_bound(&index->words, prefix, size, false);
   size_t last = prefix_bound(&index->words, prefix, size, true);
-  if (last - first > GEO_QUERY_PREFIX_TERMS) return NULL;
+  if (stats) stats->prefix_terms += last - first;
+  if (last - first > GEO_QUERY_PREFIX_TERMS) {
+    if (stats) ++stats->prefix_refused;
+    return NULL;
+  }
 
   roaring_bitmap_t *joined = NULL;
   for (size_t rank = first; rank < last; ++rank) {
     const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
     if (!documents) continue;
+    if (stats) {
+      ++stats->posting_lists;
+      stats->posting_documents += roaring_bitmap_get_cardinality(documents);
+    }
     if (!joined) {
       joined = roaring_bitmap_copy(documents);
     } else {
@@ -849,6 +862,10 @@ static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextT
 /**
  * @brief Answer the query's words, reading its numbers as @p reading says.
  *
+ *  @param[in,out] stats  Counts of this query, or NULL.  The sums grow with
+ *                        every reading; what describes one pass alone is
+ *                        overwritten, so the pass that answers is the one
+ *                        described.
  *  @return Number of results written into @p hits.
  */
 static size_t query_words(
@@ -857,8 +874,16 @@ static size_t query_words(
     NumberReading reading,
     bool prefix_last,
     GeoHit *hits,
-    size_t limit
+    size_t limit,
+    GeoQueryStats *stats
 ) {
+  if (stats) {
+    ++stats->passes;
+    /* what describes a single pass starts over with it; the sums do not */
+    stats->groups = 0;
+    stats->narrowed = 0;
+  }
+
   /* --- the word being typed is the last one; it may still grow --- */
   uint16_t typing = 0;
   bool any = false;
@@ -887,10 +912,16 @@ static size_t query_words(
     size_t rank = 0;
     if (geo_dictionary_find(&index->words, token->data, token->size, &rank)) {
       readings[reading_count] = geo_index_word_documents(index, rank);
-      if (readings[reading_count]) ++reading_count;
+      if (readings[reading_count]) {
+        if (stats) {
+          ++stats->posting_lists;
+          stats->posting_documents += roaring_bitmap_get_cardinality(readings[reading_count]);
+        }
+        ++reading_count;
+      }
     }
     if (prefix_last && token->group == typing) {
-      readings[reading_count] = prefix_documents(index, token->data, token->size);
+      readings[reading_count] = prefix_documents(index, token->data, token->size, stats);
       if (readings[reading_count]) ++reading_count;
     }
     if (!reading_count) continue; /* a word nobody ever wrote cannot narrow anything down */
@@ -920,6 +951,7 @@ static size_t query_words(
       if (weight > group->weight) group->weight = weight;
     }
   }
+  if (stats) stats->groups = (uint32_t)group_count;
   if (!group_count) return 0;
 
   /* --- narrowest word first, so the carried set shrinks as early as it can --- */
@@ -946,6 +978,7 @@ static size_t query_words(
 
   size_t count = 0;
   if (carried) {
+    if (stats) stats->narrowed = roaring_bitmap_get_cardinality(carried);
     uint32_t batch[256];
     roaring_uint32_iterator_t walk;
     roaring_iterator_init(carried, &walk);
@@ -1177,6 +1210,21 @@ size_t geo_index_query(
     GeoHit *hits,
     size_t limit
 ) {
+  return geo_index_query_stats(index, tokenizer, query, size, prefix_last, hits, limit, NULL);
+}
+
+size_t geo_index_query_stats(
+    const GeoIndex *index,
+    TextTokenizer *tokenizer,
+    const char *query,
+    size_t size,
+    bool prefix_last,
+    GeoHit *hits,
+    size_t limit,
+    GeoQueryStats *stats
+) {
+  /* zeroed before anything may fail, so a caller reads counts and not leftovers */
+  if (stats) memset(stats, 0, sizeof(*stats));
   if (!index || !tokenizer || !query || !size || !hits || !limit) return 0;
   /* Beyond the ceiling a search stops being a search and becomes a listing, and
      the ranking could no longer hold every candidate at once.  Answering with
@@ -1231,14 +1279,14 @@ size_t geo_index_query(
          word, the way *Straße des 17. Juni* needs it. --- */
   size_t count = 0;
   if (numbered) {
-    count = query_words(index, tokenizer, NUMBERS_BUT_CODES, prefix_last, pool, pool_limit);
+    count = query_words(index, tokenizer, NUMBERS_BUT_CODES, prefix_last, pool, pool_limit, stats);
     if (!count) {
-      count = query_words(index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, pool, pool_limit);
+      count = query_words(index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, pool, pool_limit, stats);
     }
   }
   if (!count) {
     numbered = false;
-    count = query_words(index, tokenizer, NUMBERS_AS_WORDS, prefix_last, pool, pool_limit);
+    count = query_words(index, tokenizer, NUMBERS_AS_WORDS, prefix_last, pool, pool_limit, stats);
   }
   if (!count) return 0;
 
@@ -1277,8 +1325,10 @@ size_t geo_index_query(
   }
   rank_hits(pool, scores, count);
 
+  if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;
   if (pool != hits) { memcpy(hits, pool, count * sizeof(*hits)); }
+  if (stats) stats->results = count;
   return count;
 }
 

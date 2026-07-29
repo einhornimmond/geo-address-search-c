@@ -150,6 +150,31 @@ TEST_F(ClientTest, ManyThreadsMaySearchAtOnce) {
 }
 
 // ---------------------------------------------------------------------------
+//  The counts a caller may ask the search to keep
+// ---------------------------------------------------------------------------
+
+TEST_F(ClientTest, TheCountedSearchAnswersLikeThePlainOne) {
+  GeoAddress counted[8], plain[8];
+  GeoQueryStats stats{};
+  const char *q = "Marienplatz München ";
+  size_t a = geo_client_search_stats(client, q, std::strlen(q), false, counted, 8, &stats);
+  size_t b = Search(q, plain, 8);
+  ASSERT_EQ(a, b);
+  EXPECT_EQ(stats.results, a);
+  EXPECT_GT(stats.posting_lists, 0u);
+  for (size_t i = 0; i < a; ++i) EXPECT_EQ(Name(counted[i]), Name(plain[i]));
+}
+
+TEST(ClientGuards, TheCountsAreClearedBeforeAnythingIsRefused) {
+  GeoAddress found[4];
+  GeoQueryStats stats{};
+  stats.posting_lists = 99;
+  EXPECT_EQ(geo_client_search_stats(nullptr, "x", 1, false, found, 4, &stats), 0u);
+  EXPECT_EQ(stats.posting_lists, 0u);
+  EXPECT_EQ(stats.results, 0u);
+}
+
+// ---------------------------------------------------------------------------
 //  The JSON form, for callers who do not want to walk foreign structs
 // ---------------------------------------------------------------------------
 
@@ -171,6 +196,32 @@ TEST_F(ClientTest, AnAbsentFieldIsJsonNull) {
   const char *q = "Osiedle Praha ";
   geo_client_search_json(client, q, std::strlen(q), false, 8, buffer, sizeof(buffer));
   EXPECT_NE(std::string(buffer).find("\"number\":null"), std::string::npos);
+}
+
+TEST(ClientJson, ARoundCoordinateKeepsItsSevenDecimals) {
+  // the fraction is written into a field of seven zeros; nothing may cut it
+  // short, and a fraction of zero has to leave all seven standing
+  std::vector<testsupport::MiniPlace> places = {
+      {"Nullstraße", "Nullstadt", "00000", 480000000, 110000000},
+      {"Halbstraße", "Halbstadt", "00001", 5000000, 205000000},
+  };
+  TempPath path{"degrees"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoClient *client = nullptr;
+  ASSERT_EQ(geo_client_open(&client, path.c_str()), GEO_OK);
+
+  char buffer[2048];
+  const char *round = "Nullstraße ";
+  geo_client_search_json(client, round, std::strlen(round), false, 4, buffer, sizeof(buffer));
+  EXPECT_NE(std::string(buffer).find("\"lat\":48.0000000"), std::string::npos) << buffer;
+  EXPECT_NE(std::string(buffer).find("\"lon\":11.0000000"), std::string::npos) << buffer;
+
+  const char *half = "Halbstraße ";
+  geo_client_search_json(client, half, std::strlen(half), false, 4, buffer, sizeof(buffer));
+  EXPECT_NE(std::string(buffer).find("\"lat\":0.5000000"), std::string::npos) << buffer;
+  EXPECT_NE(std::string(buffer).find("\"lon\":20.5000000"), std::string::npos) << buffer;
+
+  geo_client_close(client);
 }
 
 TEST_F(ClientTest, NothingMatchedIsAnEmptyJsonArray) {

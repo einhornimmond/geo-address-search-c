@@ -67,6 +67,7 @@
 #include "prefix_tree.h"
 #include "text_tokenize.h"
 #include "types/geo_index_section_kind.h"
+#include "types/geo_query_stats.h"
 
 /** Eight bytes opening every index file. */
 #define GEO_INDEX_MAGIC "GRDGEOIX"
@@ -344,6 +345,39 @@ size_t geo_index_query(
     bool prefix_last,
     GeoHit *hits,
     size_t limit
+);
+
+/**
+ * @brief Answer a query and record what answering it cost.
+ *
+ *  The search itself is geo_index_query(); this is the same call with a place
+ *  to write its counts.  They are gathered only where @p stats is not NULL, and
+ *  the cardinalities that fill the sums are asked for nowhere else — a query
+ *  passing NULL runs exactly as it did before.
+ *
+ *  @param[in]     index      Opened index; must not be NULL.
+ *  @param[in,out] tokenizer  Scratch space; reset by this call.
+ *  @param[in]     query      Free text, words in any order.
+ *  @param[in]     size       Byte length of @p query.
+ *  @param[in]     prefix_last  As in geo_index_query().
+ *  @param[out]    hits       Receives up to @p limit results.
+ *  @param[in]     limit      Capacity of @p hits, capped at
+ *                            @ref GEO_QUERY_LIMIT_MAX.
+ *  @param[out]    stats      Receives the counts, zeroed first even when the
+ *                            arguments are refused; may be NULL.
+ *  @return Number of results written.
+ *
+ *  @whisper The search says afterwards how far it had to reach
+ */
+size_t geo_index_query_stats(
+    const GeoIndex *index,
+    TextTokenizer *tokenizer,
+    const char *query,
+    size_t size,
+    bool prefix_last,
+    GeoHit *hits,
+    size_t limit,
+    GeoQueryStats *stats
 );
 
 /** @} */

@@ -36,6 +36,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "types/geo_query_stats.h"
 #include "types/geo_status.h"
 
 #ifdef __cplusplus
@@ -156,6 +157,39 @@ size_t geo_client_search(
     bool prefix_last,
     GeoAddress *out,
     size_t limit
+);
+
+/**
+ * @brief Search, and learn what the search had to touch.
+ *
+ *  The same call as geo_client_search(), with a place to write its counts:
+ *  how many posting lists were opened, how many documents they held, how far
+ *  the words narrowed them, how many candidates were ranked.  Meant for a
+ *  command line or a log that has to explain a slow query — a duration alone
+ *  says only that one was slow.
+ *
+ *  Gathering costs nothing where it is not asked for: geo_client_search() is
+ *  this call with @p stats set to NULL, and every count sits behind a check for
+ *  that pointer.
+ *
+ *  @param[in]  client       Opened client; must not be NULL.
+ *  @param[in]  query        Free text, UTF-8.
+ *  @param[in]  query_size   Byte length of @p query.
+ *  @param[in]  prefix_last  As in geo_client_search().
+ *  @param[out] out          Receives up to @p limit results.
+ *  @param[in]  limit        Capacity of @p out; at most 256 are written.
+ *  @param[out] stats        Receives the counts, zeroed first even when the
+ *                           arguments are refused; may be NULL.
+ *  @return Number of results written; 0 when nothing matched.
+ */
+size_t geo_client_search_stats(
+    const GeoClient *client,
+    const char *query,
+    size_t query_size,
+    bool prefix_last,
+    GeoAddress *out,
+    size_t limit,
+    GeoQueryStats *stats
 );
 
 /**

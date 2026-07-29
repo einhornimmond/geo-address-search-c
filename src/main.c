@@ -20,6 +20,7 @@
 
 #include <zstd.h>
 
+#include "gradido_blockchain_core/utils/converter.h"
 #include "gradido_blockchain_core/utils/mono_timer.h"
 
 enum { BUFFER_POOL_CAPACITY = PARSE_QUEUE_CAPACITY + 4 };
@@ -714,6 +715,62 @@ static void print_results(const GeoAddress *found, size_t count, const char *que
 }
 
 /**
+ * @brief Write a count with its thousands set apart: 1850000 becomes "1 850 000".
+ *
+ *  @param[out] buffer  Destination; 27 bytes hold the longest count there is —
+ *                      twenty digits, six separators and the NUL.  A shorter
+ *                      one is filled as far as it reaches and terminated.
+ *  @param[in]  size    Capacity of @p buffer, at least 1.
+ *  @param[in]  value   Count to spell out.
+ */
+static void format_grouped(char *buffer, size_t size, uint64_t value) {
+  char digits[24];
+  size_t length = grdu_uint64_to_string(digits, sizeof(digits), value);
+  size_t written = 0;
+  for (size_t i = 0; i < length && written + 2 < size; ++i) {
+    if (i && (length - i) % 3 == 0) buffer[written++] = ' ';
+    buffer[written++] = digits[i];
+  }
+  buffer[written] = '\0';
+}
+
+/** One line of the query report: a label, and its count in a column of its own. */
+static void print_count(const char *label, uint64_t value) {
+  char grouped[32];
+  format_grouped(grouped, sizeof(grouped), value);
+  printf("  %-22s %13s\n", label, grouped);
+}
+
+/**
+ * @brief Show what the search had to touch on its way to the answer.
+ *
+ *  A duration says only that a query was slow; these counts say where it went.
+ *  A beginning that covers thousands of dictionary words opens thousands of
+ *  posting lists, and the documents in them are read before a single word has
+ *  narrowed anything — that sum, set against the handful that survives the
+ *  narrowing, is where a slow query usually shows itself.
+ *
+ *  Counts of the whole search stand beside counts of one pass: the sums hold
+ *  every reading the query needed, while the words that narrowed and what was
+ *  left afterwards describe the reading that answered.
+ *
+ *  @param[in] stats     Counts of the search just run.
+ *  @param[in] duration  How long it took, already formatted.
+ */
+static void print_query_stats(const GeoQueryStats *stats, const char *duration) {
+  printf("\nSearched in %s\n", duration);
+  print_count("passes:", stats->passes);
+  print_count("words that narrowed:", stats->groups);
+  print_count("prefix terms seen:", stats->prefix_terms);
+  print_count("beginnings refused:", stats->prefix_refused);
+  print_count("posting lists read:", stats->posting_lists);
+  print_count("documents in them:", stats->posting_documents);
+  print_count("left after narrowing:", stats->narrowed);
+  print_count("candidates ranked:", stats->weighed);
+  print_count("results:", stats->results);
+}
+
+/**
  * @brief Map a finished index and report what it holds.
  *
  *  Everything here goes through the client library — the same door a server
@@ -757,14 +814,18 @@ static int open_index(const char *index_path, const char *query, size_t result_l
       result_limit = sizeof(found) / sizeof(found[0]);
     }
 
+    /* the counts are gathered while the query runs; asking for them is what
+       makes this a debugging tool rather than only a search */
+    GeoQueryStats stats;
     grdu_mono_timer queryTime;
     grdu_mono_timer_reset(&queryTime);
-    size_t count = geo_client_search(client, query, strlen(query), prefix, found, result_limit);
+    size_t count =
+        geo_client_search_stats(client, query, strlen(query), prefix, found, result_limit, &stats);
     grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
 
     printf("\n");
     print_results(found, count, query);
-    printf("Searched in %s.\n", timeUsedBuffer);
+    print_query_stats(&stats, timeUsedBuffer);
   }
 
   geo_client_close(client);

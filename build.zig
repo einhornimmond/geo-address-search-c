@@ -84,7 +84,10 @@ pub fn build(b: *std.Build) !void {
     lib.linkLibC();
     lib.root_module.addCMacro("_GNU_SOURCE", "1");
 
-    // Only the headers of blockchain-core are needed (grd_result), not the library
+    // blockchain-core comes in whole: the client names grd_result from its
+    // headers and grdu_uint64_to_string from its object code, rather than
+    // keeping a second copy of a conversion that already exists there.
+    lib.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
     lib.addIncludePath(blockchain_core.path("include"));
     lib.addIncludePath(b.path("third_party/CRoaring/include"));
     lib.addCSourceFiles(.{
@@ -98,10 +101,11 @@ pub fn build(b: *std.Build) !void {
         .flags = c_flags,
     });
     lib.installHeader(b.path("src/client.h"), "geoindex/client.h");
-    // client.h names its enums by inclusion, so they travel with it — the paths
-    // stay relative to client.h, and an installed tree resolves them unaided.
+    // client.h names its shared types by inclusion, so they travel with it — the
+    // paths stay relative to client.h, and an installed tree resolves them unaided.
     lib.installHeader(b.path("src/types/geo_status.h"), "geoindex/types/geo_status.h");
     lib.installHeader(b.path("src/types/geo_place_kind.h"), "geoindex/types/geo_place_kind.h");
+    lib.installHeader(b.path("src/types/geo_query_stats.h"), "geoindex/types/geo_query_stats.h");
 
     b.installArtifact(lib);
     cdbTargets.append(b.allocator, lib) catch @panic("OOM");
@@ -128,6 +132,7 @@ pub fn build(b: *std.Build) !void {
     // on Linux and Windows this is the default for a shared library.
     addon.addIncludePath(b.path(node_headers));
     addon.addIncludePath(b.path("src"));
+    addon.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
     addon.addIncludePath(blockchain_core.path("include"));
     addon.addIncludePath(b.path("third_party/CRoaring/include"));
     addon.addCSourceFiles(.{

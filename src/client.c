@@ -6,6 +6,8 @@
 #include "types/geo_place_kind.h"
 #include "types/photon_place_type.h"
 
+#include "gradido_blockchain_core/utils/converter.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -138,6 +140,19 @@ size_t geo_client_search(
     GeoAddress *out,
     size_t limit
 ) {
+  return geo_client_search_stats(client, query, query_size, prefix_last, out, limit, NULL);
+}
+
+size_t geo_client_search_stats(
+    const GeoClient *client,
+    const char *query,
+    size_t query_size,
+    bool prefix_last,
+    GeoAddress *out,
+    size_t limit,
+    GeoQueryStats *stats
+) {
+  if (stats) memset(stats, 0, sizeof(*stats));
   if (!client || !query || !query_size || !out || !limit) return 0;
   if (limit > GEO_CLIENT_LIMIT_MAX) limit = GEO_CLIENT_LIMIT_MAX;
 
@@ -146,8 +161,9 @@ size_t geo_client_search(
   TextTokenizer tokenizer;
   GeoHit hits[GEO_CLIENT_LIMIT_MAX];
 
-  size_t count =
-      geo_index_query(&client->index, &tokenizer, query, query_size, prefix_last, hits, limit);
+  size_t count = geo_index_query_stats(
+      &client->index, &tokenizer, query, query_size, prefix_last, hits, limit, stats
+  );
   for (size_t i = 0; i < count; ++i) { fill_address(&client->index, &hits[i], &out[i]); }
   return count;
 }
@@ -219,62 +235,17 @@ static void json_string(JsonWriter *writer, const char *text, size_t size) {
   json_literal(writer, "\"");
 }
 
-/** How many decimal digits a value spells out; a decision tree, no loop, no division. */
-static size_t uint64_digits(uint64_t v) {
-  if (v < 100000000ULL) {
-    if (v < 10000ULL) {
-      if (v < 100ULL) { return v < 10ULL ? 1 : 2; }
-      return v < 1000ULL ? 3 : 4;
-    }
-    if (v < 1000000ULL) { return v < 100000ULL ? 5 : 6; }
-    return v < 10000000ULL ? 7 : 8;
-  }
-  if (v < 1000000000000ULL) {
-    if (v < 10000000000ULL) { return v < 1000000000ULL ? 9 : 10; }
-    return v < 100000000000ULL ? 11 : 12;
-  }
-  if (v < 10000000000000000ULL) {
-    if (v < 100000000000000ULL) { return v < 10000000000000ULL ? 13 : 14; }
-    return v < 1000000000000000ULL ? 15 : 16;
-  }
-  if (v < 1000000000000000000ULL) { return v < 100000000000000000ULL ? 17 : 18; }
-  return v < 10000000000000000000ULL ? 19 : 20; /* UINT64_MAX itself spells out 20 */
-}
-
-/** Two digits per step, filled back to front; `digits` has to be uint64_digits(value). */
-static void uint64_digits_write(char *text, uint64_t value, size_t digits) {
-  static const char PAIRS[201] = "00010203040506070809"
-                                 "10111213141516171819"
-                                 "20212223242526272829"
-                                 "30313233343536373839"
-                                 "40414243444546474849"
-                                 "50515253545556575859"
-                                 "60616263646566676869"
-                                 "70717273747576777879"
-                                 "80818283848586878889"
-                                 "90919293949596979899";
-  size_t cursor = digits;
-
-  while (value >= 100) {
-    uint64_t rest = value / 100;
-    uint64_t pair = value - rest * 100;
-    text[--cursor] = PAIRS[pair * 2 + 1];
-    text[--cursor] = PAIRS[pair * 2];
-    value = rest;
-  }
-  if (value < 10) {
-    text[--cursor] = (char)('0' + value);
-  } else {
-    text[--cursor] = PAIRS[value * 2 + 1];
-    text[--cursor] = PAIRS[value * 2];
-  }
-}
-
+/**
+ * @brief Write a count as a JSON number.
+ *
+ *  The digits come from the core's converter — the same LR-algorithm this file
+ *  used to carry a copy of, and one copy of it is enough.  Its size step tops
+ *  out at nineteen digits, which every field written here stays far below: a
+ *  kind, a weight, a count of words.
+ */
 static void json_uint(JsonWriter *writer, uint64_t value) {
-  char text[20];
-  size_t digits = uint64_digits(value);
-
-  uint64_digits_write(text, value, digits);
+  char text[24]; /* nineteen digits, the terminator, and room to spare */
+  size_t digits = grdu_uint64_to_string(text, sizeof(text), value);
   json_put(writer, text, digits);
 }
 
@@ -297,13 +268,15 @@ static void json_degrees(JsonWriter *writer, double value) {
   size_t cursor = 0;
   if (negative && scaled) text[cursor++] = '-';
 
-  size_t digits = uint64_digits(whole);
-  uint64_digits_write(&text[cursor], whole, digits);
-  cursor += digits;
+  cursor += grdu_uint64_to_string(&text[cursor], sizeof(text) - cursor, whole);
 
-  text[cursor++] = '.';
+  text[cursor++] = '.'; /* over the terminator the converter just wrote */
   for (size_t i = 0; i < 7; ++i) { text[cursor + i] = '0'; } /* keep the leading zeros */
-  uint64_digits_write(&text[cursor], fraction, 7);
+  /* The converter fills a field of known width from its end, so a short
+     fraction leaves those zeros standing in front of it.  Zero itself is the
+     one value it writes as a single digit at the front instead — and a zero
+     fraction is already spelled by the seven that stand there. */
+  if (fraction) { grdu_uint64_to_string_known_string_size(&text[cursor], fraction, 7); }
   cursor += 7;
 
   json_put(writer, text, cursor);

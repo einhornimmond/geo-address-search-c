@@ -30,6 +30,14 @@ size_t Query(const GeoIndex &index, const std::string &text, GeoHit *hits, size_
   return geo_index_query(&index, &tok, text.c_str(), text.size(), prefix_last, hits, limit);
 }
 
+/** The same query, with a place for it to write down what it touched. */
+size_t QueryStats(const GeoIndex &index, const std::string &text, GeoHit *hits, size_t limit,
+                  GeoQueryStats *stats, bool prefix_last = false) {
+  TextTokenizer tok;
+  return geo_index_query_stats(&index, &tok, text.c_str(), text.size(), prefix_last, hits, limit,
+                               stats);
+}
+
 std::string DisplayWord(const GeoIndex &index, uint32_t rank) {
   if (rank == GEO_RANK_NONE) return std::string();
   size_t size = 0;
@@ -268,6 +276,84 @@ TEST_F(GeoIndexTest, AnEmptyQueryIsAnswered) {
   EXPECT_EQ(geo_index_query(&index, &tok, "", 0, false, hits, 8), 0u);
   EXPECT_EQ(geo_index_query(&index, &tok, nullptr, 0, false, hits, 8), 0u);
   EXPECT_EQ(geo_index_query(nullptr, &tok, "x", 1, false, hits, 8), 0u);
+}
+
+// ---------------------------------------------------------------------------
+//  What the query says afterwards about the way it went
+// ---------------------------------------------------------------------------
+
+TEST_F(GeoIndexTest, TheCountsFollowTheStepsOfTheSearch) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  size_t count = QueryStats(index, "Marienplatz München ", hits, 8, &stats);
+  ASSERT_GE(count, 1u);
+
+  EXPECT_EQ(stats.results, count) << "what was written is what was counted";
+  EXPECT_EQ(stats.passes, 1u) << "the words answered on the first reading";
+  EXPECT_EQ(stats.groups, 2u) << "two words narrowed";
+  EXPECT_GE(stats.posting_lists, stats.groups) << "every word that narrowed opened a list";
+  EXPECT_GE(stats.posting_documents, stats.narrowed) << "narrowing never adds documents";
+  EXPECT_GE(stats.narrowed, stats.weighed);
+  EXPECT_GE(stats.weighed, stats.results);
+}
+
+TEST_F(GeoIndexTest, AskingForTheCountsChangesNoAnswer) {
+  GeoHit with[8], without[8];
+  GeoQueryStats stats{};
+  size_t counted = QueryStats(index, "Berliner Straße ", with, 8, &stats);
+  size_t plain = Query(index, "Berliner Straße ", without, 8);
+  ASSERT_EQ(counted, plain);
+  for (size_t i = 0; i < counted; ++i) EXPECT_EQ(with[i].document, without[i].document);
+}
+
+TEST_F(GeoIndexTest, ABeginningIsCountedByTheWordsItCovers) {
+  GeoHit hits[8];
+  GeoQueryStats typed{}, finished{};
+  ASSERT_GE(QueryStats(index, "Marienpla", hits, 8, &typed, /*prefix_last=*/true), 1u);
+  EXPECT_GT(typed.prefix_terms, 0u) << "the beginning reached into the dictionary";
+  EXPECT_EQ(typed.prefix_refused, 0u);
+
+  QueryStats(index, "Marienplatz ", hits, 8, &finished, /*prefix_last=*/false);
+  EXPECT_EQ(finished.prefix_terms, 0u) << "a finished word is looked up, not expanded";
+}
+
+TEST_F(GeoIndexTest, ADroppedPostcodeShowsAsASecondPass) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // 53111 is Bonn's code — a real word of this index, but no Berliner Straße
+  // carries it.  The first reading narrows to nothing and the code is dropped.
+  ASSERT_GE(QueryStats(index, "Berliner Straße 53111 ", hits, 8, &stats), 1u);
+  EXPECT_EQ(stats.passes, 2u);
+  EXPECT_EQ(stats.groups, 2u) << "the second reading kept the words and left the number";
+}
+
+TEST_F(GeoIndexTest, ACodeNoOneEverWroteCostsNoSecondPass) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // 99999 stands in no dictionary, so it narrows nothing and nothing is dropped
+  ASSERT_GE(QueryStats(index, "Berliner Straße 99999 ", hits, 8, &stats), 1u);
+  EXPECT_EQ(stats.passes, 1u);
+  EXPECT_EQ(stats.groups, 2u) << "the number found no reading and simply stood aside";
+}
+
+TEST_F(GeoIndexTest, RefusedArgumentsLeaveTheCountsAtZero) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  stats.results = 4711; // whatever stood here may not survive the call
+  EXPECT_EQ(QueryStats(index, "", hits, 8, &stats), 0u);
+  EXPECT_EQ(stats.results, 0u);
+  EXPECT_EQ(stats.passes, 0u) << "nothing was ever read";
+  EXPECT_EQ(stats.posting_lists, 0u);
+}
+
+TEST_F(GeoIndexTest, AQueryThatFindsNothingStillSaysWhereItLooked) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  EXPECT_EQ(QueryStats(index, "Marienplatz Warschau ", hits, 8, &stats), 0u);
+  EXPECT_GT(stats.passes, 0u);
+  EXPECT_GT(stats.posting_lists, 0u) << "both words exist; they only never met";
+  EXPECT_EQ(stats.narrowed, 0u);
+  EXPECT_EQ(stats.results, 0u);
 }
 
 // ---------------------------------------------------------------------------

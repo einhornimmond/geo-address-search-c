@@ -1,6 +1,6 @@
 /** @defgroup types Shared types
-  *  @brief Enumerations more than one module names — each in a file of its own,
-  *         so that a meaning is included where it is needed and never restated.
+  *  @brief Meanings more than one module names — each in a file of its own, so
+  *         that it is included where it is needed and never restated.
   */
 
 /** @defgroup geo_status Geo status
