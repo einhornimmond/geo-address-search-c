@@ -53,6 +53,7 @@ extern "C" {
 #include "meta_area_allocator.h"
 #include "name_collector.h"
 #include "parse_queue.h"
+#include "place_cache.h"
 #include "prefix_tree.h"
 #include "progress.h"
 #include "text_tokenize.h"

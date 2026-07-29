@@ -10,6 +10,7 @@
 #include "meta_area_allocator.h"
 #include "name_collector.h"
 #include "parse_queue.h"
+#include "place_cache.h"
 #include "progress.h"
 #include "text_tokenize.h"
 
@@ -18,10 +19,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include <zstd.h>
 
 #include "gradido_blockchain_core/utils/converter.h"
+#include "gradido_blockchain_core/utils/duration.h"
 #include "gradido_blockchain_core/utils/mono_timer.h"
 
 enum { BUFFER_POOL_CAPACITY = PARSE_QUEUE_CAPACITY + 4 };
@@ -74,10 +78,23 @@ typedef enum ParserPass {
   PARSER_PASS_HOUSES      /**< Hang the house numbers on the streets they name. */
 } ParserPass;
 
+/** How a pass gets its entries. */
+typedef enum PassSource {
+  PASS_FROM_DUMP, /**< Unpack the dump and parse it, as it has always been. */
+  PASS_FROM_CACHE /**< Read the binary cache each thread wrote for itself. */
+} PassSource;
+
 typedef struct ParserThreadArgs {
   ParseQueue *queue;
   BufferPool *pool;
   ParserPass pass;
+  PassSource source;             /**< Where this pass takes its entries from. */
+  unsigned thread;               /**< This thread's number, and its cache file's. */
+  const char *cache_directory;   /**< Where the cache lies, or NULL. */
+  PlaceCacheWriter *cache_write; /**< Set while the first pass fills the cache. */
+  grd_result cache_result;       /**< First failure of the cache, either way. */
+  _Atomic uint64_t cache_bytes;  /**< Cache bytes this thread has read, for the progress. */
+  _Atomic bool cache_finished;   /**< Set when this thread has read its last record. */
   MetaAreaAllocator *meta_alloc; /**< Private arena — the allocator is not thread-safe. */
   NameCollector words;           /**< Folded search words of this thread. */
   NameCollector display;         /**< The same places as they are written. */
@@ -164,11 +181,16 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
      name of the house itself.  So a numbered entry contributes what the third
      pass must recognise by rank, and its own name goes nowhere: a planet's
      worth of building names would swell the dictionary by twenty million
-     entries nobody ever reads. */
+     entries nobody ever reads.
+     What decides this is whether the entry becomes a document at all, not
+     whether it carries a number.  A house-level entry the dump gave no number
+     becomes neither document nor door, and its name is read by nobody either —
+     on the German dump alone that was 770 000 spellings and 18 MB of index
+     that nothing ever pointed at. */
   const PhotonString written[] = {
       place->own_name, place->city, place->postcode, place->street, place->house
   };
-  size_t first = place->house.data ? 1 : 0;
+  size_t first = place_becomes_document(place) ? 0 : 1;
   size_t count = place->house.data ? sizeof(written) / sizeof(written[0]) : 3;
   for (size_t i = first; i < count; ++i) {
     grd_result result = name_collector_add(&args->display, written[i].data, written[i].size);
@@ -279,6 +301,15 @@ static int process_place_callback(const PhotonPlace *place, void *user_data) {
   case PARSER_PASS_VOCABULARY:
     json_stats_count_place(&args->stats, place);
     collect_vocabulary(args, place);
+    /* The first pass is the only one that ever sees the whole dump, so it is
+       the only one that can write the cache down.  What it writes is what the
+       two passes behind it will read instead of unpacking the file again. */
+    if (args->cache_write) {
+      grd_result result = place_cache_write(args->cache_write, place);
+      if (result != GRD_SUCCESS && args->cache_result == GRD_SUCCESS) {
+        args->cache_result = result;
+      }
+    }
     break;
   case PARSER_PASS_DOCUMENTS:
     collect_document(args, place);
@@ -307,12 +338,73 @@ static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
   }
 }
 
+/**
+ * @brief Replay one thread's share of the cache instead of the dump.
+ *
+ *  The reader hands out a @ref PhotonPlace whose strings live in its own buffer
+ *  and last until the next record — the same promise the JSON parser makes, so
+ *  the callbacks below it cannot tell the two apart.
+ *
+ *  The first pass wants both halves, because the vocabulary is made of all of
+ *  them; the later two want one each.
+ */
+static void replay_cache(ParserThreadArgs *args) {
+  PlaceCacheKind kinds[2];
+  size_t count = 0;
+  switch (args->pass) {
+  case PARSER_PASS_VOCABULARY:
+    kinds[count++] = PLACE_CACHE_DOCUMENTS;
+    kinds[count++] = PLACE_CACHE_HOUSES;
+    break;
+  case PARSER_PASS_DOCUMENTS:
+    kinds[count++] = PLACE_CACHE_DOCUMENTS;
+    break;
+  case PARSER_PASS_HOUSES:
+    kinds[count++] = PLACE_CACHE_HOUSES;
+    break;
+  }
+
+  uint64_t behind = 0; /* the files before this one, so the progress only rises */
+  for (size_t k = 0; k < count; ++k) {
+    PlaceCacheReader reader;
+    grd_result result =
+        place_cache_reader_open(&reader, args->cache_directory, args->thread, kinds[k]);
+    if (result != GRD_SUCCESS) {
+      if (args->cache_result == GRD_SUCCESS) args->cache_result = result;
+      args->cache_finished = true;
+      return;
+    }
+    PhotonPlace place;
+    uint64_t seen = 0;
+    while (place_cache_read(&reader, &place)) {
+      process_place_callback(&place, args);
+      /* the progress is read from another thread; telling it every few
+         thousand records keeps the line moving without a lock per entry */
+      if (++seen % 4096 == 0) { args->cache_bytes = behind + reader.bytes; }
+    }
+    behind += reader.bytes;
+    args->cache_bytes = behind;
+    /* a walk that stopped short of the end read half a cache, and half a cache
+       builds an index nobody can tell from a whole one */
+    if (reader.broken && args->cache_result == GRD_SUCCESS) {
+      args->cache_result = GRD_ERROR_DECODE_FAILED;
+    }
+    place_cache_reader_close(&reader);
+  }
+  args->cache_finished = true;
+}
+
 static void *parser_thread(void *arg) {
   ParserThreadArgs *args = arg;
-  ParseBatch batch;
-  while (parse_queue_pop(args->queue, &batch)) {
-    process_batch(&batch, args);
-    buffer_pool_release(args->pool, batch.buffer);
+
+  if (args->source == PASS_FROM_CACHE) {
+    replay_cache(args);
+  } else {
+    ParseBatch batch;
+    while (parse_queue_pop(args->queue, &batch)) {
+      process_batch(&batch, args);
+      buffer_pool_release(args->pool, batch.buffer);
+    }
   }
   if (args->pass != PARSER_PASS_VOCABULARY) return NULL;
 
@@ -393,6 +485,20 @@ static void stream_dump(
 }
 
 /**
+ * @brief What the threads are still doing after the last entry was handed over.
+ *
+ *  The stream ends before the work does: the batches already queued are still
+ *  being parsed, and the first pass sorts everything it gathered before it lets
+ *  go.  On a planet that is a minute in which the bar stands at the end and
+ *  nothing else is said — which reads exactly like a program that has died.
+ *  So the wait gets a name of its own.
+ */
+static const char *settle_label(ParserPass pass) {
+  return pass == PARSER_PASS_VOCABULARY ? "Each thread sorts the words it gathered"
+                                        : "The parser threads finish their last batches";
+}
+
+/**
  * @brief Run one pass: threads up, dump through, threads joined.
  *
  *  The queue lives only as long as the pass — it closes once and cannot
@@ -401,6 +507,7 @@ static void stream_dump(
  */
 static void run_pass(
     ParserPass pass,
+    const char *label,
     FILE *fp,
     ZSTD_DStream *dstream,
     char *inputBuffer,
@@ -420,18 +527,87 @@ static void run_pass(
     args[i].queue = queue;
     args[i].pool = pool;
     args[i].pass = pass;
+    args[i].source = PASS_FROM_DUMP;
     if (pthread_create(&threads[i], NULL, parser_thread, &args[i]) != 0) {
       fatal(ERROR_MEMORY, "Failed to create parser thread %u.", i);
     }
   }
 
-  progress_init(totalBytes);
+  progress_begin(label, totalBytes);
   stream_dump(fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize, queue, pool);
-  printf("\n");
-  progress_finish();
+  progress_end();
 
+  progress_begin(settle_label(pass), 0);
   for (unsigned i = 0; i < thread_count; ++i) { pthread_join(threads[i], NULL); }
+  progress_end();
   parse_queue_destroy(queue);
+}
+
+/**
+ * @brief Run one pass out of the cache: no queue, no stream, one file per thread.
+ *
+ *  Every thread reads back what it wrote, so nothing has to be handed around
+ *  and nothing has to be locked.  What the main thread does meanwhile is watch:
+ *  the progress line is the sum of what the threads report, polled, because
+ *  there is no single stream whose position could stand for the whole any more.
+ *
+ *  @param[in] totalBytes  Bytes the cache files of this pass hold together.
+ */
+static void run_cached_pass(
+    ParserPass pass,
+    const char *label,
+    ParserThreadArgs *args,
+    pthread_t *threads,
+    unsigned thread_count,
+    uint64_t totalBytes
+) {
+  for (unsigned i = 0; i < thread_count; ++i) {
+    args[i].pass = pass;
+    args[i].source = PASS_FROM_CACHE;
+    args[i].cache_bytes = 0;
+    /* the mark of the pass before this one would end this one's watch at once:
+       the bar would fill for a tenth of a second and then stand still for a
+       minute, while the reading it was meant to show went on behind it */
+    args[i].cache_finished = false;
+    if (pthread_create(&threads[i], NULL, parser_thread, &args[i]) != 0) {
+      fatal(ERROR_MEMORY, "Failed to create parser thread %u.", i);
+    }
+  }
+
+  progress_begin(label, totalBytes);
+  for (bool running = true; running;) {
+    /* short enough that a pass which is over in a moment is not reported as
+       having taken the length of one look */
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = 20 * 1000 * 1000};
+    nanosleep(&pause, NULL);
+    uint64_t done = 0;
+    running = false;
+    for (unsigned i = 0; i < thread_count; ++i) {
+      done += args[i].cache_bytes;
+      if (!args[i].cache_finished) running = true;
+    }
+    progress_update(done);
+  }
+  progress_end();
+
+  /* the readers are through, but the first pass still has its sorting to do */
+  progress_begin(settle_label(pass), 0);
+  for (unsigned i = 0; i < thread_count; ++i) { pthread_join(threads[i], NULL); }
+  progress_end();
+}
+
+/**
+ * @brief How far a file being written has got.
+ *
+ *  The writer never comes back to say — it is inside one long call — so the
+ *  file itself is asked, from outside, while it grows.  What the operating
+ *  system reports lags behind by whatever still sits in the stream's buffer,
+ *  which for a progress line is close enough.
+ */
+static uint64_t file_bytes(void *user_data) {
+  struct stat status;
+  if (stat((const char *)user_data, &status) != 0) return 0;
+  return (uint64_t)status.st_size;
 }
 
 /**
@@ -443,13 +619,67 @@ static void run_pass(
  *  @param[in] dump_path           Photon JSONL dump, zstd compressed.
  *  @param[in] index_path          Destination for the index file.
  *  @param[in] parser_thread_count Parser threads, 1 … 10.
+ *  @param[in] cache_directory     Where a place cache may be kept, or NULL for
+ *                                 the plain three walks over the dump.
  *  @return 0 on success; failures end the program through fatal().
  */
 static int build_index(
-    const char *dump_path, const char *index_path, unsigned parser_thread_count
+    const char *dump_path,
+    const char *index_path,
+    unsigned parser_thread_count,
+    const char *cache_directory
 ) {
   grdu_mono_timer timeUsedAll;
   grdu_mono_timer_reset(&timeUsedAll);
+
+  /* --- Is there a cache, may there be one, and does the one that is there
+         still answer for this dump?  Three questions, and the answer to the
+         last decides whether even the first pass may skip the dump. --- */
+  PlaceCacheStamp stamp;
+  bool cache_write = false, cache_read = false;
+  if (cache_directory) {
+    uint64_t free_bytes = 0;
+    if (!place_cache_stamp_of(dump_path, parser_thread_count, &stamp)) {
+      fatal(ERROR_IO, "Cannot look at '%s'.", dump_path);
+    }
+
+    char freeBuffer[32], wantBuffer[32];
+    format_byte_units(wantBuffer, sizeof(wantBuffer), place_cache_wanted(stamp.dump_bytes), 2);
+
+    if (place_cache_is_current(cache_directory, &stamp)) {
+      cache_read = true;
+      printf(
+          "Place cache in '%s' answers for this dump — the dump stays packed.\n", cache_directory
+      );
+    } else {
+      /* A cache that does not answer for this dump is worth nothing and is in
+         the way of its successor — on a disk sized for one cache, leaving it
+         standing while measuring the room refuses the very partition that was
+         made for the job.  So it goes first, and the room is counted after. */
+      place_cache_discard(cache_directory, parser_thread_count);
+
+      PlaceCacheRoom room = place_cache_make_room(cache_directory, stamp.dump_bytes, &free_bytes);
+      format_byte_units(freeBuffer, sizeof(freeBuffer), free_bytes, 2);
+      if (room == PLACE_CACHE_ROOM_OK) {
+        cache_write = true;
+        printf(
+            "Place cache: writing to '%s' (%s free, %s asked for).\n"
+            "  The first pass fills it; the two behind it read it instead of the dump.\n",
+            cache_directory, freeBuffer, wantBuffer
+        );
+      } else if (room == PLACE_CACHE_ROOM_TOO_SMALL) {
+        printf(
+            "Place cache: '%s' holds %s and %s were asked for — walking the dump three "
+            "times instead.\n",
+            cache_directory, freeBuffer, wantBuffer
+        );
+      } else {
+        /* Not a matter of size, and not something to pass over quietly: a
+           mistyped path would otherwise look exactly like a full disk. */
+        fatal(ERROR_USAGE, "Place cache '%s': %s.", cache_directory, place_cache_room_reason(room));
+      }
+    }
+  }
 
   FILE *fp = fopen(dump_path, "rb");
   if (!fp) { fatal(ERROR_IO, "Cannot open '%s'.", dump_path); }
@@ -488,24 +718,80 @@ static int build_index(
       fatal(ERROR_MEMORY, "Failed to init collectors for parser thread %u.", i);
     }
     text_tokenizer_init(&parser_args[i].tokenizer);
+    parser_args[i].thread = i;
+    parser_args[i].cache_directory = cache_directory;
+    parser_args[i].cache_result = GRD_SUCCESS;
+  }
+
+  /* the writers outlive the first pass: they are closed and sealed after it */
+  PlaceCacheWriter cache_writers[10] = {0};
+  if (cache_write) {
+    for (unsigned i = 0; i < parser_thread_count; ++i) {
+      grd_result result = place_cache_writer_open(&cache_writers[i], cache_directory, i);
+      if (result != GRD_SUCCESS) {
+        fatal(
+            ERROR_IO, "Cannot open the place cache for thread %u (grd_result %d).", i, (int)result
+        );
+      }
+      parser_args[i].cache_write = &cache_writers[i];
+    }
   }
 
   fseek(fp, 0, SEEK_END);
   uint64_t totalBytes = ftell(fp);
 
-  grdu_mono_timer timeUsed;
-  char timeUsedBuffer[32];
-
   /* =======================================================================
    *  First pass: what words exist at all
    * ======================================================================= */
 
-  printf("Pass 1 of 3: gathering the vocabulary\n");
-  run_pass(
-      PARSER_PASS_VOCABULARY, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
-      &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
-  );
-  grdu_mono_timer_reset(&timeUsed);
+  /* What the later passes will read: the cache files as they now stand, or the
+     dump again.  Measured once, so every pass can show a progress line. */
+  uint64_t cache_bytes[2] = {0, 0};
+
+  printf("\n");
+  if (cache_read) {
+    cache_bytes[0] = place_cache_bytes(cache_directory, parser_thread_count, PLACE_CACHE_DOCUMENTS);
+    cache_bytes[1] = place_cache_bytes(cache_directory, parser_thread_count, PLACE_CACHE_HOUSES);
+    run_cached_pass(
+        PARSER_PASS_VOCABULARY, "Pass 1 of 3: gathering the vocabulary from the place cache",
+        parser_args, parser_threads, parser_thread_count, cache_bytes[0] + cache_bytes[1]
+    );
+  } else {
+    run_pass(
+        PARSER_PASS_VOCABULARY, "Pass 1 of 3: gathering the vocabulary from the dump", fp, dstream,
+        inputBuffer, inputSize, outputBuffer, outputSize, &buffer_pool, parser_args, parser_threads,
+        parser_thread_count, totalBytes
+    );
+  }
+
+  /* --- the cache is whole only once every file is closed, and only then may
+         it be sealed: the manifest is what the next run reads it by --- */
+  if (cache_write) {
+    for (unsigned i = 0; i < parser_thread_count; ++i) {
+      if (parser_args[i].cache_result != GRD_SUCCESS) {
+        fatal(
+            ERROR_IO, "Writing the place cache of thread %u failed (grd_result %d).", i,
+            (int)parser_args[i].cache_result
+        );
+      }
+      cache_bytes[0] += cache_writers[i].bytes[PLACE_CACHE_DOCUMENTS];
+      cache_bytes[1] += cache_writers[i].bytes[PLACE_CACHE_HOUSES];
+      place_cache_writer_close(&cache_writers[i]);
+      parser_args[i].cache_write = NULL;
+    }
+    if (place_cache_seal(cache_directory, &stamp) != GRD_SUCCESS) {
+      fatal(ERROR_IO, "Cannot seal the place cache in '%s'.", cache_directory);
+    }
+    cache_read = true; /* what was just written is what the next passes read */
+
+    char documentsBuffer[32], housesBuffer[32];
+    format_byte_units(documentsBuffer, sizeof(documentsBuffer), cache_bytes[0], 2);
+    format_byte_units(housesBuffer, sizeof(housesBuffer), cache_bytes[1], 2);
+    printf(
+        "\nPlace cache written: %s of documents, %s of house numbers.\n", documentsBuffer,
+        housesBuffer
+    );
+  }
 
   JsonStats stats = {0};
   for (unsigned i = 0; i < parser_thread_count; ++i) {
@@ -529,6 +815,7 @@ static int build_index(
     meta_allocated += meta_area_total_allocated(parser_args[i].meta_alloc);
   }
 
+  progress_begin("Joining the words and spellings of all threads", 0);
   NameSet words, display;
   grd_result merge_result =
       name_run_merge(&words, word_runs, parser_thread_count, parser_thread_count);
@@ -538,10 +825,10 @@ static int build_index(
   if (merge_result != GRD_SUCCESS) {
     fatal(ERROR_MEMORY, "Failed to merge the collected texts (grd_result %d).", (int)merge_result);
   }
+  progress_end();
 
   char nameBytesBuffer[32];
   format_byte_units(nameBytesBuffer, sizeof(nameBytesBuffer), meta_allocated, 2);
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   uint64_t inputs = 0, repeated = 0, dropped = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     inputs += parser_args[i].tokenizer.inputs;
@@ -551,7 +838,7 @@ static int build_index(
   printf("\nTexts: %" PRIu64 " offered, %" PRIu64 " skipped as repetitions\n", inputs, repeated);
   printf("Words: %zu seen, %zu distinct\n", words.total, words.count);
   printf("Spellings: %zu seen, %zu distinct\n", display.total, display.count);
-  printf("  text memory: %s, sorted and joined in %s\n", nameBytesBuffer, timeUsedBuffer);
+  printf("  text memory: %s\n", nameBytesBuffer);
   if (dropped) { printf("  dropped (no room): %" PRIu64 "\n", dropped); }
   char treeBytesBuffer[32];
   format_byte_units(
@@ -572,7 +859,7 @@ static int build_index(
    *  Second pass: places, and which words point at them
    * ======================================================================= */
 
-  printf("\nPass 2 of 3: documents and posting lists\n");
+  printf("\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].word_set = &words;
     parser_args[i].display_set = &display;
@@ -585,11 +872,18 @@ static int build_index(
     parser_args[i].tokenizer.repetition_filter = 0;
   }
 
-  run_pass(
-      PARSER_PASS_DOCUMENTS, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
-      &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
-  );
-  grdu_mono_timer_reset(&timeUsed);
+  if (cache_read) {
+    run_cached_pass(
+        PARSER_PASS_DOCUMENTS, "Pass 2 of 3: documents and posting lists, from the place cache",
+        parser_args, parser_threads, parser_thread_count, cache_bytes[0]
+    );
+  } else {
+    run_pass(
+        PARSER_PASS_DOCUMENTS, "Pass 2 of 3: documents and posting lists", fp, dstream, inputBuffer,
+        inputSize, outputBuffer, outputSize, &buffer_pool, parser_args, parser_threads,
+        parser_thread_count, totalBytes
+    );
+  }
 
   DocCollector *doc_collectors[10];
   uint64_t unknown_words = 0;
@@ -604,27 +898,27 @@ static int build_index(
     unknown_words += parser_args[i].documents.dropped_words;
   }
 
+  progress_begin("Joining the documents of all threads", 0);
   DocSet documents;
   grd_result doc_result =
       doc_collector_merge(&documents, doc_collectors, parser_thread_count, words.count);
   if (doc_result != GRD_SUCCESS) {
     fatal(ERROR_MEMORY, "Failed to join the documents (grd_result %d).", (int)doc_result);
   }
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  progress_end();
   printf(
-      "Documents: %zu from %zu segments, postings: %zu — joined in %s\n", documents.document_count,
-      documents.segment_count, documents.posting_count, timeUsedBuffer
+      "Documents: %zu from %zu segments, postings: %zu\n", documents.document_count,
+      documents.segment_count, documents.posting_count
   );
   if (unknown_words) {
     printf("  words without a rank: %" PRIu64 " (should be 0)\n", unknown_words);
   }
-  grdu_mono_timer_reset(&timeUsed);
 
   /* =======================================================================
    *  Third pass: the house numbers, onto the streets that now exist
    * ======================================================================= */
 
-  printf("\nPass 3 of 3: house numbers\n");
+  printf("\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].doc_set = &documents;
     parser_args[i].house_result = GRD_SUCCESS;
@@ -633,11 +927,27 @@ static int build_index(
     }
   }
 
-  run_pass(
-      PARSER_PASS_HOUSES, fp, dstream, inputBuffer, inputSize, outputBuffer, outputSize,
-      &buffer_pool, parser_args, parser_threads, parser_thread_count, totalBytes
-  );
-  grdu_mono_timer_reset(&timeUsed);
+  if (cache_read) {
+    run_cached_pass(
+        PARSER_PASS_HOUSES, "Pass 3 of 3: house numbers, from the place cache", parser_args,
+        parser_threads, parser_thread_count, cache_bytes[1]
+    );
+  } else {
+    run_pass(
+        PARSER_PASS_HOUSES, "Pass 3 of 3: house numbers", fp, dstream, inputBuffer, inputSize,
+        outputBuffer, outputSize, &buffer_pool, parser_args, parser_threads, parser_thread_count,
+        totalBytes
+    );
+  }
+
+  for (unsigned i = 0; i < parser_thread_count; ++i) {
+    if (parser_args[i].cache_result != GRD_SUCCESS) {
+      fatal(
+          ERROR_IO, "Reading the place cache of thread %u failed (grd_result %d).", i,
+          (int)parser_args[i].cache_result
+      );
+    }
+  }
 
   HouseCollector *house_collectors[10];
   for (unsigned i = 0; i < parser_thread_count; ++i) {
@@ -650,6 +960,7 @@ static int build_index(
     house_collectors[i] = &parser_args[i].houses;
   }
 
+  progress_begin("Ordering the house numbers onto their streets", 0);
   HouseSet houses;
   grd_result house_result = house_collector_merge(
       &houses, house_collectors, parser_thread_count, documents.document_count
@@ -657,11 +968,8 @@ static int build_index(
   if (house_result != GRD_SUCCESS) {
     fatal(ERROR_MEMORY, "Failed to join the houses (grd_result %d).", (int)house_result);
   }
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf(
-      "House numbers: %zu on %zu streets — ordered in %s\n", houses.house_count,
-      documents.street_count, timeUsedBuffer
-  );
+  progress_end();
+  printf("House numbers: %zu on %zu streets\n", houses.house_count, documents.street_count);
   if (houses.homeless) {
     printf(
         "  without a street in the index: %" PRIu64 " (%.2f %%)\n", houses.homeless,
@@ -683,19 +991,19 @@ static int build_index(
   if (houses.pointless) {
     printf("  without a coordinate of their own: %" PRIu64 "\n", houses.pointless);
   }
-  grdu_mono_timer_reset(&timeUsed);
 
   /* --- the result lies down in the shape it will be read in --- */
+  char writeLabel[256];
+  snprintf(writeLabel, sizeof(writeLabel), "Writing the index to '%s'", index_path);
+  progress_begin_polled(writeLabel, 0, file_bytes, (void *)index_path);
   grd_result write_result =
       geo_index_write(index_path, &words, &display, &documents, &houses, words.total);
   if (write_result != GRD_SUCCESS) {
     fatal(ERROR_IO, "Failed to write index '%s' (grd_result %d).", index_path, (int)write_result);
   }
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
-  printf("Index written to '%s' in %s\n", index_path, timeUsedBuffer);
+  progress_end();
 
-  printf("Cleaning up...\n");
-
+  progress_begin("Giving the memory back", 0);
   house_set_free(&houses);
   doc_set_free(&documents);
   name_set_free(&words);
@@ -712,9 +1020,23 @@ static int build_index(
   free(inputBuffer);
   ZSTD_freeDStream(dstream);
   fclose(fp);
+  progress_end();
 
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsedAll);
-  printf("All finished in %s.\n", timeUsedBuffer);
+  if (cache_read) {
+    char cacheBuffer[32];
+    format_byte_units(cacheBuffer, sizeof(cacheBuffer), cache_bytes[0] + cache_bytes[1], 2);
+    printf(
+        "Place cache kept in '%s' (%s) — the next build of this dump starts from it.\n",
+        cache_directory, cacheBuffer
+    );
+  }
+
+  /* the only total there is: every step above told what it alone had cost */
+  char totalBuffer[32];
+  grdu_duration_string(
+      totalBuffer, sizeof(totalBuffer), (grdu_duration)grdu_mono_timer_nanos(timeUsedAll), 2
+  );
+  printf("\nTotal time, everything together: %s\n", totalBuffer);
   return 0;
 }
 
@@ -889,14 +1211,12 @@ static int open_index(
 
     grdu_mono_timer queryTime;
     grdu_mono_timer_reset(&queryTime);
-    size_t count = geo_client_search_options(client, query, strlen(query), &options, found,
-                                             result_limit);
+    size_t count =
+        geo_client_search_options(client, query, strlen(query), &options, found, result_limit);
     grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
 
     printf("\n");
-    if (options.has_position) {
-      printf("From %.5f, %.5f:\n", options.latitude, options.longitude);
-    }
+    if (options.has_position) { printf("From %.5f, %.5f:\n", options.latitude, options.longitude); }
     print_results(found, count, query);
     print_query_stats(&stats, timeUsedBuffer, options.has_position);
   }
@@ -946,10 +1266,14 @@ static void print_usage(const char *program) {
   fatal(
       ERROR_USAGE,
       "Usage:\n"
-      "  %s <photon_dump.jsonl.zst> [index%s] [parser_threads: 1-10]\n"
+      "  %s <photon_dump.jsonl.zst> [index%s] [parser_threads: 1-10] [--cache=<dir>]\n"
       "      Builds the search index from the dump and writes it as a binary file.\n"
       "      Without a destination the name comes from the dump\n"
       "      (planet.jsonl.zst -> planet%s). parser_threads defaults to 4.\n"
+      "      --cache=<dir> keeps the entries the build needs as a binary file there,\n"
+      "      once, and reads them instead of unpacking the dump twice more. It needs\n"
+      "      twice the dump's size free and is passed over when it is not; what it\n"
+      "      leaves behind is read again by the next build of the same dump.\n"
       "\n"
       "  %s <index%s> [\"query\"] [max_results] [lat,lon]\n"
       "      Maps a finished index, shows its counts and — when a query is given —\n"
@@ -1012,8 +1336,53 @@ static GeoSearchOptions parse_position(const char *text) {
   return (GeoSearchOptions){.has_position = true, .latitude = latitude, .longitude = longitude};
 }
 
+/**
+ * @brief Take `--cache=<dir>` out of the argument list.
+ *
+ *  The rest of the command line is positional and reads its arguments by
+ *  count, so a named one has to be gone before the counting starts — it is
+ *  lifted out and the remaining arguments close the gap.  Both spellings are
+ *  accepted, `--cache=<dir>` and `--cache <dir>`.
+ *
+ *  @param[in,out] argc  Argument count, lowered by what was taken.
+ *  @param[in,out] argv  Argument vector, closed up.
+ *  @return The directory, or NULL when the option was not given.
+ */
+static const char *take_cache_option(int *argc, char *argv[]) {
+  static const char OPTION[] = "--cache";
+  const char *directory = NULL;
+
+  for (int i = 1; i < *argc;) {
+    const char *argument = argv[i];
+    size_t taken = 0;
+    if (strncmp(argument, OPTION, sizeof(OPTION) - 1) == 0) {
+      const char *rest = argument + sizeof(OPTION) - 1;
+      if (*rest == '=') {
+        directory = rest + 1;
+        taken = 1;
+      } else if (*rest == '\0') {
+        if (i + 1 >= *argc) { fatal(ERROR_USAGE, "%s wants a directory.", OPTION); }
+        directory = argv[i + 1];
+        taken = 2;
+      }
+    }
+    if (!taken) {
+      ++i;
+      continue;
+    }
+    for (int m = i; m + (int)taken < *argc; ++m) { argv[m] = argv[m + taken]; }
+    *argc -= (int)taken;
+  }
+  if (directory && !*directory) { fatal(ERROR_USAGE, "%s wants a directory.", OPTION); }
+  return directory;
+}
+
 int main(int argc, char *argv[]) {
+  const char *cache_directory = take_cache_option(&argc, argv);
   if (argc < 2 || argc > 5) { print_usage(argv[0]); }
+  if (cache_directory && has_extension(argv[1], GEO_INDEX_EXTENSION)) {
+    fatal(ERROR_USAGE, "--cache belongs to a build, not to a search.");
+  }
 
   const char *input = argv[1];
   if (has_extension(input, GEO_INDEX_EXTENSION)) {
@@ -1053,5 +1422,5 @@ int main(int argc, char *argv[]) {
   }
 
   grdu_mono_timer_init();
-  return build_index(input, index_path, parser_thread_count);
+  return build_index(input, index_path, parser_thread_count, cache_directory);
 }

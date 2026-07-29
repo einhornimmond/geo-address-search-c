@@ -36,6 +36,7 @@ const unit_tests = [_][]const u8{
     "test_meta_area_allocator",
     "test_name_collector",
     "test_parse_queue",
+    "test_place_cache",
     "test_prefix_tree",
     "test_text_tokenize",
 };
