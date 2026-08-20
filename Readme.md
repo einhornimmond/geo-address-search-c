@@ -1,11 +1,11 @@
-# parse_photon_jsonl_dump
+# geo-address-search-c
 
 Reads a compressed [Photon](https://github.com/komoot/photon) dump, builds a search index
 for postal addresses from it, and writes it as a binary file that later runs are merely
 mapped into memory.
 
 ```
-photon_dump.jsonl.zst  ──►  parse_photon_jsonl_dump  ──►  index.gdx  ──►  mmap
+photon_dump.jsonl.zst  ──►  geo_address_search_c  ──►  index.gdx  ──►  mmap
       24 GB                     three passes                              < 1 ms
 ```
 
@@ -37,8 +37,8 @@ a pond or a cycleway, and stays out.
 ## Usage
 
 ```sh
-parse_photon_jsonl_dump <photon_dump.jsonl.zst> [index.gdx] [parser_threads]
-parse_photon_jsonl_dump <index.gdx> ["query"] [max_results]
+geo_address_search_c <photon_dump.jsonl.zst> [index.gdx] [parser_threads]
+geo_address_search_c <index.gdx> ["query"] [max_results]
 ```
 
 The extension decides which way it goes: a first argument ending in `.gdx` is loaded,
@@ -55,14 +55,14 @@ anything else is built.
 
 ```sh
 # build: planet.jsonl.zst -> planet.gdx
-parse_photon_jsonl_dump planet.jsonl.zst 8
+geo_address_search_c planet.jsonl.zst 8
 
 # load and show the counts
-parse_photon_jsonl_dump planet.gdx
+geo_address_search_c planet.gdx
 
 # search — order does not matter, spellings and abbreviations are folded
-parse_photon_jsonl_dump planet.gdx "Berlin, Superstr. 8"
-parse_photon_jsonl_dump planet.gdx "15328 Bleyen" 5
+geo_address_search_c planet.gdx "Berlin, Superstr. 8"
+geo_address_search_c planet.gdx "15328 Bleyen" 5
 ```
 
 A query walks the same folding as the index did: `Superstr.`, `superstrasse` and
@@ -122,7 +122,7 @@ costs about a minute on the planet. Peak memory while building is around 13 GB.
 zig build -Dtarget=x86_64-linux-gnu
 ```
 
-The binary lands in `./zig-out/bin/parse_photon_jsonl_dump`, the client library in
+The binary lands in `./zig-out/bin/geo_address_search_c`, the client library in
 `./zig-out/lib/` and its header in `./zig-out/include/geoindex/client.h`.
 
 Only the library, as a shared object:

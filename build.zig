@@ -221,7 +221,7 @@ pub fn build(b: *std.Build) !void {
     //  Builder: turn a dump into an index file
     // =====================================================================
 
-    const exe = b.addExecutable(.{ .name = "parse_photon_jsonl_dump", .root_module = b.createModule(.{
+    const exe = b.addExecutable(.{ .name = "geo_address_search_c", .root_module = b.createModule(.{
         .target = target,
         .optimize = optimize,
     }) });

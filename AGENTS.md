@@ -1,4 +1,4 @@
-# AGENTS.md – Photon Jsonl Dump Converter
+# AGENTS.md – geo-address-search-c
 
 You edit only files in src folder.
 Keep files in third_party as they are and if there is a bug, find a workaround in our own code in src.
