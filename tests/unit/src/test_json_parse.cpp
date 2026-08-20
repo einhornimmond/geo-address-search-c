@@ -29,7 +29,9 @@ struct Parsed {
   uint8_t search_dropped = 0;
 };
 
-std::string Str(const PhotonString &s) { return s.data ? std::string(s.data, s.size) : std::string(); }
+std::string Str(const PhotonString &s) {
+  return s.data ? std::string(s.data, s.size) : std::string();
+}
 
 int Capture(const PhotonPlace *place, void *user) {
   auto *out = static_cast<std::vector<Parsed> *>(user);
@@ -293,9 +295,9 @@ TEST(JsonParseTypes, RecognisesEveryAddressTypeTheDumpUses) {
     const char *text;
     PhotonPlaceType expected;
   } cases[] = {
-      {"country", PHOTON_PLACE_TYPE_COUNTRY}, {"state", PHOTON_PLACE_TYPE_STATE},
-      {"county", PHOTON_PLACE_TYPE_COUNTY},   {"city", PHOTON_PLACE_TYPE_CITY},
-      {"street", PHOTON_PLACE_TYPE_STREET},   {"district", PHOTON_PLACE_TYPE_DISTRICT},
+      {"country", PHOTON_PLACE_TYPE_COUNTRY},   {"state", PHOTON_PLACE_TYPE_STATE},
+      {"county", PHOTON_PLACE_TYPE_COUNTY},     {"city", PHOTON_PLACE_TYPE_CITY},
+      {"street", PHOTON_PLACE_TYPE_STREET},     {"district", PHOTON_PLACE_TYPE_DISTRICT},
       {"locality", PHOTON_PLACE_TYPE_LOCALITY},
   };
   for (const auto &c : cases) {

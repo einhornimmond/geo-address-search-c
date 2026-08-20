@@ -19,7 +19,9 @@ namespace {
    to be gathered somewhere both it and the test can reach. */
 std::vector<std::string> g_lines;
 
-void Collect(const char *line, size_t len) { g_lines.emplace_back(line, len); }
+void Collect(const char *line, size_t len) {
+  g_lines.emplace_back(line, len);
+}
 
 class LineBufferTest : public ::testing::Test {
 protected:
@@ -28,9 +30,13 @@ protected:
     lb = line_buffer_create(1024);
     ASSERT_NE(lb, nullptr);
   }
-  void TearDown() override { line_buffer_destroy(lb); }
+  void TearDown() override {
+    line_buffer_destroy(lb);
+  }
 
-  void Append(const std::string &text) { line_buffer_append(lb, text.c_str(), text.size()); }
+  void Append(const std::string &text) {
+    line_buffer_append(lb, text.c_str(), text.size());
+  }
 
   LineBuffer *lb = nullptr;
 };

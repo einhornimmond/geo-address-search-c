@@ -60,7 +60,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "gradido_blockchain_core/result.h"
+#include "hostmem/result.h"
 #include "parser/json_parse.h"
 
 /** Eight bytes opening every cache file. */
@@ -154,10 +154,10 @@ bool place_cache_is_current(const char *directory, const PlaceCacheStamp *want);
  *
  *  @param[in] directory  Where the files lie.
  *  @param[in] stamp      Stamp from place_cache_stamp_of().
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, GRD_ERROR_OUT_OF_MEMORY or
- *          GRD_ERROR_ENCODE_FAILED.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY or
+ *          HOSTMEM_ERROR_ENCODE_FAILED.
  */
-grd_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
+hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
 
 /**
  * @brief Remove the manifest and every file of a cache.
@@ -234,10 +234,10 @@ const char *place_cache_room_reason(PlaceCacheRoom room);
  *  @param[out] writer     Receives the open pair; zeroed on failure.
  *  @param[in]  directory  Where the files are laid down.
  *  @param[in]  thread     Thread number, part of the file name.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, GRD_ERROR_OUT_OF_MEMORY, or
- *          GRD_ERROR_ENCODE_FAILED when a file could not be opened.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY, or
+ *          HOSTMEM_ERROR_ENCODE_FAILED when a file could not be opened.
  */
-grd_result place_cache_writer_open(
+hostmem_result place_cache_writer_open(
     PlaceCacheWriter *writer, const char *directory, unsigned thread
 );
 
@@ -249,9 +249,9 @@ grd_result place_cache_writer_open(
  *
  *  @param[in,out] writer  Open writer.
  *  @param[in]     place   Entry as the parser handed it over.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_ENCODE_FAILED.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_ENCODE_FAILED.
  */
-grd_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
+hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
 
 /** @brief Flush and close both files, leaving them on disk. Safe with NULL. */
 void place_cache_writer_close(PlaceCacheWriter *writer);
@@ -268,11 +268,11 @@ void place_cache_writer_remove(PlaceCacheWriter *writer);
  *  @param[in]  directory  Where the files were laid down.
  *  @param[in]  thread     Thread number the file was written under.
  *  @param[in]  kind       Which half to read.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, GRD_ERROR_OUT_OF_MEMORY,
- *          GRD_ERROR_DECODE_FAILED when the file cannot be opened, or
- *          GRD_ERROR_INVALID_PARAM when it was not written by this build.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY,
+ *          HOSTMEM_ERROR_DECODE_FAILED when the file cannot be opened, or
+ *          HOSTMEM_ERROR_INVALID_PARAM when it was not written by this build.
  */
-grd_result place_cache_reader_open(
+hostmem_result place_cache_reader_open(
     PlaceCacheReader *reader, const char *directory, unsigned thread, PlaceCacheKind kind
 );
 

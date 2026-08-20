@@ -6,7 +6,7 @@
 #include "types/geo_place_kind.h"
 #include "types/photon_place_type.h"
 
-#include "gradido_blockchain_core/utils/converter.h"
+#include "hostmem/converter.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -34,15 +34,15 @@ struct GeoClient {
 };
 
 /** Carry an internal result code out to the caller's vocabulary. */
-static GeoStatus status_of(grd_result result) {
+static GeoStatus status_of(hostmem_result result) {
   switch (result) {
-  case GRD_SUCCESS:
+  case HOSTMEM_SUCCESS:
     return GEO_OK;
-  case GRD_ERROR_NULL_POINTER:
+  case HOSTMEM_ERROR_NULL_POINTER:
     return GEO_ERROR_ARGUMENT;
-  case GRD_ERROR_DECODE_FAILED:
+  case HOSTMEM_ERROR_DECODE_FAILED:
     return GEO_ERROR_FILE;
-  case GRD_ERROR_OUT_OF_MEMORY:
+  case HOSTMEM_ERROR_OUT_OF_MEMORY:
     return GEO_ERROR_MEMORY;
   default:
     return GEO_ERROR_FORMAT;
@@ -60,8 +60,8 @@ GeoStatus geo_client_open(GeoClient **out, const char *path) {
   GeoClient *client = calloc(1, sizeof(*client));
   if (!client) return GEO_ERROR_MEMORY;
 
-  grd_result result = geo_index_open(&client->index, path);
-  if (result != GRD_SUCCESS) {
+  hostmem_result result = geo_index_open(&client->index, path);
+  if (result != HOSTMEM_SUCCESS) {
     free(client);
     return status_of(result);
   }
@@ -257,14 +257,14 @@ static void json_string(JsonWriter *writer, const char *text, size_t size) {
 /**
  * @brief Write a count as a JSON number.
  *
- *  The digits come from the core's converter — the same LR-algorithm this file
+ *  The digits come from hostmem's converter — the same LR-algorithm this file
  *  used to carry a copy of, and one copy of it is enough.  Its size step tops
  *  out at nineteen digits, which every field written here stays far below: a
  *  kind, a weight, a count of words.
  */
 static void json_uint(JsonWriter *writer, uint64_t value) {
   char text[24]; /* nineteen digits, the terminator, and room to spare */
-  size_t digits = grdu_uint64_to_string(text, sizeof(text), value);
+  size_t digits = hostmem_uint64_to_string(text, (uint8_t)sizeof(text), value);
   json_put(writer, text, digits);
 }
 
@@ -287,7 +287,7 @@ static void json_degrees(JsonWriter *writer, double value) {
   size_t cursor = 0;
   if (negative && scaled) text[cursor++] = '-';
 
-  cursor += grdu_uint64_to_string(&text[cursor], sizeof(text) - cursor, whole);
+  cursor += hostmem_uint64_to_string(&text[cursor], (uint8_t)(sizeof(text) - cursor), whole);
 
   text[cursor++] = '.'; /* over the terminator the converter just wrote */
   for (size_t i = 0; i < 7; ++i) { text[cursor + i] = '0'; } /* keep the leading zeros */
@@ -295,7 +295,7 @@ static void json_degrees(JsonWriter *writer, double value) {
      fraction leaves those zeros standing in front of it.  Zero itself is the
      one value it writes as a single digit at the front instead — and a zero
      fraction is already spelled by the seven that stand there. */
-  if (fraction) { grdu_uint64_to_string_known_string_size(&text[cursor], fraction, 7); }
+  if (fraction) { hostmem_uint64_to_string_known_string_size(&text[cursor], fraction, 7); }
   cursor += 7;
 
   json_put(writer, text, cursor);

@@ -98,8 +98,7 @@ TEST_F(TextTokenizeTest, SharpSHasOneReadingOnly) {
 
 TEST_F(TextTokenizeTest, SplitsOnEverythingThatIsNoLetterOrDigit) {
   EXPECT_EQ(
-      WholeWords(&tok, "Sankt Peter-Ording"),
-      (std::vector<std::string>{"sankt", "peter", "ording"})
+      WholeWords(&tok, "Sankt Peter-Ording"), (std::vector<std::string>{"sankt", "peter", "ording"})
   );
   EXPECT_EQ(WholeWords(&tok, "a,b/c.d e"), (std::vector<std::string>{"a", "b", "c", "d", "e"}));
 }

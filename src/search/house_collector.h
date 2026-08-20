@@ -30,8 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "gradido_blockchain_core/result.h"
-#include "gradido_blockchain_core/utils/bucket_vector.h"
+#include "hostmem/result.h"
+#include "hostmem/bucket_vector.h"
 #include "search/doc_collector.h"
 
 /** A house as it is gathered, still knowing which street it named. */
@@ -41,7 +41,7 @@ typedef struct HouseEntry {
 } HouseEntry;
 
 /** Houses of one thread — 2048 per bucket, 24 KiB. */
-GRDU_BVEC_DECLARE(house_vec, HouseEntry, 11, extern)
+HOSTMEM_BVEC_DECLARE(house_vec, HouseEntry, 11, extern)
 
 /** One thread's harvest of the third pass. */
 typedef struct HouseCollector {
@@ -60,9 +60,9 @@ typedef struct HouseCollector {
  * @brief Prepare an empty collector.
  *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return GRD_SUCCESS or GRD_ERROR_NULL_POINTER.
+ *  @return HOSTMEM_SUCCESS or HOSTMEM_ERROR_NULL_POINTER.
  */
-grd_result house_collector_init(HouseCollector *collector);
+hostmem_result house_collector_init(HouseCollector *collector);
 
 /** @brief Release the vector. Safe to call with NULL. */
 void house_collector_free(HouseCollector *collector);
@@ -80,9 +80,9 @@ void house_collector_free(HouseCollector *collector);
  *  @param[in]     lat_e7       The house's own latitude, or 0 when it has none.
  *  @param[in]     lon_e7       Its longitude.
  *  @param[in]     has_point    Whether the house brought a coordinate at all.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_OUT_OF_MEMORY.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
  */
-grd_result house_collector_add(
+hostmem_result house_collector_add(
     HouseCollector *collector,
     uint32_t document,
     const GeoDocument *street,
@@ -128,12 +128,12 @@ typedef struct HouseSet {
  *  @param[in]  collectors       Array of @p collector_count collector pointers.
  *  @param[in]  collector_count  Number of collectors.
  *  @param[in]  document_count   Documents the offsets must cover.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument, or
- *          GRD_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
  *
  *  @whisper The numbers line up along their street, and the street knows where they start
  */
-grd_result house_collector_merge(
+hostmem_result house_collector_merge(
     HouseSet *out, HouseCollector *const *collectors, size_t collector_count, size_t document_count
 );
 

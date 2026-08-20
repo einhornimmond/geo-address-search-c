@@ -8,23 +8,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-GRDU_BVEC_DEFINE(geo_document_vec, GeoDocument, 9, )
-GRDU_BVEC_DEFINE(geo_word_vec, uint32_t, 12, )
-GRDU_BVEC_DEFINE(geo_start_vec, uint32_t, 12, )
+HOSTMEM_BVEC_DEFINE(geo_document_vec, GeoDocument, 9, )
+HOSTMEM_BVEC_DEFINE(geo_word_vec, uint32_t, 12, )
+HOSTMEM_BVEC_DEFINE(geo_start_vec, uint32_t, 12, )
 
 /* =========================================================================
  *  Per-thread collecting
  * ========================================================================= */
 
-grd_result doc_collector_init(DocCollector *collector) {
-  if (!collector) return GRD_ERROR_NULL_POINTER;
+hostmem_result doc_collector_init(DocCollector *collector) {
+  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
   collector->dropped_words = 0;
   collector->dropped_doubles = 0;
   collector->seen_count = 0;
-  grd_result result = geo_document_vec_init(&collector->documents, NULL);
-  if (result != GRD_SUCCESS) return result;
+  hostmem_result result = geo_document_vec_init(&collector->documents, NULL);
+  if (result != HOSTMEM_SUCCESS) return result;
   result = geo_word_vec_init(&collector->words, NULL);
-  if (result != GRD_SUCCESS) return result;
+  if (result != HOSTMEM_SUCCESS) return result;
   return geo_start_vec_init(&collector->starts, NULL);
 }
 
@@ -36,32 +36,32 @@ void doc_collector_free(DocCollector *collector) {
   collector->dropped_words = 0;
 }
 
-grd_result doc_collector_add_document(
+hostmem_result doc_collector_add_document(
     DocCollector *collector, const GeoDocument *document, uint32_t *out_number
 ) {
-  if (!collector || !document || !out_number) return GRD_ERROR_NULL_POINTER;
+  if (!collector || !document || !out_number) return HOSTMEM_ERROR_NULL_POINTER;
   size_t number = geo_document_vec_size(&collector->documents);
 
   /* the words of this document begin where the words so far end */
-  grd_result result =
+  hostmem_result result =
       geo_start_vec_push(&collector->starts, (uint32_t)geo_word_vec_size(&collector->words));
-  if (result != GRD_SUCCESS) return result;
+  if (result != HOSTMEM_SUCCESS) return result;
   result = geo_document_vec_push_ptr(&collector->documents, document);
-  if (result != GRD_SUCCESS) return result;
+  if (result != HOSTMEM_SUCCESS) return result;
 
   collector->seen_count = 0; /* a fresh document has heard nothing yet */
   *out_number = (uint32_t)number;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
-grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
-  if (!collector) return GRD_ERROR_NULL_POINTER;
+hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
+  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
 
   /* --- the same word, still the same document: it has already been noted --- */
   for (size_t s = 0; s < collector->seen_count; ++s) {
     if (collector->seen[s] == word) {
       ++collector->dropped_doubles;
-      return GRD_SUCCESS;
+      return HOSTMEM_SUCCESS;
     }
   }
   if (collector->seen_count < POSTING_RUN_MAX) collector->seen[collector->seen_count++] = word;
@@ -174,25 +174,25 @@ static WordRange word_range_of(
   return range;
 }
 
-grd_result doc_collector_merge(
+hostmem_result doc_collector_merge(
     DocSet *out, DocCollector *const *collectors, size_t collector_count, size_t word_count
 ) {
-  if (!out) return GRD_ERROR_NULL_POINTER;
+  if (!out) return HOSTMEM_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
-  if (collector_count && !collectors) return GRD_ERROR_NULL_POINTER;
+  if (collector_count && !collectors) return HOSTMEM_ERROR_NULL_POINTER;
   out->word_count = word_count;
 
   size_t record_count = 0;
   for (size_t c = 0; c < collector_count; ++c) {
-    if (!collectors[c]) return GRD_ERROR_NULL_POINTER;
+    if (!collectors[c]) return HOSTMEM_ERROR_NULL_POINTER;
     record_count += doc_collector_document_count(collectors[c]);
   }
-  if (record_count > UINT32_MAX) return GRD_ERROR_ARITHMETIC_OVERFLOW;
-  if (collector_count > 64) return GRD_ERROR_INVALID_PARAM;
+  if (record_count > UINT32_MAX) return HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
+  if (collector_count > 64) return HOSTMEM_ERROR_INVALID_PARAM;
   out->segment_count = record_count;
   if (!record_count) {
     out->posting_offsets = calloc(word_count + 1, sizeof(uint32_t));
-    return out->posting_offsets ? GRD_SUCCESS : GRD_ERROR_OUT_OF_MEMORY;
+    return out->posting_offsets ? HOSTMEM_SUCCESS : HOSTMEM_ERROR_OUT_OF_MEMORY;
   }
 
   /* --- the records move into one array, thread after thread --- */
@@ -421,7 +421,7 @@ grd_result doc_collector_merge(
   out->posting_count = posting_count;
   out->streets = streets;
   out->street_count = street_count;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 
 out_of_memory:
   free(records);
@@ -434,7 +434,7 @@ out_of_memory:
   free(out->postings);
   free(out->posting_offsets);
   memset(out, 0, sizeof(*out));
-  return GRD_ERROR_OUT_OF_MEMORY;
+  return HOSTMEM_ERROR_OUT_OF_MEMORY;
 }
 
 /**

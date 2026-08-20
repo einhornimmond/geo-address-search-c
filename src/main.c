@@ -1,7 +1,6 @@
 #include "foundation/error.h"
 #include "foundation/format.h"
 #include "foundation/line_buffer.h"
-#include "foundation/meta_area_allocator.h"
 #include "foundation/progress.h"
 #include "parser/json_parse.h"
 #include "parser/json_stats.h"
@@ -14,6 +13,8 @@
 #include "search/name_collector.h"
 #include "search/text_tokenize.h"
 
+#include "hostmem/multi_arena.h"
+
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -24,9 +25,9 @@
 
 #include <zstd.h>
 
-#include "gradido_blockchain_core/utils/converter.h"
-#include "gradido_blockchain_core/utils/duration.h"
-#include "gradido_blockchain_core/utils/mono_timer.h"
+#include "hostmem/converter.h"
+#include "hostmem/duration.h"
+#include "hostmem/mono_timer.h"
 
 enum { BUFFER_POOL_CAPACITY = PARSE_QUEUE_CAPACITY + 4 };
 
@@ -88,27 +89,27 @@ typedef struct ParserThreadArgs {
   ParseQueue *queue;
   BufferPool *pool;
   ParserPass pass;
-  PassSource source;             /**< Where this pass takes its entries from. */
-  unsigned thread;               /**< This thread's number, and its cache file's. */
-  const char *cache_directory;   /**< Where the cache lies, or NULL. */
-  PlaceCacheWriter *cache_write; /**< Set while the first pass fills the cache. */
-  grd_result cache_result;       /**< First failure of the cache, either way. */
-  _Atomic uint64_t cache_bytes;  /**< Cache bytes this thread has read, for the progress. */
-  _Atomic bool cache_finished;   /**< Set when this thread has read its last record. */
-  MetaAreaAllocator *meta_alloc; /**< Private arena — the allocator is not thread-safe. */
-  NameCollector words;           /**< Folded search words of this thread. */
-  NameCollector display;         /**< The same places as they are written. */
-  TextTokenizer tokenizer;       /**< Folding scratch space, one per thread. */
-  NameRun word_run;              /**< Words, sorted once the queue ran dry. */
-  NameRun display_run;           /**< Spellings, likewise. */
-  grd_result finish_result;      /**< Outcome of the thread's own sorting pass. */
-  const NameSet *word_set;       /**< Second pass: where a word finds its rank. */
-  const NameSet *display_set;    /**< Second pass: where a spelling finds its rank. */
-  DocCollector documents;        /**< Second pass: what this thread found. */
-  grd_result document_result;    /**< First failure while collecting documents. */
-  const DocSet *doc_set;         /**< Third pass: where a street became a document. */
-  HouseCollector houses;         /**< Third pass: the numbers this thread met. */
-  grd_result house_result;       /**< First failure while collecting houses. */
+  PassSource source;              /**< Where this pass takes its entries from. */
+  unsigned thread;                /**< This thread's number, and its cache file's. */
+  const char *cache_directory;    /**< Where the cache lies, or NULL. */
+  PlaceCacheWriter *cache_write;  /**< Set while the first pass fills the cache. */
+  hostmem_result cache_result;    /**< First failure of the cache, either way. */
+  _Atomic uint64_t cache_bytes;   /**< Cache bytes this thread has read, for the progress. */
+  _Atomic bool cache_finished;    /**< Set when this thread has read its last record. */
+  hostmem_multi_arena *names;     /**< Private arena chain — a chain is not thread-safe. */
+  NameCollector words;            /**< Folded search words of this thread. */
+  NameCollector display;          /**< The same places as they are written. */
+  TextTokenizer tokenizer;        /**< Folding scratch space, one per thread. */
+  NameRun word_run;               /**< Words, sorted once the queue ran dry. */
+  NameRun display_run;            /**< Spellings, likewise. */
+  hostmem_result finish_result;   /**< Outcome of the thread's own sorting pass. */
+  const NameSet *word_set;        /**< Second pass: where a word finds its rank. */
+  const NameSet *display_set;     /**< Second pass: where a spelling finds its rank. */
+  DocCollector documents;         /**< Second pass: what this thread found. */
+  hostmem_result document_result; /**< First failure while collecting documents. */
+  const DocSet *doc_set;          /**< Third pass: where a street became a document. */
+  HouseCollector houses;          /**< Third pass: the numbers this thread met. */
+  hostmem_result house_result;    /**< First failure while collecting houses. */
   JsonStats stats;
 } ParserThreadArgs;
 
@@ -160,9 +161,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
     size_t tokens = text_tokenize(&args->tokenizer, place->search[i].data, place->search[i].size);
     for (size_t t = 0; t < tokens; ++t) {
       const TextToken *token = &args->tokenizer.tokens[t];
-      grd_result result = name_collector_add(&args->words, token->data, token->size);
-      if (result != GRD_SUCCESS) {
-        fatal(ERROR_MEMORY, "Failed to keep search term (grd_result %d).", (int)result);
+      hostmem_result result = name_collector_add(&args->words, token->data, token->size);
+      if (result != HOSTMEM_SUCCESS) {
+        fatal(ERROR_MEMORY, "Failed to keep search term (hostmem_result %d).", (int)result);
       }
     }
   }
@@ -171,9 +172,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
   char cell[GEO_CELL_TOKEN_SIZE];
   size_t cell_size = place_cell_token(cell, place);
   if (cell_size) {
-    grd_result result = name_collector_add(&args->words, cell, cell_size);
-    if (result != GRD_SUCCESS) {
-      fatal(ERROR_MEMORY, "Failed to keep cell word (grd_result %d).", (int)result);
+    hostmem_result result = name_collector_add(&args->words, cell, cell_size);
+    if (result != HOSTMEM_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep cell word (hostmem_result %d).", (int)result);
     }
   }
 
@@ -193,9 +194,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
   size_t first = place_becomes_document(place) ? 0 : 1;
   size_t count = place->house.data ? sizeof(written) / sizeof(written[0]) : 3;
   for (size_t i = first; i < count; ++i) {
-    grd_result result = name_collector_add(&args->display, written[i].data, written[i].size);
-    if (result != GRD_SUCCESS) {
-      fatal(ERROR_MEMORY, "Failed to keep display text (grd_result %d).", (int)result);
+    hostmem_result result = name_collector_add(&args->display, written[i].data, written[i].size);
+    if (result != HOSTMEM_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep display text (hostmem_result %d).", (int)result);
     }
   }
 }
@@ -231,11 +232,13 @@ static void collect_house(ParserThreadArgs *args, const PhotonPlace *place) {
   if (relaxed == 2) ++args->houses.recovered_postcode;
   if (relaxed == 3) ++args->houses.recovered_nearest;
 
-  grd_result result = house_collector_add(
+  hostmem_result result = house_collector_add(
       &args->houses, document, &args->doc_set->documents[document], number, place->lat_e7,
       place->lon_e7, place->has_point
   );
-  if (result != GRD_SUCCESS && args->house_result == GRD_SUCCESS) { args->house_result = result; }
+  if (result != HOSTMEM_SUCCESS && args->house_result == HOSTMEM_SUCCESS) {
+    args->house_result = result;
+  }
 }
 
 /** Second pass: the entry becomes a document, and its words point at it. */
@@ -256,9 +259,9 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   };
 
   uint32_t number = 0;
-  grd_result result = doc_collector_add_document(&args->documents, &document, &number);
-  if (result != GRD_SUCCESS) {
-    if (args->document_result == GRD_SUCCESS) args->document_result = result;
+  hostmem_result result = doc_collector_add_document(&args->documents, &document, &number);
+  if (result != HOSTMEM_SUCCESS) {
+    if (args->document_result == HOSTMEM_SUCCESS) args->document_result = result;
     return;
   }
 
@@ -272,7 +275,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
         continue;
       }
       result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
-      if (result != GRD_SUCCESS && args->document_result == GRD_SUCCESS) {
+      if (result != HOSTMEM_SUCCESS && args->document_result == HOSTMEM_SUCCESS) {
         args->document_result = result;
         return;
       }
@@ -286,7 +289,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
     size_t rank = 0;
     if (name_set_rank(args->word_set, cell, cell_size, &rank)) {
       result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
-      if (result != GRD_SUCCESS && args->document_result == GRD_SUCCESS) {
+      if (result != HOSTMEM_SUCCESS && args->document_result == HOSTMEM_SUCCESS) {
         args->document_result = result;
       }
     } else {
@@ -305,8 +308,8 @@ static int process_place_callback(const PhotonPlace *place, void *user_data) {
        the only one that can write the cache down.  What it writes is what the
        two passes behind it will read instead of unpacking the file again. */
     if (args->cache_write) {
-      grd_result result = place_cache_write(args->cache_write, place);
-      if (result != GRD_SUCCESS && args->cache_result == GRD_SUCCESS) {
+      hostmem_result result = place_cache_write(args->cache_write, place);
+      if (result != HOSTMEM_SUCCESS && args->cache_result == HOSTMEM_SUCCESS) {
         args->cache_result = result;
       }
     }
@@ -367,10 +370,10 @@ static void replay_cache(ParserThreadArgs *args) {
   uint64_t behind = 0; /* the files before this one, so the progress only rises */
   for (size_t k = 0; k < count; ++k) {
     PlaceCacheReader reader;
-    grd_result result =
+    hostmem_result result =
         place_cache_reader_open(&reader, args->cache_directory, args->thread, kinds[k]);
-    if (result != GRD_SUCCESS) {
-      if (args->cache_result == GRD_SUCCESS) args->cache_result = result;
+    if (result != HOSTMEM_SUCCESS) {
+      if (args->cache_result == HOSTMEM_SUCCESS) args->cache_result = result;
       args->cache_finished = true;
       return;
     }
@@ -386,8 +389,8 @@ static void replay_cache(ParserThreadArgs *args) {
     args->cache_bytes = behind;
     /* a walk that stopped short of the end read half a cache, and half a cache
        builds an index nobody can tell from a whole one */
-    if (reader.broken && args->cache_result == GRD_SUCCESS) {
-      args->cache_result = GRD_ERROR_DECODE_FAILED;
+    if (reader.broken && args->cache_result == HOSTMEM_SUCCESS) {
+      args->cache_result = HOSTMEM_ERROR_DECODE_FAILED;
     }
     place_cache_reader_close(&reader);
   }
@@ -411,7 +414,7 @@ static void *parser_thread(void *arg) {
   /* the queue has run dry — sort what this thread gathered while the others
      do the same, so the join finds nothing but ordered runs */
   args->finish_result = name_collector_finish(&args->words, &args->word_run);
-  if (args->finish_result == GRD_SUCCESS) {
+  if (args->finish_result == HOSTMEM_SUCCESS) {
     args->finish_result = name_collector_finish(&args->display, &args->display_run);
   }
   return NULL;
@@ -629,8 +632,8 @@ static int build_index(
     unsigned parser_thread_count,
     const char *cache_directory
 ) {
-  grdu_mono_timer timeUsedAll;
-  grdu_mono_timer_reset(&timeUsedAll);
+  hostmem_mono_timer timeUsedAll;
+  hostmem_mono_timer_reset(&timeUsedAll);
 
   /* --- Is there a cache, may there be one, and does the one that is there
          still answer for this dump?  Three questions, and the answer to the
@@ -707,30 +710,32 @@ static int build_index(
 
   buffer_pool_init(&buffer_pool, outputSize * 2);
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    /* One arena per thread — meta_area_alloc() bumps without a lock, so it must
-       not be shared. The arenas outlive the threads: they hold the text bytes. */
-    parser_args[i].meta_alloc = meta_area_allocator_create();
-    if (!parser_args[i].meta_alloc) {
-      fatal(ERROR_MEMORY, "Failed to create meta area allocator for parser thread %u.", i);
+    /* One chain per thread — a multi arena bumps without a lock, so it must not be
+       shared. The chains outlive the threads: they hold the text bytes. NULL for both
+       allocators leaves the descriptor and the bookkeeping to malloc. */
+    parser_args[i].names = hostmem_multi_arena_create(NAME_ARENA_CAPACITY, 0, NULL, NULL);
+    if (!parser_args[i].names) {
+      fatal(ERROR_MEMORY, "Failed to create the name arena for parser thread %u.", i);
     }
-    if (name_collector_init(&parser_args[i].words, parser_args[i].meta_alloc) != GRD_SUCCESS ||
-        name_collector_init(&parser_args[i].display, parser_args[i].meta_alloc) != GRD_SUCCESS) {
+    if (name_collector_init(&parser_args[i].words, parser_args[i].names) != HOSTMEM_SUCCESS ||
+        name_collector_init(&parser_args[i].display, parser_args[i].names) != HOSTMEM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to init collectors for parser thread %u.", i);
     }
     text_tokenizer_init(&parser_args[i].tokenizer);
     parser_args[i].thread = i;
     parser_args[i].cache_directory = cache_directory;
-    parser_args[i].cache_result = GRD_SUCCESS;
+    parser_args[i].cache_result = HOSTMEM_SUCCESS;
   }
 
   /* the writers outlive the first pass: they are closed and sealed after it */
   PlaceCacheWriter cache_writers[10] = {0};
   if (cache_write) {
     for (unsigned i = 0; i < parser_thread_count; ++i) {
-      grd_result result = place_cache_writer_open(&cache_writers[i], cache_directory, i);
-      if (result != GRD_SUCCESS) {
+      hostmem_result result = place_cache_writer_open(&cache_writers[i], cache_directory, i);
+      if (result != HOSTMEM_SUCCESS) {
         fatal(
-            ERROR_IO, "Cannot open the place cache for thread %u (grd_result %d).", i, (int)result
+            ERROR_IO, "Cannot open the place cache for thread %u (hostmem_result %d).", i,
+            (int)result
         );
       }
       parser_args[i].cache_write = &cache_writers[i];
@@ -768,9 +773,9 @@ static int build_index(
          it be sealed: the manifest is what the next run reads it by --- */
   if (cache_write) {
     for (unsigned i = 0; i < parser_thread_count; ++i) {
-      if (parser_args[i].cache_result != GRD_SUCCESS) {
+      if (parser_args[i].cache_result != HOSTMEM_SUCCESS) {
         fatal(
-            ERROR_IO, "Writing the place cache of thread %u failed (grd_result %d).", i,
+            ERROR_IO, "Writing the place cache of thread %u failed (hostmem_result %d).", i,
             (int)parser_args[i].cache_result
         );
       }
@@ -779,7 +784,7 @@ static int build_index(
       place_cache_writer_close(&cache_writers[i]);
       parser_args[i].cache_write = NULL;
     }
-    if (place_cache_seal(cache_directory, &stamp) != GRD_SUCCESS) {
+    if (place_cache_seal(cache_directory, &stamp) != HOSTMEM_SUCCESS) {
       fatal(ERROR_IO, "Cannot seal the place cache in '%s'.", cache_directory);
     }
     cache_read = true; /* what was just written is what the next passes read */
@@ -802,33 +807,38 @@ static int build_index(
   /* --- the sorted per-thread runs flow together and lose their last doubles --- */
   const NameRun *word_runs[10];
   const NameRun *display_runs[10];
-  size_t meta_allocated = 0;
+  uint64_t name_bytes = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].finish_result != GRD_SUCCESS) {
+    if (parser_args[i].finish_result != HOSTMEM_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to sort its texts (grd_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to sort its texts (hostmem_result %d).", i,
           (int)parser_args[i].finish_result
       );
     }
     word_runs[i] = &parser_args[i].word_run;
     display_runs[i] = &parser_args[i].display_run;
-    meta_allocated += meta_area_total_allocated(parser_args[i].meta_alloc);
+    hostmem_multi_arena_stats arena_stats;
+    if (hostmem_multi_arena_measure(parser_args[i].names, &arena_stats) == HOSTMEM_SUCCESS) {
+      name_bytes += arena_stats.used;
+    }
   }
 
   progress_begin("Joining the words and spellings of all threads", 0);
   NameSet words, display;
-  grd_result merge_result =
+  hostmem_result merge_result =
       name_run_merge(&words, word_runs, parser_thread_count, parser_thread_count);
-  if (merge_result == GRD_SUCCESS) {
+  if (merge_result == HOSTMEM_SUCCESS) {
     merge_result = name_run_merge(&display, display_runs, parser_thread_count, parser_thread_count);
   }
-  if (merge_result != GRD_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to merge the collected texts (grd_result %d).", (int)merge_result);
+  if (merge_result != HOSTMEM_SUCCESS) {
+    fatal(
+        ERROR_MEMORY, "Failed to merge the collected texts (hostmem_result %d).", (int)merge_result
+    );
   }
   progress_end();
 
   char nameBytesBuffer[32];
-  format_byte_units(nameBytesBuffer, sizeof(nameBytesBuffer), meta_allocated, 2);
+  format_byte_units(nameBytesBuffer, sizeof(nameBytesBuffer), name_bytes, 2);
   uint64_t inputs = 0, repeated = 0, dropped = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     inputs += parser_args[i].tokenizer.inputs;
@@ -863,8 +873,8 @@ static int build_index(
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].word_set = &words;
     parser_args[i].display_set = &display;
-    parser_args[i].document_result = GRD_SUCCESS;
-    if (doc_collector_init(&parser_args[i].documents) != GRD_SUCCESS) {
+    parser_args[i].document_result = HOSTMEM_SUCCESS;
+    if (doc_collector_init(&parser_args[i].documents) != HOSTMEM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to init document collector for parser thread %u.", i);
     }
     /* every occurrence counts now — a posting belongs to its document even
@@ -888,9 +898,9 @@ static int build_index(
   DocCollector *doc_collectors[10];
   uint64_t unknown_words = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].document_result != GRD_SUCCESS) {
+    if (parser_args[i].document_result != HOSTMEM_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to collect documents (grd_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to collect documents (hostmem_result %d).", i,
           (int)parser_args[i].document_result
       );
     }
@@ -900,10 +910,10 @@ static int build_index(
 
   progress_begin("Joining the documents of all threads", 0);
   DocSet documents;
-  grd_result doc_result =
+  hostmem_result doc_result =
       doc_collector_merge(&documents, doc_collectors, parser_thread_count, words.count);
-  if (doc_result != GRD_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to join the documents (grd_result %d).", (int)doc_result);
+  if (doc_result != HOSTMEM_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to join the documents (hostmem_result %d).", (int)doc_result);
   }
   progress_end();
   printf(
@@ -921,8 +931,8 @@ static int build_index(
   printf("\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].doc_set = &documents;
-    parser_args[i].house_result = GRD_SUCCESS;
-    if (house_collector_init(&parser_args[i].houses) != GRD_SUCCESS) {
+    parser_args[i].house_result = HOSTMEM_SUCCESS;
+    if (house_collector_init(&parser_args[i].houses) != HOSTMEM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to init house collector for parser thread %u.", i);
     }
   }
@@ -941,9 +951,9 @@ static int build_index(
   }
 
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].cache_result != GRD_SUCCESS) {
+    if (parser_args[i].cache_result != HOSTMEM_SUCCESS) {
       fatal(
-          ERROR_IO, "Reading the place cache of thread %u failed (grd_result %d).", i,
+          ERROR_IO, "Reading the place cache of thread %u failed (hostmem_result %d).", i,
           (int)parser_args[i].cache_result
       );
     }
@@ -951,9 +961,9 @@ static int build_index(
 
   HouseCollector *house_collectors[10];
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].house_result != GRD_SUCCESS) {
+    if (parser_args[i].house_result != HOSTMEM_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to collect houses (grd_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to collect houses (hostmem_result %d).", i,
           (int)parser_args[i].house_result
       );
     }
@@ -962,11 +972,11 @@ static int build_index(
 
   progress_begin("Ordering the house numbers onto their streets", 0);
   HouseSet houses;
-  grd_result house_result = house_collector_merge(
+  hostmem_result house_result = house_collector_merge(
       &houses, house_collectors, parser_thread_count, documents.document_count
   );
-  if (house_result != GRD_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to join the houses (grd_result %d).", (int)house_result);
+  if (house_result != HOSTMEM_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to join the houses (hostmem_result %d).", (int)house_result);
   }
   progress_end();
   printf("House numbers: %zu on %zu streets\n", houses.house_count, documents.street_count);
@@ -996,10 +1006,12 @@ static int build_index(
   char writeLabel[256];
   snprintf(writeLabel, sizeof(writeLabel), "Writing the index to '%s'", index_path);
   progress_begin_polled(writeLabel, 0, file_bytes, (void *)index_path);
-  grd_result write_result =
+  hostmem_result write_result =
       geo_index_write(index_path, &words, &display, &documents, &houses, words.total);
-  if (write_result != GRD_SUCCESS) {
-    fatal(ERROR_IO, "Failed to write index '%s' (grd_result %d).", index_path, (int)write_result);
+  if (write_result != HOSTMEM_SUCCESS) {
+    fatal(
+        ERROR_IO, "Failed to write index '%s' (hostmem_result %d).", index_path, (int)write_result
+    );
   }
   progress_end();
 
@@ -1013,7 +1025,7 @@ static int build_index(
     doc_collector_free(&parser_args[i].documents);
     name_collector_free(&parser_args[i].words);
     name_collector_free(&parser_args[i].display);
-    meta_area_allocator_destroy(parser_args[i].meta_alloc);
+    hostmem_multi_arena_destroy(parser_args[i].names, NULL);
   }
   buffer_pool_destroy(&buffer_pool);
   free(outputBuffer);
@@ -1033,8 +1045,8 @@ static int build_index(
 
   /* the only total there is: every step above told what it alone had cost */
   char totalBuffer[32];
-  grdu_duration_string(
-      totalBuffer, sizeof(totalBuffer), (grdu_duration)grdu_mono_timer_nanos(timeUsedAll), 2
+  hostmem_duration_string(
+      totalBuffer, sizeof(totalBuffer), (hostmem_duration)hostmem_mono_timer_nanos(timeUsedAll), 2
   );
   printf("\nTotal time, everything together: %s\n", totalBuffer);
   return 0;
@@ -1101,7 +1113,7 @@ static void print_results(const GeoAddress *found, size_t count, const char *que
  */
 static void format_grouped(char *buffer, size_t size, uint64_t value) {
   char digits[24];
-  size_t length = grdu_uint64_to_string(digits, sizeof(digits), value);
+  size_t length = hostmem_uint64_to_string(digits, (uint8_t)sizeof(digits), value);
   size_t written = 0;
   for (size_t i = 0; i < length && written + 2 < size; ++i) {
     if (i && (length - i) % 3 == 0) buffer[written++] = ' ';
@@ -1171,9 +1183,9 @@ static int open_index(
     bool prefix,
     const GeoSearchOptions *near
 ) {
-  grdu_mono_timer timeUsed;
-  grdu_mono_timer_init();
-  grdu_mono_timer_reset(&timeUsed);
+  hostmem_mono_timer timeUsed;
+  hostmem_mono_timer_init();
+  hostmem_mono_timer_reset(&timeUsed);
 
   GeoClient *client = NULL;
   GeoStatus status = geo_client_open(&client, index_path);
@@ -1185,7 +1197,7 @@ static int open_index(
   geo_client_info(client, &info);
 
   char timeUsedBuffer[32], sizeBuffer[32];
-  grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  hostmem_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   format_byte_units(sizeBuffer, sizeof(sizeBuffer), info.file_size, 2);
 
   printf("Index '%s' opened in %s\n", index_path, timeUsedBuffer);
@@ -1209,11 +1221,11 @@ static int open_index(
     options.prefix_last = prefix;
     options.stats = &stats;
 
-    grdu_mono_timer queryTime;
-    grdu_mono_timer_reset(&queryTime);
+    hostmem_mono_timer queryTime;
+    hostmem_mono_timer_reset(&queryTime);
     size_t count =
         geo_client_search_options(client, query, strlen(query), &options, found, result_limit);
-    grdu_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
+    hostmem_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
 
     printf("\n");
     if (options.has_position) { printf("From %.5f, %.5f:\n", options.latitude, options.longitude); }
@@ -1421,6 +1433,6 @@ int main(int argc, char *argv[]) {
     parser_thread_count = parse_count(argv[3], 1, 10, "parser_threads");
   }
 
-  grdu_mono_timer_init();
+  hostmem_mono_timer_init();
   return build_index(input, index_path, parser_thread_count, cache_directory);
 }

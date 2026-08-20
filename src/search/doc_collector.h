@@ -34,8 +34,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "gradido_blockchain_core/result.h"
-#include "gradido_blockchain_core/utils/bucket_vector.h"
+#include "hostmem/result.h"
+#include "hostmem/bucket_vector.h"
 
 /** Marks a display field the entry did not carry. */
 #define GEO_RANK_NONE UINT32_MAX
@@ -63,13 +63,13 @@ typedef struct GeoDocument {
 #define GEO_DOCUMENT_HAS_POINT 0x01u
 
 /** Documents of one thread — 512 per bucket, 12 KiB of contiguous records. */
-GRDU_BVEC_DECLARE(geo_document_vec, GeoDocument, 9, extern)
+HOSTMEM_BVEC_DECLARE(geo_document_vec, GeoDocument, 9, extern)
 
 /** Word ranks of one thread — 4096 per bucket, 16 KiB. */
-GRDU_BVEC_DECLARE(geo_word_vec, uint32_t, 12, extern)
+HOSTMEM_BVEC_DECLARE(geo_word_vec, uint32_t, 12, extern)
 
 /** Where each document's words begin — one entry per document. */
-GRDU_BVEC_DECLARE(geo_start_vec, uint32_t, 12, extern)
+HOSTMEM_BVEC_DECLARE(geo_start_vec, uint32_t, 12, extern)
 
 /** Words of one document compared against each other before anything is stored. */
 #define POSTING_RUN_MAX 64
@@ -127,9 +127,9 @@ typedef struct DocCollector {
  * @brief Prepare an empty collector.
  *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return GRD_SUCCESS or GRD_ERROR_NULL_POINTER.
+ *  @return HOSTMEM_SUCCESS or HOSTMEM_ERROR_NULL_POINTER.
  */
-grd_result doc_collector_init(DocCollector *collector);
+hostmem_result doc_collector_init(DocCollector *collector);
 
 /** @brief Release the vectors. Safe to call with NULL. */
 void doc_collector_free(DocCollector *collector);
@@ -143,9 +143,9 @@ void doc_collector_free(DocCollector *collector);
  *  @param[in,out] collector  Collector receiving the document.
  *  @param[in]     document   Record to store; copied.
  *  @param[out]    out_number Receives the thread-local document number.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_OUT_OF_MEMORY.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
  */
-grd_result doc_collector_add_document(
+hostmem_result doc_collector_add_document(
     DocCollector *collector, const GeoDocument *document, uint32_t *out_number
 );
 
@@ -160,9 +160,9 @@ grd_result doc_collector_add_document(
  *
  *  @param[in,out] collector  Collector receiving the word.
  *  @param[in]     word       Rank in the word dictionary.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_OUT_OF_MEMORY.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
  */
-grd_result doc_collector_add_posting(DocCollector *collector, uint32_t word);
+hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word);
 
 /** @brief Documents collected so far. */
 size_t doc_collector_document_count(const DocCollector *collector);
@@ -259,12 +259,12 @@ uint32_t doc_set_find_street(
  *  @param[in]  collectors       Array of @p collector_count collector pointers.
  *  @param[in]  collector_count  Number of collectors; 0 yields an empty set.
  *  @param[in]  word_count       Words in the dictionary the postings refer to.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument, or
- *          GRD_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
  *
  *  @whisper Many voices name the same places, and the names are gathered under one roof
  */
-grd_result doc_collector_merge(
+hostmem_result doc_collector_merge(
     DocSet *out, DocCollector *const *collectors, size_t collector_count, size_t word_count
 );
 

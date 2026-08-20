@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "gradido_blockchain_core/utils/converter.h"
+#include "hostmem/converter.h"
 
 int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t precision) {
   uint64_t divisor;
@@ -34,19 +34,19 @@ int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t 
   int64_t integerPart = (int64_t)decimalValue;
   int64_t fractionalPart = (int64_t)((decimalValue - integerPart) * 1000000000000000ULL);
 
-  size_t int_size = grdu_uint64_to_string_size(integerPart);
+  uint8_t int_size = hostmem_uint64_to_string_size(integerPart);
   size_t suffix_len = strlen(suffix);
   if (buffer_size < int_size + 2 + precision +
                         suffix_len) { // +2 for possible '.' and +precision for fractional part
     return int_size + 1 + precision + suffix_len;
   }
 
-  size_t written = grdu_uint64_to_string_known_string_size(buffer, integerPart, int_size);
+  size_t written = hostmem_uint64_to_string_known_string_size(buffer, integerPart, int_size);
   // --- fractional part ---
   if (precision > 0 && divisor > 1) {
     buffer[written++] = '.';
-    size_t fractionalPartSize = 0;
-    if (fractionalPart) { fractionalPartSize = grdu_uint64_to_string_size(fractionalPart); }
+    uint8_t fractionalPartSize = 0;
+    if (fractionalPart) { fractionalPartSize = hostmem_uint64_to_string_size(fractionalPart); }
     // 15 = max fractional part size (15 zeros near the double boundary)
     size_t zerosBeforeCount = 15 - fractionalPartSize;
     if (zerosBeforeCount > precision) { zerosBeforeCount = precision; }
@@ -57,8 +57,9 @@ int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t 
     size_t restNumbers = precision - zerosBeforeCount;
     if (restNumbers) {
       char tempBuffer[20]; // enough to hold fractional part
-      size_t frac_size =
-          grdu_uint64_to_string_known_string_size(tempBuffer, fractionalPart, fractionalPartSize);
+      uint8_t frac_size = hostmem_uint64_to_string_known_string_size(
+          tempBuffer, fractionalPart, fractionalPartSize
+      );
       memcpy(buffer + written, tempBuffer, restNumbers);
       written += restNumbers;
     }

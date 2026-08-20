@@ -26,10 +26,18 @@ namespace {
 std::string Field(const char *text, size_t size) {
   return text ? std::string(text, size) : std::string();
 }
-std::string Name(const GeoAddress &a) { return Field(a.name, a.name_size); }
-std::string City(const GeoAddress &a) { return Field(a.city, a.city_size); }
-std::string Code(const GeoAddress &a) { return Field(a.postcode, a.postcode_size); }
-std::string Number(const GeoAddress &a) { return Field(a.number, a.number_size); }
+std::string Name(const GeoAddress &a) {
+  return Field(a.name, a.name_size);
+}
+std::string City(const GeoAddress &a) {
+  return Field(a.city, a.city_size);
+}
+std::string Code(const GeoAddress &a) {
+  return Field(a.postcode, a.postcode_size);
+}
+std::string Number(const GeoAddress &a) {
+  return Field(a.number, a.number_size);
+}
 
 class ClientTest : public ::testing::Test {
 protected:
@@ -38,7 +46,9 @@ protected:
     ASSERT_EQ(geo_client_open(&client, path.c_str()), GEO_OK);
     ASSERT_NE(client, nullptr);
   }
-  void TearDown() override { geo_client_close(client); }
+  void TearDown() override {
+    geo_client_close(client);
+  }
 
   size_t Search(const std::string &q, GeoAddress *out, size_t limit, bool prefix = false) {
     return geo_client_search(client, q.c_str(), q.size(), prefix, out, limit);
@@ -58,8 +68,9 @@ TEST_F(ClientTest, OpensAndReportsItsCounts) {
   EXPECT_GT(info.spellings, 0u);
   EXPECT_GT(info.file_size, 0u);
   EXPECT_EQ(info.format, GEO_INDEX_VERSION);
-  EXPECT_EQ(info.houses, 7u)
-      << "three on Marienplatz, two and one on the Berliner Straßen, one on the Hauptstraße";
+  EXPECT_EQ(
+      info.houses, 7u
+  ) << "three on Marienplatz, two and one on the Berliner Straßen, one on the Hauptstraße";
 }
 
 TEST_F(ClientTest, FindsAPlaceAndFillsEveryField) {
@@ -233,7 +244,8 @@ TEST(ClientGuards, TheCountsAreClearedBeforeAnythingIsRefused) {
 TEST_F(ClientTest, WritesTheSameAnswerAsJson) {
   char buffer[4096];
   const char *q = "Marienplatz München ";
-  size_t needed = geo_client_search_json(client, q, std::strlen(q), false, 8, buffer, sizeof(buffer));
+  size_t needed =
+      geo_client_search_json(client, q, std::strlen(q), false, 8, buffer, sizeof(buffer));
   ASSERT_LT(needed, sizeof(buffer)) << "the answer fitted";
   std::string json(buffer);
   EXPECT_EQ(json.front(), '[');

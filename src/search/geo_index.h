@@ -60,7 +60,7 @@
 
 #include <roaring/roaring.h>
 
-#include "gradido_blockchain_core/result.h"
+#include "hostmem/result.h"
 #include "search/doc_collector.h"
 #include "search/house_collector.h"
 #include "search/name_collector.h"
@@ -176,14 +176,14 @@ typedef struct GeoIndex {
  *  @param[in] documents    Joined documents and postings.
  *  @param[in] houses       Joined house numbers, ordered by street.
  *  @param[in] total_terms  Terms seen while building, kept for the report.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument,
- *          GRD_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB,
- *          GRD_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
- *          GRD_ERROR_ENCODE_FAILED when the file could not be written.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
+ *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB,
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
+ *          HOSTMEM_ERROR_ENCODE_FAILED when the file could not be written.
  *
  *  @whisper The work of minutes lies down in the order it will be read
  */
-grd_result geo_index_write(
+hostmem_result geo_index_write(
     const char *path,
     const NameSet *words,
     const NameSet *display,
@@ -201,12 +201,12 @@ grd_result geo_index_write(
  *
  *  @param[out] index  Receives the opened index; zeroed on failure.
  *  @param[in]  path   File written by geo_index_write().
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument,
- *          GRD_ERROR_DECODE_FAILED when the file cannot be opened or mapped,
- *          GRD_ERROR_INVALID_PARAM when the header does not fit this build, or
- *          GRD_ERROR_OUT_OF_MEMORY when a tree could not be rebuilt.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
+ *          HOSTMEM_ERROR_DECODE_FAILED when the file cannot be opened or mapped,
+ *          HOSTMEM_ERROR_INVALID_PARAM when the header does not fit this build, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when a tree could not be rebuilt.
  */
-grd_result geo_index_open(GeoIndex *index, const char *path);
+hostmem_result geo_index_open(GeoIndex *index, const char *path);
 
 /**
  * @brief Release the mapping and the trees.

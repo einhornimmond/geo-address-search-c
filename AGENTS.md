@@ -9,9 +9,9 @@ Keep files in third_party as they are and if there is a bug, find a workaround i
 - The module MUST wrap the API using `@{` … `@}`.
 
 ```c
-/** @defgroup grdd_unit grdd_unit
-  *  @ingroup foundation
-  *  @brief Fixed-point GDD (scale 10^4)
+/** @defgroup geo_cell geo_cell
+  *  @ingroup search
+  *  @brief Coordinates folded into a cell token
   *  @{
   */
 
@@ -34,7 +34,7 @@ Keep files in third_party as they are and if there is a bug, find a workaround i
 
 - One module per header
 - All public API must be inside the module block
-- Use flat, stable identifiers (`grdd_unit`)
+- Use flat, stable identifiers (`geo_cell`)
 
 ----------
 
@@ -55,7 +55,7 @@ Hard, verifiable specification.
 Must include:
 
 - parameters, types, constraints
-- scaling rules (e.g. fixed-point 10^4)
+- widths and their limits (e.g. ranks are `uint32_t`, offsets `uint64_t`)
 - edge cases
 - return behavior
 - overflow / limits
@@ -135,12 +135,12 @@ Without reducing:
 
 ## The `@whisper` Tag – Optional Poetic Signature
 
-The `@whisper` is an optional, poetic one‑liner at the end of a Doxygen comment. It is **not required for every function**, but encouraged for functions that carry significant meaning – especially core economic functions (e.g., decay, growth, time‑based transformations).
+The `@whisper` is an optional, poetic one‑liner at the end of a Doxygen comment. It is **not required for every function**, but encouraged for functions that carry significant meaning – especially the ones the whole program turns on (e.g., merging, folding, mapping an index into memory).
 
 ### When to Use a `@whisper`
 
-- **High‑impact functions** (e.g., `grdd_unit_calculate_decay`) should almost always have a `@whisper`. They are the heart of Gradido and deserve a quiet, memorable line.
-- **Medium‑impact functions** (e.g., `grdd_unit_from_string`) may have a `@whisper` if a fitting image or quote comes naturally.
+- **High‑impact functions** (e.g., `name_run_merge`, `geo_index_open`) should almost always have a `@whisper`. They are the heart of the program and deserve a quiet, memorable line.
+- **Medium‑impact functions** (e.g., `geo_cell_of`) may have a `@whisper` if a fitting image or quote comes naturally.
 - **Low‑level helpers** (e.g., internal byte swappers) rarely need a `@whisper`. If in doubt, omit it.
 
 ### What a `@whisper` Must Do
@@ -185,26 +185,26 @@ The structure is a suggestion, not a straitjacket. Adapt length and order as nee
  */
 ```
 
-### Core Functions – Reference to Gradido Philosophy Allowed
+### Core Functions – Reference to the Guiding Principles Allowed
 
-The following functions implement Gradido’s foundational concepts. For these only, comments may explicitly mention the relevant natural laws, pillars, or the triple good.
+Three principles carry this codebase. Where a function exists *because* of one of them, the comment may name it — that tells a reader they are looking at a deliberate decision rather than an accident.
 
-#### Which Concepts Exist?
+#### Which Principles Exist?
 
-- **Three Natural Laws**: Symbiosis & Cooperation, Cycle of Becoming and Passing Away (decay), Support of the Living.
-- **Three Pillars**: Active Basic Income, State Income, Equalisation and Environment Fund.
-- **Triple Good**: Individual, Community, and Whole wellbeing.
+- **Sufficiency** – Use only what is needed.
+- **Flow** – Never make the human wait unnecessarily.
+- **Simplicity** – Complexity must earn its place.
 
-When documenting a core function (e.g., `grdd_unit_calculate_decay`), you are free to say: *“Gradido’s second natural law – the cycle of becoming and passing away – guides this function.”* This signals to readers that they are looking at a central piece of the economic model.
+When documenting such a function (e.g., the repetition filter in `name_collector_add`), you are free to say: *“Sufficiency guides this function: a name already stored costs no second copy.”*
 
-**Even for core functions:** Do not preach. Describe the law, do not praise it.
+**Even for core functions:** Do not preach. Name the principle, do not praise it.
 
 ### What to Avoid (Short List)
 
 - Preaching (“should”, “must”, “good”, “fair”).
 - Exclamation marks.
-- Floating‑point illusions (always mention fixed‑point scaling where relevant).
-- Redundant philosophy in helper functions (e.g., `grdd_unit_to_string` gets no natural law).
+- Silent widths (always name the type a count or an offset is measured in where it matters).
+- Redundant philosophy in helper functions (e.g., `name_collector_size` gets no principle).
 - Deleting or editing an existing `@whisper` unless the function changed completely.
 
 ### Enforcement & Maintenance

@@ -138,8 +138,8 @@ the baseline target stays. CRoaring picks its SIMD paths at runtime regardless.
 
 Dependencies are fetched by the Zig build system:
 [zstd](https://github.com/facebook/zstd),
-[gradido-blockchain-core](https://github.com/gradido/gradido-blockchain-core) (bucket
-vector, arena allocator, timer), [yyjson](https://github.com/ibireme/yyjson) and
+[hostmem](https://github.com/einhornimmond/hostmem) (bucket vector, arena allocator,
+number conversion, timer), [yyjson](https://github.com/ibireme/yyjson) and
 [CRoaring](https://github.com/RoaringBitmap/CRoaring) (both vendored).
 
 Requirements: Zig ≥ 0.15.1, pthreads, Linux.
@@ -178,9 +178,10 @@ Three properties you can rely on:
 of one per result field. A buffer that is too small reports the length needed and stays
 NUL-terminated.
 
-The library does **not** link against blockchain-core — only its include path is needed,
-because `geo_index.h` uses `grd_result` internally. Five files are compiled: `client.c`,
-`geo_index.c`, `prefix_tree.c`, `text_tokenize.c` and `roaring.c`.
+The library links against hostmem: `geo_index.h` names `hostmem_result` in its headers and
+`client.c` writes its JSON numbers with hostmem's converter rather than carrying a second
+copy of one. Five files of our own are compiled: `client.c`, `geo_index.c`, `prefix_tree.c`,
+`text_tokenize.c` and `roaring.c`.
 
 ### From other languages
 
@@ -237,7 +238,6 @@ Details in [bindings/bun/README.md](bindings/bun/README.md) and
 | `house_collector` | House numbers on their streets, ordered per street |
 | `geo_index` | File format, writer, `mmap` loader, word lookup, queries over bitmaps |
 | `client` | The reading library: open, search, close — without the builder |
-| `meta_area_allocator` | Arena chains for the text bytes, one per thread |
 | `parse_queue`, `line_buffer`, `progress`, `format`, `error` | Infrastructure |
 
 ## File format

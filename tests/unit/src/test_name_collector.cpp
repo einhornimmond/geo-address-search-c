@@ -21,26 +21,26 @@ namespace {
 class NameCollectorTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    alloc = meta_area_allocator_create();
+    alloc = hostmem_multi_arena_create(NAME_ARENA_CAPACITY, 0, nullptr, nullptr);
     ASSERT_NE(alloc, nullptr);
-    ASSERT_EQ(name_collector_init(&collector, alloc), GRD_SUCCESS);
+    ASSERT_EQ(name_collector_init(&collector, alloc), HOSTMEM_SUCCESS);
   }
   void TearDown() override {
     name_set_free(&set);
     name_run_free(&run);
     name_collector_free(&collector);
-    meta_area_allocator_destroy(alloc);
+    hostmem_multi_arena_destroy(alloc, nullptr);
   }
 
   void Add(const std::string &name) {
-    ASSERT_EQ(name_collector_add(&collector, name.c_str(), name.size()), GRD_SUCCESS) << name;
+    ASSERT_EQ(name_collector_add(&collector, name.c_str(), name.size()), HOSTMEM_SUCCESS) << name;
   }
 
   /** Close the run and merge it alone, the way a single-threaded build would. */
   void Finish() {
-    ASSERT_EQ(name_collector_finish(&collector, &run), GRD_SUCCESS);
+    ASSERT_EQ(name_collector_finish(&collector, &run), HOSTMEM_SUCCESS);
     const NameRun *runs[1] = {&run};
-    ASSERT_EQ(name_run_merge(&set, runs, 1, 1), GRD_SUCCESS);
+    ASSERT_EQ(name_run_merge(&set, runs, 1, 1), HOSTMEM_SUCCESS);
   }
 
   bool Knows(const std::string &name, size_t *rank = nullptr) {
@@ -48,7 +48,7 @@ protected:
     return name_set_rank(&set, name.c_str(), name.size(), rank ? rank : &own);
   }
 
-  MetaAreaAllocator *alloc = nullptr;
+  hostmem_multi_arena *alloc = nullptr;
   NameCollector collector{};
   NameRun run{};
   NameSet set{};
@@ -195,13 +195,13 @@ TEST_F(NameCollectorTest, AnEmptyRunMergesToAnEmptySet) {
 // ---------------------------------------------------------------------------
 
 TEST(NameRunMerge, JoinsWhatSeveralCollectorsGathered) {
-  MetaAreaAllocator *alloc = meta_area_allocator_create();
+  hostmem_multi_arena *alloc = hostmem_multi_arena_create(NAME_ARENA_CAPACITY, 0, nullptr, nullptr);
   ASSERT_NE(alloc, nullptr);
 
   NameCollector a{}, b{}, c{};
-  ASSERT_EQ(name_collector_init(&a, alloc), GRD_SUCCESS);
-  ASSERT_EQ(name_collector_init(&b, alloc), GRD_SUCCESS);
-  ASSERT_EQ(name_collector_init(&c, alloc), GRD_SUCCESS);
+  ASSERT_EQ(name_collector_init(&a, alloc), HOSTMEM_SUCCESS);
+  ASSERT_EQ(name_collector_init(&b, alloc), HOSTMEM_SUCCESS);
+  ASSERT_EQ(name_collector_init(&c, alloc), HOSTMEM_SUCCESS);
 
   name_collector_add(&a, "berlin", 6);
   name_collector_add(&a, "hamburg", 7);
@@ -210,13 +210,13 @@ TEST(NameRunMerge, JoinsWhatSeveralCollectorsGathered) {
   name_collector_add(&c, "koeln", 5);
 
   NameRun ra{}, rb{}, rc{};
-  ASSERT_EQ(name_collector_finish(&a, &ra), GRD_SUCCESS);
-  ASSERT_EQ(name_collector_finish(&b, &rb), GRD_SUCCESS);
-  ASSERT_EQ(name_collector_finish(&c, &rc), GRD_SUCCESS);
+  ASSERT_EQ(name_collector_finish(&a, &ra), HOSTMEM_SUCCESS);
+  ASSERT_EQ(name_collector_finish(&b, &rb), HOSTMEM_SUCCESS);
+  ASSERT_EQ(name_collector_finish(&c, &rc), HOSTMEM_SUCCESS);
 
   const NameRun *runs[3] = {&ra, &rb, &rc};
   NameSet set{};
-  ASSERT_EQ(name_run_merge(&set, runs, 3, 2), GRD_SUCCESS);
+  ASSERT_EQ(name_run_merge(&set, runs, 3, 2), HOSTMEM_SUCCESS);
 
   EXPECT_EQ(set.count, 4u) << "berlin came twice and stayed once";
   EXPECT_EQ(set.total, 5u);
@@ -232,12 +232,12 @@ TEST(NameRunMerge, JoinsWhatSeveralCollectorsGathered) {
   name_collector_free(&a);
   name_collector_free(&b);
   name_collector_free(&c);
-  meta_area_allocator_destroy(alloc);
+  hostmem_multi_arena_destroy(alloc, nullptr);
 }
 
 TEST(NameRunMerge, NoRunsYieldAnEmptySet) {
   NameSet set{};
-  EXPECT_EQ(name_run_merge(&set, nullptr, 0, 1), GRD_SUCCESS);
+  EXPECT_EQ(name_run_merge(&set, nullptr, 0, 1), HOSTMEM_SUCCESS);
   EXPECT_EQ(set.count, 0u);
   name_set_free(&set);
 }
@@ -245,12 +245,12 @@ TEST(NameRunMerge, NoRunsYieldAnEmptySet) {
 TEST(NameRunMerge, RefusesMoreRunsThanItCanHold) {
   NameSet set{};
   std::vector<const NameRun *> many(NAME_RUN_MAX + 1, nullptr);
-  EXPECT_NE(name_run_merge(&set, many.data(), many.size(), 1), GRD_SUCCESS);
+  EXPECT_NE(name_run_merge(&set, many.data(), many.size(), 1), HOSTMEM_SUCCESS);
   name_set_free(&set);
 }
 
 TEST(NameCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
-  EXPECT_NE(name_collector_init(nullptr, nullptr), GRD_SUCCESS);
+  EXPECT_NE(name_collector_init(nullptr, nullptr), HOSTMEM_SUCCESS);
   EXPECT_EQ(name_collector_size(nullptr), 0u);
   EXPECT_EQ(name_collector_seen(nullptr), 0u);
   name_collector_free(nullptr);
