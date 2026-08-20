@@ -4,6 +4,9 @@
 #include <inttypes.h>
 #include <stdio.h>
 
+/** @cond INTERNAL */
+
+/** One entry raises exactly one counter; the mapping is the whole function. */
 static void count_address_type(JsonStats *stats, PhotonPlaceType address_type) {
   switch (address_type) {
   case PHOTON_PLACE_TYPE_HOUSE:
@@ -39,6 +42,8 @@ static void count_address_type(JsonStats *stats, PhotonPlaceType address_type) {
   case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
     ++stats->independent_cities;
     break;
+  /* No entry with these types leaves json_parse_line() — it refuses them at the
+     source. Reaching here means the place was assembled somewhere else. */
   default:
     fatal(ERROR_ASSERT, "None or Unknown address type");
   }
@@ -108,3 +113,5 @@ void json_stats_print(const JsonStats *stats) {
     );
   }
 }
+
+/** @endcond */

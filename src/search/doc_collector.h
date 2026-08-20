@@ -25,6 +25,14 @@
  *  Document numbers are handed out per thread and shifted into their final
  *  range when the threads join, which is a single addition per posting.
  *
+ *  ### What the widths allow
+ *
+ *  A document number, a word rank and a posting are all `uint32_t`, here and in
+ *  the file both, so the whole index tops out at 4 294 967 295 documents and the
+ *  same number of distinct words.  A planet-wide dump uses a fraction of that.
+ *  The bucket vectors below count in `uint32_t` as well and are per thread, so
+ *  they run out later still.
+ *
  *  @whisper Every place keeps its own record, and every word remembers where it was heard
  *  @{
  */
@@ -114,13 +122,13 @@ typedef struct GeoStreetKey {
  *  the largest thing in memory when the threads are joined.
  */
 typedef struct DocCollector {
-  geo_document_vec documents;
+  geo_document_vec documents;     /**< One record per place this thread met. */
   geo_word_vec words;             /**< Word ranks, grouped by document. */
   geo_start_vec starts;           /**< First word of each document. */
   uint64_t dropped_words;         /**< Tokens the dictionary did not know — 0 in a sound build. */
   uint64_t dropped_doubles;       /**< Repetitions of a word within one document. */
   uint32_t seen[POSTING_RUN_MAX]; /**< Words of the open document so far. */
-  size_t seen_count;
+  size_t seen_count;              /**< How many of @c seen are filled. */
 } DocCollector;
 
 /**
@@ -179,15 +187,15 @@ size_t doc_collector_posting_count(const DocCollector *collector);
  *  empty range, which costs one number and keeps the lookup a single index.
  */
 typedef struct DocSet {
-  GeoDocument *documents;
-  size_t document_count;
-  size_t segment_count; /**< Records before segments were merged. */
-  uint32_t *postings;
-  size_t posting_count;
-  uint32_t *posting_offsets;
-  size_t word_count;
-  GeoStreetKey *streets; /**< Street keys, ascending, for the houses to find. */
-  size_t street_count;
+  GeoDocument *documents;    /**< Every document of every thread, renumbered into one range. */
+  size_t document_count;     /**< Entries in @c documents. */
+  size_t segment_count;      /**< Records before segments were merged. */
+  uint32_t *postings;        /**< Document numbers, grouped by the word that names them. */
+  size_t posting_count;      /**< Entries in @c postings. */
+  uint32_t *posting_offsets; /**< Where each word's group begins; @c word_count + 1 of them. */
+  size_t word_count;         /**< Words the offsets cover. */
+  GeoStreetKey *streets;     /**< Street keys, ascending, for the houses to find. */
+  size_t street_count;       /**< Entries in @c streets. */
 } DocSet;
 
 /**
@@ -205,10 +213,17 @@ typedef struct DocSet {
  *     street the municipality it was drawn in.  The coordinate does not
  *     disagree, so it decides.
  *
- *  @param[in] set       Joined set holding the street keys.
- *  @param[in] name      Street name rank; GEO_RANK_NONE never matches.
- *  @param[in] city      Town rank, or GEO_RANK_NONE.
- *  @param[in] postcode  Postal code rank, or GEO_RANK_NONE.
+ *  @param[in]  set          Joined set holding the street keys.
+ *  @param[in]  name         Street name rank; GEO_RANK_NONE never matches.
+ *  @param[in]  city         Town rank, or GEO_RANK_NONE.
+ *  @param[in]  postcode     Postal code rank, or GEO_RANK_NONE.
+ *  @param[in]  lat_e7       Where the house stands, degrees × 10⁷; read by the fourth
+ *                           attempt alone, and only when @p has_point.
+ *  @param[in]  lon_e7       The same, east.
+ *  @param[in]  has_point    False when the house brought no coordinate, which rules the
+ *                           fourth attempt out and leaves the house where it is.
+ *  @param[out] out_relaxed  Set when an attempt beyond the first answered, so the caller
+ *                           can count how much of the dump needed forgiving.  May be NULL.
  *  @return The document number, or GEO_RANK_NONE when no street answers.
  *
  *  @whisper A house calls out its street's name and waits to hear where it stands

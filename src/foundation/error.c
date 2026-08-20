@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/** @cond INTERNAL */
+
+/** A rule above and below the title, so a failure is findable in a wall of output. */
 static void printHeader(const char *title) {
   fprintf(
       stderr,
@@ -15,7 +18,11 @@ static void printHeader(const char *title) {
   );
 }
 
-// why luna? because she as chatgpt character wrote most of the code
+/* Luna is the character who wrote most of this code, and the banners are hers.
+   They exist because the moment a build of 24 GB gives up is the moment the
+   reader is least inclined to read: a face and one plain sentence carry further
+   than a stack trace. Each banner says what happened; the line beneath it, from
+   fatal()'s format string, says which file, which offset, which size. */
 
 static void printUsage(void) {
   printHeader("Luna is confused...");
@@ -137,6 +144,8 @@ static void printInfo(void) {
   );
 }
 
+/* No default branch on purpose: adding an art without a banner should be a
+   compiler warning, not a silent blank. */
 _Noreturn void fatal(ErrorArt art, const char *fmt, ...) {
   switch (art) {
   case ERROR_USAGE:
@@ -177,6 +186,9 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...) {
   exit(EXIT_FAILURE);
 }
 
+/* Silenced, not removed: the calls scattered through the build are worth
+   keeping, and the body waits here for the day the notes are wanted again.
+   Everything after the return is unreachable by design. */
 void info(const char *fmt, ...) {
   return;
   // printInfo();
@@ -189,3 +201,5 @@ void info(const char *fmt, ...) {
 
   fputc('\n', stdout);
 }
+
+/** @endcond */

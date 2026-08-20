@@ -92,8 +92,8 @@ typedef struct PlaceCacheWriter {
 
 /** Reading end of one file. */
 typedef struct PlaceCacheReader {
-  FILE *file;
-  PlaceCacheKind kind;
+  FILE *file;           /**< Open for reading, positioned past the header. */
+  PlaceCacheKind kind;  /**< Which half this file holds. */
   char *buffer;    /**< The record just read; the strings point into it. */
   size_t capacity; /**< Room in @c buffer. */
   uint64_t count;  /**< Records read so far. */

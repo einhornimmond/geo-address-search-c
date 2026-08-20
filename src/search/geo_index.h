@@ -133,9 +133,9 @@ typedef struct GeoDictionary {
   const GeoIndexGroup *groups; /**< Group table inside the mapping. */
   const uint32_t *offsets;     /**< Offset table inside the mapping. */
   const char *text;            /**< Word bytes inside the mapping. */
-  size_t group_count;
-  size_t word_count;
-  size_t text_size;
+  size_t group_count;          /**< Entries in @c groups. */
+  size_t word_count;           /**< Words the dictionary holds; @c offsets has one more. */
+  size_t text_size;            /**< Bytes in @c text. */
   PrefixTree prefixes; /**< Leading bytes → group index, rebuilt on open. */
 } GeoDictionary;
 
@@ -150,17 +150,17 @@ typedef struct GeoIndex {
   size_t size;           /**< Mapped bytes. */
   GeoDictionary words;   /**< Folded words — the search side. */
   GeoDictionary display; /**< Written spellings — the answer side. */
-  const GeoDocument *documents;
-  const uint16_t *importance; /**< One weight per document, read while ranking. */
-  size_t document_count;
+  const GeoDocument *documents; /**< One record per place, inside the mapping. */
+  const uint16_t *importance;   /**< One weight per document, read while ranking. */
+  size_t document_count;        /**< Entries in @c documents. */
   const uint64_t *posting_offsets; /**< words.word_count + 1 byte offsets into @c postings. */
   const char *postings;            /**< Serialized bitmaps, one per word. */
   size_t posting_bytes;            /**< Length of the bitmap blob. */
   size_t posting_count;            /**< Word-to-document connections held in it. */
   const GeoHouse *houses;          /**< House numbers, ordered by street. */
   const uint32_t *house_offsets;   /**< document_count + 1 entries into @c houses. */
-  size_t house_count;
-  uint64_t total_terms;
+  size_t house_count;              /**< Entries in @c houses. */
+  uint64_t total_terms;            /**< Terms seen while building; reporting only. */
 } GeoIndex;
 
 /**
@@ -279,7 +279,9 @@ typedef struct GeoHit {
  * size its own array to it, and a second copy of the number living somewhere
  * else would be free to drift away from this one.
  */
-enum { GEO_QUERY_LIMIT_MAX = 256 };
+enum {
+  GEO_QUERY_LIMIT_MAX = 256 /**< Most results one query may be asked for. */
+};
 
 /**
  * @brief Borrow the house numbers standing on one document.

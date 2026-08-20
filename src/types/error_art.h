@@ -1,11 +1,12 @@
 /** @defgroup error_art Error art
  *  @ingroup types
- *  @brief The kind of error — a quiet taxonomy of failure, named where every
- *         module can reach it.
+ *  @brief The domain a fatal condition arose in — a quiet taxonomy of failure,
+ *         named where every module can reach it.
  *
- *  Each variant names the domain a fatal condition arose in, so a log line
- *  carries context without the reader having to parse strings.  The values
- *  travel no further than the process; nothing on disk depends on them.
+ *  A log line carries its context in this enum rather than in a string the
+ *  reader has to parse back.  The values live for the length of the process and
+ *  no longer: nothing on disk and nothing a caller sees depends on them, so they
+ *  may be reordered freely.
  *  @{
  */
 
@@ -15,21 +16,17 @@
 extern "C" {
 #endif
 
-/** @brief The kind of error — a quiet taxonomy of failure.
- *
- *  Each variant names the domain where a fatal condition arose,
- *  so the log carries context without the caller needing to parse strings.
- */
+/** @brief Where a failure came from, for the last line the program writes. */
 typedef enum ErrorArt {
     ERROR_USAGE,           /**< Wrong invocation — the caller asked for the impossible. */
-    ERROR_IO,              /**< A file refused to open, read, or yield its contents. */
+    ERROR_IO,              /**< A file refused to open, to read, or to yield its contents. */
     ERROR_JSON,            /**< Malformed JSON — the structure collapsed under its own weight. */
-    ERROR_ZSTD,            /**< Zstandard compression stream broke. */
-    ERROR_ASSERT,          /**< An invariant was violated — the program's own promise broken. */
+    ERROR_ZSTD,            /**< A Zstandard stream broke mid-flow. */
+    ERROR_ASSERT,          /**< An invariant gave way — the program's own promise, broken. */
     ERROR_MEMORY,          /**< Memory exhausted — the well ran dry. */
-    ERROR_HASH_COLLISION,  /**< Two different address keys folded into the same hash —
-                                a cosmic-level coincidence, or a bug in the hash function. */
-    ERROR_INFO,            /**< Not an error — gentle informational note. */
+    ERROR_HASH_COLLISION,  /**< Two different address keys folded onto one hash: either a
+                                coincidence of a kind that does not happen, or a bug. */
+    ERROR_INFO,            /**< Not a failure — a note in passing, carried by the same road. */
 } ErrorArt;
 
 #ifdef __cplusplus

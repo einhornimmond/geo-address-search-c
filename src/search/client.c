@@ -198,6 +198,14 @@ typedef struct JsonWriter {
   size_t needed; /**< Bytes the whole answer wants, NUL excluded. */
 } JsonWriter;
 
+/**
+ * @brief Append text, and keep counting even once the buffer is full.
+ *
+ *  @c needed grows whether or not the bytes land, which is what lets the caller
+ *  be told the length it should have brought.  A buffer that fills mid-string is
+ *  filled to its edge rather than left short of it, so what the caller reads is
+ *  cut off cleanly instead of ending a field early.
+ */
 static void json_put(JsonWriter *writer, const char *text, size_t size) {
   size_t cur = writer->needed;
 
@@ -209,6 +217,7 @@ static void json_put(JsonWriter *writer, const char *text, size_t size) {
   memcpy(&writer->buffer[cur], text, size);
 }
 
+/** json_put() for text whose length the compiler already knows how to find. */
 static void json_literal(JsonWriter *writer, const char *text) {
   json_put(writer, text, strlen(text));
 }

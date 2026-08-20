@@ -1,3 +1,17 @@
+/** @file
+ *  @brief The builder and the command line — the one artifact with an entry point.
+ *
+ *  Two programs share this file, and the extension of the first argument decides
+ *  which one runs: a dump goes in and an index comes out, or an index goes in and
+ *  an answer comes out.  Everything below is the plumbing between the modules —
+ *  the buffer pool the reader draws from, the threads that parse, the three walks
+ *  over the dump, and the printing of what was found.
+ *
+ *  The client library links none of it.  What leaves the house is @ref client.
+ */
+
+/** @cond INTERNAL */
+
 #include "foundation/error.h"
 #include "foundation/format.h"
 #include "foundation/line_buffer.h"
@@ -29,15 +43,24 @@
 #include "hostmem/duration.h"
 #include "hostmem/mono_timer.h"
 
+/** Buffers in the pool: what the queue can hold, plus the few in flight around it. */
 enum { BUFFER_POOL_CAPACITY = PARSE_QUEUE_CAPACITY + 4 };
 
+/**
+ * @brief The line buffers, lent out and handed back rather than allocated.
+ *
+ *  A dump of 24 GB moves through a fixed handful of chambers.  The reader takes
+ *  one, fills it, sends it down the queue, and the parser that empties it puts it
+ *  back — so the heap is touched once at startup and never again on the hot path.
+ */
 typedef struct BufferPool {
-  LineBuffer *buffers[BUFFER_POOL_CAPACITY];
-  size_t count;
-  pthread_mutex_t mutex;
-  pthread_cond_t available;
+  LineBuffer *buffers[BUFFER_POOL_CAPACITY]; /**< The free ones; a stack, not a queue. */
+  size_t count;                              /**< How many of them are free. */
+  pthread_mutex_t mutex;                     /**< Guards @c buffers and @c count. */
+  pthread_cond_t available;                  /**< A borrower waits here when none is free. */
 } BufferPool;
 
+/** Fill the pool with @ref BUFFER_POOL_CAPACITY buffers of @p buffer_size bytes each. */
 static void buffer_pool_init(BufferPool *pool, size_t buffer_size) {
   memset(pool, 0, sizeof(*pool));
   if (pthread_mutex_init(&pool->mutex, NULL) || pthread_cond_init(&pool->available, NULL)) {
@@ -50,6 +73,7 @@ static void buffer_pool_init(BufferPool *pool, size_t buffer_size) {
   }
 }
 
+/** Take a buffer, waiting while every one of them is out. */
 static LineBuffer *buffer_pool_acquire(BufferPool *pool) {
   pthread_mutex_lock(&pool->mutex);
   while (pool->count == 0) { pthread_cond_wait(&pool->available, &pool->mutex); }
@@ -58,6 +82,7 @@ static LineBuffer *buffer_pool_acquire(BufferPool *pool) {
   return buffer;
 }
 
+/** Give a buffer back, emptied and ready for the next block. */
 static void buffer_pool_release(BufferPool *pool, LineBuffer *buffer) {
   line_buffer_reset(buffer);
   pthread_mutex_lock(&pool->mutex);
@@ -66,6 +91,7 @@ static void buffer_pool_release(BufferPool *pool, LineBuffer *buffer) {
   pthread_mutex_unlock(&pool->mutex);
 }
 
+/** Close the pool down.  Every buffer must be back, or it is not freed. */
 static void buffer_pool_destroy(BufferPool *pool) {
   for (size_t i = 0; i < pool->count; ++i) { line_buffer_destroy(pool->buffers[i]); }
   pthread_cond_destroy(&pool->available);
@@ -114,6 +140,7 @@ typedef struct ParserThreadArgs {
 } ParserThreadArgs;
 
 /** Look a written form up; absent text and unknown text both mean "no rank". */
+/** A text's place in the display dictionary, or GEO_RANK_NONE where it has none. */
 static uint32_t display_rank(const NameSet *set, PhotonString text) {
   size_t rank = 0;
   if (!text.data || !text.size) return GEO_RANK_NONE;
@@ -298,6 +325,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   }
 }
 
+/** The parser's callback: hand the entry to whichever pass is running. */
 static int process_place_callback(const PhotonPlace *place, void *user_data) {
   ParserThreadArgs *args = user_data;
   switch (args->pass) {
@@ -324,6 +352,7 @@ static int process_place_callback(const PhotonPlace *place, void *user_data) {
   return 0;
 }
 
+/** Parse every line of one batch, counting the documents as they go by. */
 static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
   const char *line = batch->buffer->buffer;
   const char *end = line + batch->len;
@@ -351,6 +380,7 @@ static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
  *  The first pass wants both halves, because the vocabulary is made of all of
  *  them; the later two want one each.
  */
+/** Read this thread's cache files instead of the dump, and feed the same collectors. */
 static void replay_cache(ParserThreadArgs *args) {
   PlaceCacheKind kinds[2];
   size_t count = 0;
@@ -397,6 +427,13 @@ static void replay_cache(ParserThreadArgs *args) {
   args->cache_finished = true;
 }
 
+/**
+ * @brief One parser thread: take work until there is none, then settle what it gathered.
+ *
+ *  The sorting at the end belongs to the first pass alone, and it happens here
+ *  rather than in the joining thread — every thread sorts its own run at the same
+ *  moment, so the wall clock barely notices it happened.
+ */
 static void *parser_thread(void *arg) {
   ParserThreadArgs *args = arg;
 
@@ -420,6 +457,7 @@ static void *parser_thread(void *arg) {
   return NULL;
 }
 
+/** Send whatever whole lines the buffer holds down the queue, and keep the rest. */
 static void enqueue_complete_lines(
     ParseQueue *queue, BufferPool *pool, LineBuffer **active_buffer
 ) {
@@ -442,6 +480,7 @@ static void enqueue_complete_lines(
  *  Rewinds the file and restarts the stream, so the same dump can be walked
  *  again for the second pass.  Closes the queue when the last line is in.
  */
+/** Unpack the dump and hand it out in batches; the one thread that touches zstd. */
 static void stream_dump(
     FILE *fp,
     ZSTD_DStream *dstream,
@@ -496,6 +535,7 @@ static void stream_dump(
  *  nothing else is said — which reads exactly like a program that has died.
  *  So the wait gets a name of its own.
  */
+/** What the threads are doing while a pass winds down, for the progress line. */
 static const char *settle_label(ParserPass pass) {
   return pass == PARSER_PASS_VOCABULARY ? "Each thread sorts the words it gathered"
                                         : "The parser threads finish their last batches";
@@ -607,6 +647,7 @@ static void run_cached_pass(
  *  system reports lags behind by whatever still sits in the stream's buffer,
  *  which for a progress line is close enough.
  */
+/** How far the output file has grown, polled by the progress bar while writing. */
 static uint64_t file_bytes(void *user_data) {
   struct stat status;
   if (stat((const char *)user_data, &status) != 0) return 0;
@@ -1066,6 +1107,7 @@ static int build_index(
  *  @return 0 on success; a failed open ends the program through fatal().
  */
 /** Print one borrowed text, or a placeholder when the entry never carried it. */
+/** Write a borrowed, unterminated string; nothing at all when it is absent. */
 static void print_text(const char *text, size_t size) {
   if (!text || !size) {
     printf("—");
@@ -1075,6 +1117,7 @@ static void print_text(const char *text, size_t size) {
 }
 
 /** Show what a query found: the place as it is written, and where it lies. */
+/** One line per result: the address as written, then where it stands. */
 static void print_results(const GeoAddress *found, size_t count, const char *query) {
   if (!count) {
     printf("No results for '%s'.\n", query);
@@ -1123,6 +1166,7 @@ static void format_grouped(char *buffer, size_t size, uint64_t value) {
 }
 
 /** One line of the query report: a label, and its count in a column of its own. */
+/** A labelled count, digits grouped, aligned with the others around it. */
 static void print_count(const char *label, uint64_t value) {
   char grouped[32];
   format_grouped(grouped, sizeof(grouped), value);
@@ -1145,6 +1189,7 @@ static void print_count(const char *label, uint64_t value) {
  *  @param[in] stats     Counts of the search just run.
  *  @param[in] duration  How long it took, already formatted.
  */
+/** What the query had to touch, under the answer — the numbers behind the duration. */
 static void print_query_stats(const GeoQueryStats *stats, const char *duration, bool near) {
   printf("\nSearched in %s\n", duration);
   print_count("passes:", stats->passes);
@@ -1176,6 +1221,7 @@ static void print_query_stats(const GeoQueryStats *stats, const char *duration, 
  *  @param[in] near          Where the searcher stands, or NULL.
  *  @return 0 on success; a failed open ends the program through fatal().
  */
+/** Open an index and answer from it: the second of the two programs in this file. */
 static int open_index(
     const char *index_path,
     const char *query,
@@ -1241,6 +1287,7 @@ static int open_index(
  *  Command line
  * ========================================================================= */
 
+/** Case-sensitive suffix test — this is what decides which program runs. */
 static bool has_extension(const char *path, const char *extension) {
   size_t path_size = strlen(path);
   size_t extension_size = strlen(extension);
@@ -1254,6 +1301,7 @@ static bool has_extension(const char *path, const char *extension) {
  *  `planet.jsonl.zst` becomes `planet.gdx` — the known dump suffixes fall
  *  away, everything else keeps its name.
  */
+/** The index path a dump implies when the caller named none. */
 static void derive_index_path(char *out, size_t size, const char *dump_path) {
   static const char *const suffixes[] = {".jsonl.zst", ".json.zst", ".zst", ".jsonl"};
   size_t length = strlen(dump_path);
@@ -1274,6 +1322,7 @@ static void derive_index_path(char *out, size_t size, const char *dump_path) {
 /** How many results are shown unless the caller asks for another number. */
 #define DEFAULT_RESULT_LIMIT 10
 
+/** Both invocations, their arguments and their defaults, in one screen. */
 static void print_usage(const char *program) {
   fatal(
       ERROR_USAGE,
@@ -1315,6 +1364,7 @@ static void print_usage(const char *program) {
 }
 
 /** Read a positive count, or end the program saying what was wrong. */
+/** Read a bounded count from the command line; anything outside the range is fatal. */
 static unsigned parse_count(const char *text, unsigned low, unsigned high, const char *name) {
   char *end;
   unsigned long value = strtoul(text, &end, 10);
@@ -1331,6 +1381,7 @@ static unsigned parse_count(const char *text, unsigned low, unsigned high, const
  *  is a mistyped argument rather than a place on earth, and a search silently
  *  run from nowhere would be the worse answer.
  */
+/** Read a "lat,lon" pair into search options; an unreadable one leaves them unset. */
 static GeoSearchOptions parse_position(const char *text) {
   char *end = NULL;
   double latitude = strtod(text, &end);
@@ -1360,6 +1411,7 @@ static GeoSearchOptions parse_position(const char *text) {
  *  @param[in,out] argv  Argument vector, closed up.
  *  @return The directory, or NULL when the option was not given.
  */
+/** Lift `--cache <dir>` out of the arguments so the rest can be read positionally. */
 static const char *take_cache_option(int *argc, char *argv[]) {
   static const char OPTION[] = "--cache";
   const char *directory = NULL;
@@ -1436,3 +1488,5 @@ int main(int argc, char *argv[]) {
   hostmem_mono_timer_init();
   return build_index(input, index_path, parser_thread_count, cache_directory);
 }
+
+/** @endcond */

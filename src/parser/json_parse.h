@@ -61,26 +61,42 @@ enum { PHOTON_PLACE_SEARCH_MAX = 128 };
  *  several times over.
  */
 typedef struct PhotonPlace {
-  const char *type; /**< address_type ("country", "state", …)           */
-  PhotonPlaceType typeEnum;
-  PhotonString own_name;                        /**< place display name ("name:de" or "name")  */
-  PhotonString street;                          /**< street of the address, or the entry itself */
-  PhotonString house;                           /**< house number, verbatim — "12A", "12-14", … */
-  PhotonString postcode;                        /**< postal code as written                     */
-  PhotonString city;                            /**< city of the address, or the entry itself   */
-  const char *country_code;                     /**< ISO 3166-1 alpha-2 country code            */
-  double importance;                            /**< Photon's own ranking weight, 0 when absent */
-  int32_t lon_e7;                               /**< longitude × 10⁷                            */
-  int32_t lat_e7;                               /**< latitude  × 10⁷                            */
-  int has_point;                                /**< a centroid was present                     */
-  PhotonString search[PHOTON_PLACE_SEARCH_MAX]; /**< role-free index texts  */
-  uint8_t search_count;                         /**< Strings in @c search.                        */
-  uint8_t search_dropped;                       /**< Strings that did not fit — 0 in sane data.   */
+  const char *type;         /**< The address_type as written: "country", "state", … */
+  PhotonPlaceType typeEnum; /**< The same, folded to a number; never UNKNOWN here. */
+  PhotonString own_name;    /**< Display name — "name:de" where there is one, else "name". */
+  PhotonString street;      /**< Street of the address, or the entry itself. */
+  PhotonString house;       /**< House number, verbatim: "12A", "12-14", … */
+  PhotonString postcode;    /**< Postal code as written. */
+  PhotonString city;        /**< City of the address, or the entry itself. */
+  const char *country_code; /**< ISO 3166-1 alpha-2. */
+  double importance;        /**< Photon's own weight; 0 when the entry named none. */
+  int32_t lon_e7;           /**< Longitude × 10⁷; meaningless unless @c has_point. */
+  int32_t lat_e7;           /**< Latitude × 10⁷; meaningless unless @c has_point. */
+  int has_point;            /**< A centroid was present. */
+  PhotonString search[PHOTON_PLACE_SEARCH_MAX]; /**< Role-free index texts. */
+  uint8_t search_count;                         /**< How many of them are filled. */
+  uint8_t search_dropped;                       /**< How many did not fit; 0 in sane data. */
 } PhotonPlace;
 
+/**
+ * @brief Whether the entry brought a coordinate of its own.
+ *
+ *  @param[in] place  The entry; not NULL.
+ *  @return true when @c lon_e7 and @c lat_e7 hold a centroid the dump named.
+ *          A house without one takes its street's position later, but that
+ *          happens in the collector, not here.
+ */
 bool photon_place_has_point(const PhotonPlace *place);
 
-/** Callback invoked once per Place content entry. */
+/**
+ * @brief Called once per Place content entry, with the entry still borrowed.
+ *
+ *  @param[in] place      The entry; every string in it points into the document
+ *                        being parsed and dies with the call.
+ *  @param[in] user_data  Whatever was handed to json_parse_line().
+ *  @return 0 when the entry was taken.  A non-zero return does not stop the walk
+ *          — the line is printed and parsing goes on to the next entry.
+ */
 typedef int (*PhotonPlaceCallback)(const PhotonPlace *place, void *user_data);
 
 /**
@@ -89,9 +105,9 @@ typedef int (*PhotonPlaceCallback)(const PhotonPlace *place, void *user_data);
  *  Callers aggregate these counters into a @c JsonStats.
  */
 typedef struct {
-  int is_valid;       /**< root was a JSON object (else malformed) */
-  int is_place;       /**< root type was "Place"                  */
-  size_t entry_count; /**< number of Place content entries        */
+  int is_valid;       /**< The root was a JSON object. */
+  int is_place;       /**< …and its `type` was `"Place"`. */
+  size_t entry_count; /**< Entries handed to the callback — the skipped ones not counted. */
 } JsonParseResult;
 
 /**
@@ -101,17 +117,26 @@ typedef struct {
  *  `<yyjson.h>`.  The yyjson scratch buffer is thread-local and grows to
  *  the longest line seen.
  *
- *  Strings in @p PhotonPlace point into the parsed JSON document and are
+ *  Strings in @ref PhotonPlace point into the parsed JSON document and are
  *  valid only during the callback — copy them if you need them to outlive
  *  the call.
  *
- *  @param[in]  line      JSON text (need not be null-terminated).
+ *  An entry whose `address_type` is `"other"` and which carries no house number
+ *  is passed over: it names nothing anyone searches for.  It is not counted in
+ *  @c entry_count either.
+ *
+ *  @param[in]  line      JSON text; need not be terminated.
  *  @param[in]  len       Byte length of @p line.
- *  @param[in]  callback  Invoked once per Place content entry.
- *  @param[in]  user_data Forwarded to @p callback on every invocation.
- *  @param[out] result    Document-level metadata for stats aggregation.
- *  @return true on success (including non-Place documents), false on
- *          JSON parse error.
+ *  @param[in]  callback  Invoked once per Place content entry that survives.
+ *  @param[in]  user_data Forwarded to @p callback unchanged.
+ *  @param[out] result    Document-level counts, for the statistics to add up.
+ *  @return Always 1.  There is no failure return, because there is no failure a
+ *          caller could act on.
+ *  @warning Three conditions end the process through fatal() rather than coming
+ *          back: JSON that will not parse, an entry without an `address_type`,
+ *          and an `address_type` this build does not know.  A dump is either
+ *          readable or it is not, and finding out halfway through a 24 GB file
+ *          is worse than finding out at the first line.
  */
 int json_parse_line(
     const char *line,
@@ -124,13 +149,11 @@ int json_parse_line(
 /**
  * @brief Serialize a PhotonPlace to a compact JSON string for debugging.
  *
- *  Writes into a thread-local static buffer (4 KiB).  The returned
- *  pointer is valid until the next call on the same thread.
- *  Basic JSON escaping is applied to string values.
+ *  Writes into a thread-local buffer of 4 KiB; the next call on the same thread
+ *  overwrites it.  String values are escaped enough to be read back.
  *
- *  @param[in] place  Place to serialize (NULL-safe, returns @c "null").
- *  @return JSON string (thread-local, ephemeral — copy if you need to
- *          keep it across calls).
+ *  @param[in] place  Place to write out; NULL yields @c "null".
+ *  @return The text, valid until this thread calls again.  Copy it to keep it.
  *
  *  @whisper A place speaks its full shape — for the debugger's eye alone
  */

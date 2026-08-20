@@ -14,6 +14,8 @@
 #include <time.h>
 #include <unistd.h>
 
+/** @cond INTERNAL */
+
 enum {
   /** How wide the bar is drawn, in cells. */
   PROGRESS_BAR_CELLS = 22,
@@ -44,17 +46,17 @@ static struct {
   uint64_t total;                /**< What the whole is, or 0 when unknown. */
   _Atomic uint64_t current;      /**< What has been done, as last reported. */
   ProgressPoll poll;             /**< Fetches the count when nobody reports it. */
-  void *poll_user;
-  hostmem_mono_timer start;
-  pthread_t ticker;
-  pthread_mutex_t mutex;
-  pthread_cond_t wake;
-  bool running;   /**< A step is open. */
-  bool ticking;   /**< …and a thread of its own is drawing it. */
-  bool stop;      /**< Asked to end; guarded by the mutex. */
-  bool tty;       /**< Someone is watching a terminal, so the line may move. */
-  bool line_open; /**< The announcement still waits for its end. */
-  size_t drawn;   /**< Cells standing on the line, so they can be wiped. */
+  void *poll_user;               /**< Handed back to @c poll unchanged. */
+  hostmem_mono_timer start;      /**< When the step was announced. */
+  pthread_t ticker;              /**< Draws the bar; valid while @c ticking. */
+  pthread_mutex_t mutex;         /**< Guards everything below @c current. */
+  pthread_cond_t wake;           /**< How the ticker is asked to stop early. */
+  bool running;                  /**< A step is open. */
+  bool ticking;                  /**< …and a thread of its own is drawing it. */
+  bool stop;                     /**< Asked to end; guarded by the mutex. */
+  bool tty;                      /**< Someone is watching a terminal, so the line may move. */
+  bool line_open;                /**< The announcement still waits for its end. */
+  size_t drawn;                  /**< Cells standing on the line, so they can be wiped. */
 } g = {.mutex = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER};
 
 /* =========================================================================
@@ -235,6 +237,7 @@ static bool wait_for_end(unsigned millis) {
   return stop;
 }
 
+/** The count as it stands: reported by the work, or fetched from it. */
 static uint64_t read_current(void) {
   return g.poll ? g.poll(g.poll_user) : atomic_load(&g.current);
 }
@@ -356,3 +359,5 @@ void progress_end(void) {
   g.poll_user = NULL;
   g.total = 0;
 }
+
+/** @endcond */

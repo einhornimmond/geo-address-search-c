@@ -146,9 +146,9 @@ Requirements: Zig ≥ 0.15.1, pthreads, Linux.
 
 ## Embedding
 
-`client.h` is the whole surface of the reading library — five functions, an opaque
-handle, its own status enum, `extern "C"` for C++. It depends on nothing but `stdbool`,
-`stddef` and `stdint`.
+`client.h` is the whole surface of the reading library — six functions, an opaque
+handle, its own status enum, `extern "C"` for C++. Beyond `stdbool`, `stddef` and
+`stdint` it names only two headers of ours, and both hold plain types.
 
 ```c
 #include <geoindex/client.h>

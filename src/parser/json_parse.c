@@ -12,6 +12,7 @@
  *  Field helpers
  * ========================================================================= */
 
+/** Borrow a string value with its length; a non-string yields the empty borrow. */
 static PhotonString string_of(yyjson_val *value) {
   PhotonString result = {NULL, 0};
   if (yyjson_is_str(value)) {
@@ -21,6 +22,13 @@ static PhotonString string_of(yyjson_val *value) {
   return result;
 }
 
+/**
+ * @brief Prefer the German reading of a field, fall back to the neutral one.
+ *
+ *  The dump carries a variant per language, and this build answers in German
+ *  where the data offers it.  A @p fallback_key of NULL means there is nothing
+ *  to fall back to and the German reading is the only one wanted.
+ */
 static PhotonString localized(
     yyjson_val *object, const char *german_key, const char *fallback_key
 ) {
@@ -29,17 +37,31 @@ static PhotonString localized(
   return string_of(value);
 }
 
+/** A string field as a bare pointer, for the few values whose length is not needed. */
 static const char *plain(yyjson_val *object, const char *key) {
   yyjson_val *value = yyjson_obj_get(object, key);
   return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
 }
 
+/** The entry's own name out of its `name` object, German first. */
 static PhotonString place_name(yyjson_val *place) {
   yyjson_val *names = yyjson_obj_get(place, "name");
   PhotonString empty = {NULL, 0};
   return yyjson_is_obj(names) ? localized(names, "name:de", "name") : empty;
 }
 
+/**
+ * @brief Fold the `address_type` string into a number, reading as few bytes as it takes.
+ *
+ *  A chain of comparisons on single characters rather than a run of `strcmp`:
+ *  the first byte separates all but three pairs, and one more byte settles each
+ *  of those.  This runs once per entry over a dump of hundreds of millions, so
+ *  the bytes not read add up.
+ *
+ *  Only the nine types the dump actually carries are recognised.  Anything else
+ *  comes back as @ref PHOTON_PLACE_TYPE_UNKNOWN, which the caller treats as a
+ *  dump this build cannot read rather than as an entry to skip.
+ */
 static PhotonPlaceType detectTypeEnum(const char *type) {
   if (type) {
     if (type[0] == 'h')
@@ -158,16 +180,29 @@ static bool key_is_german(const char *key, size_t key_size) {
   return key_size > 3 && memcmp(key + key_size - 3, ":de", 3) == 0;
 }
 
+/** How extract_place() ended: taken, passed over, or a dump that cannot be read. */
 typedef enum ResultType {
-  RESULT_SUCCESS,
-  RESULT_SKIP,
-  RESULT_ERROR_UNKNOWN_TYPE,
-  RESULT_ERROR_MISSING_TYPE,
+  RESULT_SUCCESS,            /**< The entry is filled in and worth indexing. */
+  RESULT_SKIP,               /**< Nothing wrong with it, nothing to index either. */
+  RESULT_ERROR_UNKNOWN_TYPE, /**< An `address_type` this build does not name. */
+  RESULT_ERROR_MISSING_TYPE, /**< No `address_type` at all. */
 } ResultType;
 
 /* =========================================================================
  *  Extract one content entry into a PhotonPlace
  * ========================================================================= */
+
+/**
+ * @brief Read one content entry into @p p — answer fields by role, the rest as text.
+ *
+ *  Every string is borrowed from the document, so @p p is only as alive as the
+ *  parse around it.  The entry is walked once: a key that names an answer field
+ *  is filed by its role, and everything else joins the role-free search list.
+ *
+ *  @param[in]  entry  One object out of the `content` array.
+ *  @param[out] p      Zeroed first, then filled; untouched fields stay NULL.
+ *  @return What became of it; see @ref ResultType.
+ */
 static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   memset(p, 0, sizeof(*p));
 
@@ -406,6 +441,7 @@ int json_parse_line(
  *  Debug serialisation — PhotonPlace → JSON string (via yyjson mutable API)
  * ========================================================================= */
 
+/** Add a field only when the entry carried it, so absent stays absent in the output. */
 static void add_string_field(
     yyjson_mut_doc *doc, yyjson_mut_val *root, const char *key, PhotonString text
 ) {

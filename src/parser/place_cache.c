@@ -233,6 +233,14 @@ typedef struct RecordBuilder {
   bool overflowed;
 } RecordBuilder;
 
+/**
+ * @brief Append raw bytes, growing the buffer when they do not fit.
+ *
+ *  The writing family below all comes through here, and so does the one way it
+ *  can fail: a growth that cannot be served sets @c overflowed and every later
+ *  put becomes a no-op.  Nothing is checked at each call site, and the record is
+ *  discarded once, at the end, by whoever reads that flag.
+ */
 static void put_bytes(RecordBuilder *b, const void *data, size_t size) {
   if (b->overflowed) return;
   if (b->used + size > *b->capacity) {
@@ -248,6 +256,9 @@ static void put_bytes(RecordBuilder *b, const void *data, size_t size) {
   memcpy(*b->buffer + b->used, data, size);
   b->used += size;
 }
+
+/* Fixed-width writes, host byte order throughout — a cache is read only by the
+   machine that wrote it, and PLACE_CACHE_MAGIC plus the stamp make sure of it. */
 
 static void put_u8(RecordBuilder *b, uint8_t value) {
   put_bytes(b, &value, 1);
@@ -442,6 +453,14 @@ typedef struct RecordCursor {
   bool short_of_bytes;
 } RecordCursor;
 
+/**
+ * @brief Borrow @p size bytes from the cursor, or refuse for good.
+ *
+ *  The mirror of put_bytes(): the reading family comes through here, and a
+ *  record that runs short sets @c short_of_bytes once.  Every take after that
+ *  answers with nothing, so a truncated file is caught at the end of the record
+ *  rather than checked field by field.
+ */
 static const void *take(RecordCursor *c, size_t size) {
   if (c->short_of_bytes || c->position + size > c->size) {
     c->short_of_bytes = true;
@@ -451,6 +470,9 @@ static const void *take(RecordCursor *c, size_t size) {
   c->position += size;
   return at;
 }
+
+/* Fixed-width reads mirroring the writes above; a short record yields zeros,
+   and the cursor's flag is what says they are not real values. */
 
 static uint8_t take_u8(RecordCursor *c) {
   const uint8_t *at = take(c, 1);

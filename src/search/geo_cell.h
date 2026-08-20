@@ -43,8 +43,7 @@
  *  strings.  Cells are not stored anywhere else: a document already carries its
  *  coordinate, and the cell is derived from it whenever it is needed.
  *
- *  @whisper A place says where it stands in a word, and the words that stand near it answer
- * together
+ *  @whisper A place says where it stands in a word, and neighbours answer together
  *  @{
  */
 

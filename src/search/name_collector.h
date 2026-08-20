@@ -7,7 +7,7 @@
  *  Each parser thread owns one @ref NameCollector.  A name's first
  *  @ref NAME_PREFIX_DEPTH bytes travel down the index tree and come back as a
  *  dense group index; the name itself is stored **without** those bytes,
- *  copied into a @ref hostmem_multi_arena.  Only prefixes that actually occur
+ *  copied into a @c hostmem_multi_arena.  Only prefixes that actually occur
  *  exist — no empty space is reserved for the ones that never come.  Nothing
  *  here is synchronised; a collector belongs to exactly one thread and
  *  collecting stays lock-free.

@@ -45,7 +45,7 @@ HOSTMEM_BVEC_DECLARE(house_vec, HouseEntry, 11, extern)
 
 /** One thread's harvest of the third pass. */
 typedef struct HouseCollector {
-  house_vec houses;
+  house_vec houses;            /**< What this thread gathered, in the order it met them. */
   uint64_t homeless;           /**< Houses whose street the index never learned. */
   uint64_t pointless;          /**< Houses that brought no coordinate and took their street's. */
   uint64_t without_number;     /**< Entries carrying no house number at all. */
@@ -103,18 +103,18 @@ size_t house_collector_count(const HouseCollector *collector);
  *  stretch, which costs one number and keeps the lookup a single index.
  */
 typedef struct HouseSet {
-  GeoHouse *houses;
-  size_t house_count;
-  uint32_t *offsets;
-  size_t document_count;
-  uint64_t homeless;
-  uint64_t pointless;
-  uint64_t without_number;
-  uint64_t unknown_street;
-  uint64_t unknown_key;
-  uint64_t recovered_city;
-  uint64_t recovered_postcode;
-  uint64_t recovered_nearest;
+  GeoHouse *houses;            /**< Every house of every thread, ordered by street. */
+  size_t house_count;          /**< Entries in @c houses. */
+  uint32_t *offsets;           /**< Where each document's houses begin; @c document_count + 1. */
+  size_t document_count;       /**< Documents the offsets cover. */
+  uint64_t homeless;           /**< Houses whose street the index never learned. */
+  uint64_t pointless;          /**< Houses with no coordinate; they took their street's. */
+  uint64_t without_number;     /**< Entries that named a street but no number. */
+  uint64_t unknown_street;     /**< Street names the dictionary did not carry. */
+  uint64_t unknown_key;        /**< Street, town and postcode known, the combination not. */
+  uint64_t recovered_city;     /**< Placed after the postcode was let go of. */
+  uint64_t recovered_postcode; /**< Placed after the town was let go of. */
+  uint64_t recovered_nearest;  /**< Placed by nearness, with neither one matching. */
 } HouseSet;
 
 /**

@@ -1,6 +1,6 @@
 /** @defgroup foundation Foundation
- *  @brief The ground the program stands on — buffers, arenas, durations,
- *         progress and last words.
+ *  @brief The ground the program stands on — buffers, durations, progress and
+ *         last words.
  *
  *  Parent group for the modules that carry no knowledge of places, dumps or
  *  indexes.  Everything above rests on them; they rest on nothing of ours,
@@ -9,8 +9,12 @@
 
 /** @defgroup error Error handling
  *  @ingroup foundation
- *  @brief Terminal and diagnostic messages — where the program speaks its last words or
- *         leaves a quiet note in passing.
+ *  @brief Where the program speaks its last words, or leaves a quiet note in
+ *         passing.
+ *
+ *  Two functions, and the difference between them is whether the program goes
+ *  on afterwards.  Both belong to the builder alone: the client library ends no
+ *  process and writes to no stream — it answers with a @ref GeoStatus instead.
  *  @{
  */
 
@@ -21,15 +25,22 @@
 #include "types/error_art.h"
 
 /**
- * @brief Deliver a final message and exit.
+ * @brief Deliver a final message and end the process.
  *
- *  Formats a printf-style message, writes it to stderr, and calls `exit(1)`.
- *  This function never returns — it is the last breath of a doomed path.
+ *  Writes a banner for @p art, then the formatted message, then leaves through
+ *  `exit(EXIT_FAILURE)`.  The message goes to stderr, and so does every banner
+ *  but @ref ERROR_INFO's, which goes to stdout.
  *
- *  @param art   The category of the error (used for future routing).
- *  @param fmt   printf-style format string.
- *  @param ...   Format arguments.
+ *  This is for the paths where continuing would be a lie: a dump that will not
+ *  open, an arena that cannot be grown, an invariant that has already given
+ *  way.  Anything a caller could reasonably handle returns a
+ *  @c hostmem_result instead and lets them decide.
  *
+ *  @param art  Which failure this is, choosing the banner.
+ *  @param fmt  printf-style format for the line under it.
+ *  @param ...  Arguments for @p fmt.
+ *  @note @ref ERROR_INFO is accepted like any other art and ends the process
+ *        just the same — the friendly banner does not make the call gentler.
  *  @whisper Every ending names its season
  */
 _Noreturn void fatal(ErrorArt art, const char *fmt, ...);
@@ -37,12 +48,16 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...);
 /**
  * @brief Whisper a diagnostic without disturbing the flow.
  *
- *  Like `fatal` without the exit — prints an informational message
- *  to stderr so the operator can observe the inner movement.
+ *  The counterpart to fatal(): something worth mentioning happened and the
+ *  program carries on regardless — a buffer that had to grow, a fallback that
+ *  was taken.
  *
- *  @param fmt   printf-style format string.
- *  @param ...   Format arguments.
- *
+ *  @param fmt  printf-style format.
+ *  @param ...  Arguments for @p fmt.
+ *  @warning Currently silent: the body returns before writing anything, so a call
+ *           costs nothing and shows nothing.  The call sites are written as though
+ *           it printed — read them that way, and do not read a missing line as a
+ *           sign that nothing happened.
  *  @whisper A quiet note on passing water
  */
 void info(const char *fmt, ...);
