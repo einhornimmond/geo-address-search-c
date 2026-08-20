@@ -1,0 +1,58 @@
+# Review settings for this repository.
+# Schema: https://docs.coderabbit.ai/reference/yaml-template
+#
+# The house style lives in AGENTS.md and this file points the reviewer at it.
+# Everything here narrows how comments are judged; nothing here narrows the search
+# for real defects.
+
+language: en-US
+
+reviews:
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Read AGENTS.md in the repository root first. It is the authority on comment
+        style here, and it asks for something narrower than a default review expects.
+
+        COMMENT STYLE — do not report these as findings:
+        - Comments carry two layers on purpose: an exact technical specification and a
+          plain description of the process. AGENTS.md says "prioritise poetic precision
+          over dry correctness" and "never: specification without semantic flow". Do not
+          ask for narrative prose to be replaced by terser API contracts. Judge whether
+          the technical content is complete and correct, not how it reads.
+        - AGENTS.md lists "constraints", "edge cases", "widths", "limits" and "return
+          behavior" as content the technical layer must COVER. They are categories, not
+          words. Do not ask for those terms to appear literally in a comment.
+        - `@whisper` is a deliberate one-line closing image. It is not noise, and an
+          existing one is not removed unless the function changed completely.
+        - Implementation files are wrapped in `@cond INTERNAL`. Helper families with one
+          shared block comment above them (the banner printers in error.c, the
+          put_*/take_* pairs in place_cache.c) are documented as families on purpose.
+
+        ACCURACY — please do keep reporting these:
+        - A comment that claims behaviour the code does not have. Several such were found
+          and fixed recently and they are the most valuable findings on this codebase.
+        - A documented return code the function cannot return, or a code it can return
+          that is undocumented. Check the implementation before asserting either.
+        - A documented limit that does not match the code, or an enforced limit that is
+          undocumented.
+
+        DEFENSIVE CODE — weigh reachability before asking for a guard:
+        - Sizes are `uint32_t` throughout, and the index format caps documents and word
+          ranks there. A guard against exceeding `SIZE_MAX` by summing at most sixteen
+          physically-bounded counts guards nothing; say so rather than asking for it.
+        - A multiplication that reaches `malloc` unchecked is worth reporting, because a
+          wrapped size is served small and then written past.
+        - The collectors' `_init` functions allocate nothing. There is no half-built state
+          to unwind and no allocation error to document.
+
+    - path: "third_party/**"
+      instructions: |
+        Vendored code. It is never edited in this repository — a bug is worked around in
+        our own code under src/. Do not propose changes here.
+
+    - path: "tests/**"
+      instructions: |
+        A test that deliberately leaves a structure in an unusual state at teardown is
+        usually exercising a path on purpose. Check what the test is pinning before
+        reporting the state as a leak or a missing precondition.

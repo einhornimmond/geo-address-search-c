@@ -12,8 +12,11 @@ int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t 
   uint64_t divisor;
   const char *suffix;
 
-  /* The widest divisor is 2^40, whose remainders run out of meaning long before
-     fifteen places; nothing below the cap is ever reached in practice. */
+  /* The cap is what makes the result sizeable. `precision` is a uint8_t, and 255
+     places would put 267 bytes on a caller who reasonably expected far fewer; at
+     15 the longest result any input can produce is 27 bytes. Nothing is lost by
+     it that the scale still holds: a remainder over 2^40 has forty decimal places
+     before it terminates, so every one of the fifteen is a real digit. */
   if (precision > 15) { precision = 15; }
 
   /* A ladder of comparisons rather than a table: five rungs, each one a

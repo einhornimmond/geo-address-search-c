@@ -43,14 +43,17 @@
  *  @param[in]  buffer_size Bytes available in @p buffer, the terminator included.
  *  @param[in]  bytes       The count to spell out.
  *  @param[in]  precision   Decimal places to keep; anything above 15 is taken as 15.
- *                          The remainders run dry before that in any case — a divisor of
- *                          2^40 has some thirteen decimal places in it, and the rest of
- *                          what is asked for comes back as zeros.
+ *                          The cap is there to bound the result, not because the digits
+ *                          run out: a divisor of 2^40 needs forty places before its
+ *                          expansion terminates, so all fifteen are real digits at the
+ *                          `TB` scale.  Only `KB`, whose divisor is 2^10, runs dry
+ *                          inside the cap and pads the last five places with zeros.
  *  @return Characters written, the terminator not counted — so a destination holds the
  *          result when it has one byte more than this.  When @p buffer_size did not
  *          reach, the very same figure comes back for a result that was not written, so
  *          a caller may size from it and call again.  Never negative, and never above
- *          39: twenty digits, a point, fifteen places and the longest suffix.
+ *          27: the divisor holds the whole part to eight digits, and a point, fifteen
+ *          places and the longest suffix follow it.
  *  @note A caller that only wants the length may pass 0 for @p buffer_size: nothing is
  *        written and the figure comes back all the same.
  *  @whisper Size settles into the scale it needs

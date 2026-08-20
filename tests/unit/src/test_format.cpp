@@ -96,6 +96,28 @@ TEST(Format, TooSmallABufferAsksForRoomInsteadOfOverrunning) {
   EXPECT_EQ(buffer[3], 'x');
 }
 
+TEST(Format, NoResultOutgrowsTheDocumentedCeiling) {
+  // The header promises 27 characters at most, and a caller may size a buffer by
+  // it. The whole part cannot pass eight digits because the divisor is chosen to
+  // keep it under 1024 except at TB, where UINT64_MAX / 2^40 is 16777215.
+  const uint64_t worst[] = {UINT64_MAX, 1024ULL * kTB - 1, kTB + 1, kMB - 1, 0};
+  for (uint64_t v : worst) {
+    char buffer[64];
+    int n = format_byte_units(buffer, sizeof(buffer), v, 15);
+    ASSERT_GE(n, 0);
+    EXPECT_LE(n, 27) << v << " -> " << buffer;
+    EXPECT_EQ((size_t)n, std::strlen(buffer));
+  }
+  EXPECT_EQ(Format(UINT64_MAX, 15), "16777215.999999999999090 TB");
+}
+
+TEST(Format, FifteenPlacesAreRealDigitsWhereTheDivisorIsWideEnough) {
+  // A fraction over 2^40 needs forty places to terminate, so nothing is padded at
+  // the TB scale. Over 2^10 it terminates after ten, and the rest really are zeros.
+  EXPECT_EQ(Format(UINT64_MAX, 15), "16777215.999999999999090 TB");
+  EXPECT_EQ(Format(kMB - 1, 15), "1023.999023437500000 KB");
+}
+
 TEST(Format, AnAbsurdPrecisionIsCappedRatherThanTrusted) {
   char buffer[128];
   int rc = format_byte_units(buffer, sizeof(buffer), 5 * kGB, 200);
