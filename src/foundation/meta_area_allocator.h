@@ -1,5 +1,3 @@
-#pragma once
-
 /** @defgroup meta_area_allocator Meta-Area Allocator
  *  @ingroup foundation
  *  @brief Multi-arena bump allocator - chains 32 MiB arenas backed by
