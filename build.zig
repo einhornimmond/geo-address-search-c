@@ -37,7 +37,6 @@ const unit_tests = [_][]const u8{
     "test_json_parse",
     "test_json_stats",
     "test_line_buffer",
-    "test_meta_area_allocator",
     "test_name_collector",
     "test_parse_queue",
     "test_place_cache",
@@ -66,7 +65,7 @@ pub fn build(b: *std.Build) !void {
     ) orelse "bindings/node/node_modules/node-api-headers/include";
 
     const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
-    const blockchain_core = b.dependency("blockchain_core", .{ .target = target, .optimize = optimize });
+    const hostmem = b.dependency("hostmem", .{ .target = target, .optimize = optimize });
 
     // CRoaring is compiled by both artifacts, with the same flags
     var roaring_flags: std.ArrayList([]const u8) = .empty;
@@ -91,12 +90,12 @@ pub fn build(b: *std.Build) !void {
     lib.linkLibC();
     lib.root_module.addCMacro("_GNU_SOURCE", "1");
 
-    // blockchain-core comes in whole: the client names grd_result from its
-    // headers and grdu_uint64_to_string from its object code, rather than
+    // hostmem comes in whole: the client names hostmem_result from its
+    // headers and hostmem_uint64_to_string from its object code, rather than
     // keeping a second copy of a conversion that already exists there.
-    lib.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+    lib.linkLibrary(hostmem.artifact("hostmem"));
     lib.addIncludePath(b.path("src"));
-    lib.addIncludePath(blockchain_core.path("include"));
+    lib.addIncludePath(hostmem.path("include"));
     lib.addIncludePath(b.path("third_party/CRoaring/include"));
     lib.addCSourceFiles(.{
         .root = b.path("third_party/CRoaring"),
@@ -143,8 +142,8 @@ pub fn build(b: *std.Build) !void {
     // on Linux and Windows this is the default for a shared library.
     addon.addIncludePath(b.path(node_headers));
     addon.addIncludePath(b.path("src"));
-    addon.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
-    addon.addIncludePath(blockchain_core.path("include"));
+    addon.linkLibrary(hostmem.artifact("hostmem"));
+    addon.addIncludePath(hostmem.path("include"));
     addon.addIncludePath(b.path("third_party/CRoaring/include"));
     addon.addCSourceFiles(.{
         .root = b.path("third_party/CRoaring"),
@@ -195,9 +194,9 @@ pub fn build(b: *std.Build) !void {
     core.linkLibC();
     core.root_module.addCMacro("_GNU_SOURCE", "1");
     core.linkLibrary(zstd.artifact("zstd"));
-    core.linkLibrary(blockchain_core.artifact("gradido_blockchain_core"));
+    core.linkLibrary(hostmem.artifact("hostmem"));
     core.addIncludePath(b.path("src"));
-    core.addIncludePath(blockchain_core.path("include"));
+    core.addIncludePath(hostmem.path("include"));
     core.addIncludePath(b.path("third_party/yyjson/src"));
     core.addIncludePath(b.path("third_party/stb"));
     core.addIncludePath(b.path("third_party/CRoaring/include"));
@@ -234,7 +233,7 @@ pub fn build(b: *std.Build) !void {
     // headers main.c reaches for have to be named again here.
     exe.linkLibrary(zstd.artifact("zstd"));
     exe.addIncludePath(b.path("src"));
-    exe.addIncludePath(blockchain_core.path("include"));
+    exe.addIncludePath(hostmem.path("include"));
     exe.addIncludePath(b.path("third_party/yyjson/src"));
     exe.addIncludePath(b.path("third_party/stb"));
     exe.addIncludePath(b.path("third_party/CRoaring/include"));
@@ -287,7 +286,7 @@ pub fn build(b: *std.Build) !void {
             t.root_module.addCMacro("_GNU_SOURCE", "1");
             t.addIncludePath(b.path("src"));
             t.addIncludePath(b.path("tests/unit/src"));
-            t.addIncludePath(blockchain_core.path("include"));
+            t.addIncludePath(hostmem.path("include"));
             t.addIncludePath(b.path("third_party/yyjson/src"));
             t.addIncludePath(b.path("third_party/CRoaring/include"));
             // No -cflags here on purpose: Zig appends the resolved target triple

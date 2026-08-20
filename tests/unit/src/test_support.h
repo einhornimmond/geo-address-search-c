@@ -100,7 +100,7 @@ struct MiniPlace {
  *          given back and the file does not exist.
  */
 inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &places) {
-  MetaAreaAllocator *alloc = meta_area_allocator_create();
+  hostmem_multi_arena *alloc = hostmem_multi_arena_create(NAME_ARENA_CAPACITY, 0, nullptr, nullptr);
   if (!alloc) return false;
 
   NameCollector words{};
@@ -141,8 +141,8 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     return (uint32_t)rank;
   };
 
-  if (name_collector_init(&words, alloc) != GRD_SUCCESS) goto done;
-  if (name_collector_init(&display, alloc) != GRD_SUCCESS) goto done;
+  if (name_collector_init(&words, alloc) != HOSTMEM_SUCCESS) goto done;
+  if (name_collector_init(&display, alloc) != HOSTMEM_SUCCESS) goto done;
 
   /* --- pass one: everything anyone might type, and everything shown back.
          The cell a place stands in joins the search words exactly as the
@@ -164,17 +164,17 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     for (const std::string &number : p.houses) add_written(number);
   }
 
-  if (name_collector_finish(&words, &word_run) != GRD_SUCCESS) goto done;
-  if (name_collector_finish(&display, &display_run) != GRD_SUCCESS) goto done;
+  if (name_collector_finish(&words, &word_run) != HOSTMEM_SUCCESS) goto done;
+  if (name_collector_finish(&display, &display_run) != HOSTMEM_SUCCESS) goto done;
   {
     const NameRun *word_runs[1] = {&word_run};
     const NameRun *display_runs[1] = {&display_run};
-    if (name_run_merge(&word_set, word_runs, 1, 1) != GRD_SUCCESS) goto done;
-    if (name_run_merge(&display_set, display_runs, 1, 1) != GRD_SUCCESS) goto done;
+    if (name_run_merge(&word_set, word_runs, 1, 1) != HOSTMEM_SUCCESS) goto done;
+    if (name_run_merge(&display_set, display_runs, 1, 1) != HOSTMEM_SUCCESS) goto done;
   }
 
   /* --- pass two: a record per place, and the words that point at it --- */
-  if (doc_collector_init(&docs) != GRD_SUCCESS) goto done;
+  if (doc_collector_init(&docs) != HOSTMEM_SUCCESS) goto done;
   for (const MiniPlace &p : places) {
     GeoDocument record{};
     record.lat_e7 = p.lat_e7;
@@ -187,7 +187,7 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     record.flags = p.has_point ? GEO_DOCUMENT_HAS_POINT : 0u;
 
     uint32_t number = 0;
-    if (doc_collector_add_document(&docs, &record, &number) != GRD_SUCCESS) goto done;
+    if (doc_collector_add_document(&docs, &record, &number) != HOSTMEM_SUCCESS) goto done;
 
     {
       std::vector<const std::string *> texts = {&p.name, &p.city, &p.postcode};
@@ -198,7 +198,7 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
         for (size_t i = 0; i < n; ++i) {
           size_t rank = 0;
           if (!name_set_rank(&word_set, tok.tokens[i].data, tok.tokens[i].size, &rank)) continue;
-          if (doc_collector_add_posting(&docs, (uint32_t)rank) != GRD_SUCCESS) goto done;
+          if (doc_collector_add_posting(&docs, (uint32_t)rank) != HOSTMEM_SUCCESS) goto done;
         }
       }
     }
@@ -207,13 +207,13 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
       size_t cell_size = geo_cell_token(cell, geo_cell_of(p.lat_e7, p.lon_e7));
       size_t rank = 0;
       if (name_set_rank(&word_set, cell, cell_size, &rank)) {
-        if (doc_collector_add_posting(&docs, (uint32_t)rank) != GRD_SUCCESS) goto done;
+        if (doc_collector_add_posting(&docs, (uint32_t)rank) != HOSTMEM_SUCCESS) goto done;
       }
     }
   }
   {
     DocCollector *doc_list[1] = {&docs};
-    if (doc_collector_merge(&doc_set, doc_list, 1, word_set.count) != GRD_SUCCESS) goto done;
+    if (doc_collector_merge(&doc_set, doc_list, 1, word_set.count) != HOSTMEM_SUCCESS) goto done;
   }
 
   /* --- pass three: the numbers hang on the streets they belong to.
@@ -221,7 +221,7 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
          position in the list says nothing about where its record ended up —
          the street has to be looked up by what identifies it, exactly as the
          builder's third pass does. --- */
-  if (house_collector_init(&houses) != GRD_SUCCESS) goto done;
+  if (house_collector_init(&houses) != HOSTMEM_SUCCESS) goto done;
   for (const MiniPlace &p : places) {
     if (p.houses.empty()) continue;
     int relaxed = 0;
@@ -235,20 +235,20 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
       if (number == GEO_RANK_NONE) continue;
       if (house_collector_add(
               &houses, document, &doc_set.documents[document], number, p.lat_e7, p.lon_e7, 1
-          ) != GRD_SUCCESS) {
+          ) != HOSTMEM_SUCCESS) {
         goto done;
       }
     }
   }
   {
     HouseCollector *house_list[1] = {&houses};
-    if (house_collector_merge(&house_set, house_list, 1, doc_set.document_count) != GRD_SUCCESS) {
+    if (house_collector_merge(&house_set, house_list, 1, doc_set.document_count) != HOSTMEM_SUCCESS) {
       goto done;
     }
   }
 
   ok = geo_index_write(path, &word_set, &display_set, &doc_set, &house_set, total_terms) ==
-       GRD_SUCCESS;
+       HOSTMEM_SUCCESS;
 
 done:
   house_set_free(&house_set);
@@ -262,7 +262,7 @@ done:
   name_collector_free(&words);
   name_collector_free(&display);
   /* the names point into the arenas, so these outlive everything above */
-  meta_area_allocator_destroy(alloc);
+  hostmem_multi_arena_destroy(alloc, nullptr);
   if (!ok) std::remove(path);
   return ok;
 }

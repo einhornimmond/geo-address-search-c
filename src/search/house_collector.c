@@ -5,14 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-GRDU_BVEC_DEFINE(house_vec, HouseEntry, 11, )
+HOSTMEM_BVEC_DEFINE(house_vec, HouseEntry, 11, )
 
 /* =========================================================================
  *  Per-thread collecting
  * ========================================================================= */
 
-grd_result house_collector_init(HouseCollector *collector) {
-  if (!collector) return GRD_ERROR_NULL_POINTER;
+hostmem_result house_collector_init(HouseCollector *collector) {
+  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
   collector->homeless = 0;
   collector->pointless = 0;
   collector->without_number = 0;
@@ -29,7 +29,7 @@ void house_collector_free(HouseCollector *collector) {
   house_vec_free(&collector->houses);
 }
 
-grd_result house_collector_add(
+hostmem_result house_collector_add(
     HouseCollector *collector,
     uint32_t document,
     const GeoDocument *street,
@@ -38,7 +38,7 @@ grd_result house_collector_add(
     int32_t lon_e7,
     int has_point
 ) {
-  if (!collector || !street) return GRD_ERROR_NULL_POINTER;
+  if (!collector || !street) return HOSTMEM_ERROR_NULL_POINTER;
 
   HouseEntry entry = {
       .document = document,
@@ -68,17 +68,17 @@ static int compare_house(const void *lhs, const void *rhs) {
   return a < b ? -1 : (a > b ? 1 : 0);
 }
 
-grd_result house_collector_merge(
+hostmem_result house_collector_merge(
     HouseSet *out, HouseCollector *const *collectors, size_t collector_count, size_t document_count
 ) {
-  if (!out) return GRD_ERROR_NULL_POINTER;
+  if (!out) return HOSTMEM_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
-  if (collector_count && !collectors) return GRD_ERROR_NULL_POINTER;
+  if (collector_count && !collectors) return HOSTMEM_ERROR_NULL_POINTER;
   out->document_count = document_count;
 
   size_t house_count = 0;
   for (size_t c = 0; c < collector_count; ++c) {
-    if (!collectors[c]) return GRD_ERROR_NULL_POINTER;
+    if (!collectors[c]) return HOSTMEM_ERROR_NULL_POINTER;
     house_count += house_collector_count(collectors[c]);
     out->homeless += collectors[c]->homeless;
     out->pointless += collectors[c]->pointless;
@@ -91,14 +91,14 @@ grd_result house_collector_merge(
   }
 
   uint32_t *offsets = calloc(document_count + 1, sizeof(*offsets));
-  if (!offsets) return GRD_ERROR_OUT_OF_MEMORY;
+  if (!offsets) return HOSTMEM_ERROR_OUT_OF_MEMORY;
   if (!house_count) {
     out->offsets = offsets;
-    return GRD_SUCCESS;
+    return HOSTMEM_SUCCESS;
   }
   if (house_count > UINT32_MAX) {
     free(offsets);
-    return GRD_ERROR_ARITHMETIC_OVERFLOW;
+    return HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
   }
 
   /* --- how many houses stand on each street --- */
@@ -125,7 +125,7 @@ grd_result house_collector_merge(
     free(houses);
     free(cursor);
     free(offsets);
-    return GRD_ERROR_OUT_OF_MEMORY;
+    return HOSTMEM_ERROR_OUT_OF_MEMORY;
   }
   memcpy(cursor, offsets, document_count * sizeof(*cursor));
 
@@ -151,7 +151,7 @@ grd_result house_collector_merge(
   out->houses = houses;
   out->house_count = running;
   out->offsets = offsets;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
 void house_set_free(HouseSet *set) {

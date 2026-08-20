@@ -1,7 +1,12 @@
 /** @defgroup format Formatting
  *  @ingroup foundation
- *  @brief Human-readable representations for bytes that emerge from the raw
- *         count — the final layer of legibility.
+ *  @brief Byte counts made legible — the last layer between a number and a
+ *         person reading it.
+ *
+ *  One function, and it earns its place by being the only spelling of a size in
+ *  the program: every progress line, every summary and every report of what an
+ *  index cost goes through it, so they all round the same way and carry the same
+ *  units.
  *  @{
  */
 
@@ -11,29 +16,51 @@
 #include <stdint.h>
 
 /**
- * @brief Format a size in bytes into a human-readable string, letting the most
- *        natural unit emerge.
+ * @brief Write a byte count in the largest unit that leaves a whole number in
+ *        front of the point.
  *
- * Takes a size in bytes and flows it into the most natural scale:
- * B, KB, MB, GB, TB. The precision parameter shapes how many decimal places
- * settle into the output — truncated with clean edges, never rounded.
+ *  The scale emerges from the size itself: below 1024 bytes it stays `B`, and
+ *  from there it climbs through `KB`, `MB`, `GB` to `TB`, each step a factor of
+ *  1024.  Decimals are cut, never rounded — `precision` 3 over 1.234567 MB
+ *  yields `"1.234 MB"`, and the digits that fall away fall away silently.
  *
- * Writes into the provided buffer only if sufficient space exists.
+ *  Cut exactly, at every size there is.  The whole part and each decimal place
+ *  come from integer division by the divisor, never from a `double`: the largest
+ *  count of all reads `"16777215.99 TB"`, where a `double` quotient would have
+ *  rounded up to `16777216.00` and turned a truncation into its opposite.  `TB`
+ *  is the last unit, so beyond 1024 TB the figure in front of the point simply
+ *  grows.
  *
- * @param[out] buffer        Destination buffer for the resulting string.
- * @param[in]  buffer_size   Size of buffer in bytes (must include space for '\0').
- * @param[in]  bytes         Size in bytes (must be >= 0).
- * @param[in]  precision     Decimal places after the point (capped at 15 to prevent overflow).
+ *  Bytes are the one scale with no decimals: a count under 1024 is a whole
+ *  number already, so `precision` is ignored there and `"512 B"` comes back
+ *  however many places were asked for.
  *
- * @return
- *   >= 0  - Characters written (excluding '\0'). If buffer is too small,
- *           returns the size that would have been needed.
- *   -1    - Invalid input (negative size).
+ *  Nothing is written unless the whole result fits.  A buffer too small is left
+ *  untouched, terminator included, and the caller is told the length to come
+ *  back with.
  *
- * @note
- *   Truncation, not rounding. Example: precision=3 with 1.234567 MB yields "1.234 MB".
- *
- * @whisper Size settles into the scale it needs
+ *  @param[out] buffer      Destination; untouched when the result would not fit.
+ *  @param[in]  buffer_size Bytes available in @p buffer, the terminator included.
+ *  @param[in]  bytes       The count to spell out.
+ *  @param[in]  precision   Decimal places to keep; anything above 15 is taken as 15.
+ *                          The cap is there to bound the result, not because the digits
+ *                          are worthless past it.  A remainder over a divisor of 2^n
+ *                          terminates after n places at the most, and after fewer the
+ *                          more twos the remainder itself carries.  `KB` is the only
+ *                          scale whose longest expansion — ten places, over 2^10 —
+ *                          fits inside the cap, so there the last five places are
+ *                          always zeros.  `MB`, `GB` and `TB` can outrun fifteen and
+ *                          often do, but not always: a remainder of half a terabyte
+ *                          is spent after one place and pads the other fourteen.
+ *  @return Characters written, the terminator not counted — so a destination holds the
+ *          result when it has one byte more than this.  When @p buffer_size did not
+ *          reach, the very same figure comes back for a result that was not written, so
+ *          a caller may size from it and call again.  Never negative, and never above
+ *          27: the divisor holds the whole part to eight digits, and a point, fifteen
+ *          places and the longest suffix follow it.
+ *  @note A caller that only wants the length may pass 0 for @p buffer_size: nothing is
+ *        written and the figure comes back all the same.
+ *  @whisper Size settles into the scale it needs
  */
 int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t precision);
 

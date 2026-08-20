@@ -30,8 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "gradido_blockchain_core/result.h"
-#include "gradido_blockchain_core/utils/bucket_vector.h"
+#include "hostmem/result.h"
+#include "hostmem/bucket_vector.h"
 #include "search/doc_collector.h"
 
 /** A house as it is gathered, still knowing which street it named. */
@@ -41,11 +41,11 @@ typedef struct HouseEntry {
 } HouseEntry;
 
 /** Houses of one thread — 2048 per bucket, 24 KiB. */
-GRDU_BVEC_DECLARE(house_vec, HouseEntry, 11, extern)
+HOSTMEM_BVEC_DECLARE(house_vec, HouseEntry, 11, extern)
 
 /** One thread's harvest of the third pass. */
 typedef struct HouseCollector {
-  house_vec houses;
+  house_vec houses;            /**< What this thread gathered, in the order it met them. */
   uint64_t homeless;           /**< Houses whose street the index never learned. */
   uint64_t pointless;          /**< Houses that brought no coordinate and took their street's. */
   uint64_t without_number;     /**< Entries carrying no house number at all. */
@@ -59,10 +59,16 @@ typedef struct HouseCollector {
 /**
  * @brief Prepare an empty collector.
  *
+ *  Reserves nothing.  The vectors are set to their empty state and the first
+ *  house opens the first bucket, so there is no half-built collector to unwind:
+ *  a failure here has taken nothing, and house_collector_free() on an untouched
+ *  collector is a no-op.
+ *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return GRD_SUCCESS or GRD_ERROR_NULL_POINTER.
+ *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER when @p collector is
+ *          NULL — the only way this can fail.
  */
-grd_result house_collector_init(HouseCollector *collector);
+hostmem_result house_collector_init(HouseCollector *collector);
 
 /** @brief Release the vector. Safe to call with NULL. */
 void house_collector_free(HouseCollector *collector);
@@ -80,9 +86,9 @@ void house_collector_free(HouseCollector *collector);
  *  @param[in]     lat_e7       The house's own latitude, or 0 when it has none.
  *  @param[in]     lon_e7       Its longitude.
  *  @param[in]     has_point    Whether the house brought a coordinate at all.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_OUT_OF_MEMORY.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
  */
-grd_result house_collector_add(
+hostmem_result house_collector_add(
     HouseCollector *collector,
     uint32_t document,
     const GeoDocument *street,
@@ -103,18 +109,18 @@ size_t house_collector_count(const HouseCollector *collector);
  *  stretch, which costs one number and keeps the lookup a single index.
  */
 typedef struct HouseSet {
-  GeoHouse *houses;
-  size_t house_count;
-  uint32_t *offsets;
-  size_t document_count;
-  uint64_t homeless;
-  uint64_t pointless;
-  uint64_t without_number;
-  uint64_t unknown_street;
-  uint64_t unknown_key;
-  uint64_t recovered_city;
-  uint64_t recovered_postcode;
-  uint64_t recovered_nearest;
+  GeoHouse *houses;            /**< Every house of every thread, ordered by street. */
+  size_t house_count;          /**< Entries in @c houses. */
+  uint32_t *offsets;           /**< Where each document's houses begin; @c document_count + 1. */
+  size_t document_count;       /**< Documents the offsets cover. */
+  uint64_t homeless;           /**< Houses whose street the index never learned. */
+  uint64_t pointless;          /**< Houses with no coordinate; they took their street's. */
+  uint64_t without_number;     /**< Entries that named a street but no number. */
+  uint64_t unknown_street;     /**< Street names the dictionary did not carry. */
+  uint64_t unknown_key;        /**< Street, town and postcode known, the combination not. */
+  uint64_t recovered_city;     /**< Placed after the postcode was let go of. */
+  uint64_t recovered_postcode; /**< Placed after the town was let go of. */
+  uint64_t recovered_nearest;  /**< Placed by nearness, with neither one matching. */
 } HouseSet;
 
 /**
@@ -128,12 +134,16 @@ typedef struct HouseSet {
  *  @param[in]  collectors       Array of @p collector_count collector pointers.
  *  @param[in]  collector_count  Number of collectors.
  *  @param[in]  document_count   Documents the offsets must cover.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument, or
- *          GRD_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
+ *  @retval HOSTMEM_SUCCESS            The houses are joined and ordered by street.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
+ *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
+ *                                     houses between them, which the offsets could not
+ *                                     index.
+ *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The offsets or the arrays could not be taken.
  *
  *  @whisper The numbers line up along their street, and the street knows where they start
  */
-grd_result house_collector_merge(
+hostmem_result house_collector_merge(
     HouseSet *out, HouseCollector *const *collectors, size_t collector_count, size_t document_count
 );
 

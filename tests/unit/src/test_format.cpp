@@ -50,6 +50,23 @@ TEST(Format, BeyondTerabytesTheUnitStandsStill) {
   EXPECT_NE(Format(UINT64_MAX, 2).find("TB"), std::string::npos);
 }
 
+TEST(Format, TheLargestCountTruncatesInsteadOfRoundingUp) {
+  // UINT64_MAX / 2^40 is 16777215.999999999999, so truncation owes 16777215.99.
+  // Reaching that through a double cannot work: (double)UINT64_MAX is 2^64, and
+  // the quotient lands on exactly 16777216 — a place the real value never gets to.
+  EXPECT_EQ(Format(UINT64_MAX, 2), "16777215.99 TB");
+  EXPECT_EQ(Format(UINT64_MAX, 0), "16777215 TB");
+  EXPECT_EQ(Format(UINT64_MAX, 6), "16777215.999999 TB");
+}
+
+TEST(Format, OneByteShortOfTheNextThousandStaysShortOfIt) {
+  // Not the rounding trap above — both of these fit a double exactly, and the old
+  // implementation got them right too. They pin the plainer promise: a count just
+  // under the next round figure must never be shown as having reached it.
+  EXPECT_EQ(Format(1024ULL * kTB - 1, 2), "1023.99 TB");
+  EXPECT_EQ(Format(kTB - 1, 2), "1023.99 GB");
+}
+
 TEST(Format, PrecisionDecidesHowManyPlacesFollow) {
   EXPECT_EQ(Format(kKB + kKB / 2, 0), "1 KB");
   EXPECT_EQ(Format(kKB + kKB / 2, 1), "1.5 KB");
@@ -79,11 +96,38 @@ TEST(Format, TooSmallABufferAsksForRoomInsteadOfOverrunning) {
   EXPECT_EQ(buffer[3], 'x');
 }
 
+TEST(Format, NoResultOutgrowsTheDocumentedCeiling) {
+  // The header promises 27 characters at most, and a caller may size a buffer by
+  // it. The whole part cannot pass eight digits because the divisor is chosen to
+  // keep it under 1024 except at TB, where UINT64_MAX / 2^40 is 16777215.
+  const uint64_t worst[] = {UINT64_MAX, 1024ULL * kTB - 1, kTB + 1, kMB - 1, 0};
+  for (uint64_t v : worst) {
+    char buffer[64];
+    int n = format_byte_units(buffer, sizeof(buffer), v, 15);
+    ASSERT_GE(n, 0);
+    EXPECT_LE(n, 27) << v << " -> " << buffer;
+    EXPECT_EQ((size_t)n, std::strlen(buffer));
+  }
+  EXPECT_EQ(Format(UINT64_MAX, 15), "16777215.999999999999090 TB");
+}
+
+TEST(Format, WhatFillsTheFifteenPlacesDependsOnTheRemainder) {
+  // UINT64_MAX leaves a remainder of 2^40 - 1 over 2^40. It is odd, so its expansion
+  // runs the full forty places and all fifteen kept here are truncated real digits.
+  EXPECT_EQ(Format(UINT64_MAX, 15), "16777215.999999999999090 TB");
+  // kMB - 1 sits at the KB scale, over 2^10, which cannot need more than ten places —
+  // so the expansion ends inside the cap and the last five are padding.
+  EXPECT_EQ(Format(kMB - 1, 15), "1023.999023437500000 KB");
+  // Neither is a property of the unit. A TB remainder rich in twos ends just as early:
+  // half a terabyte is one place, and the fourteen behind it are zeros.
+  EXPECT_EQ(Format(kTB + (1ULL << 39), 15), "1.500000000000000 TB");
+}
+
 TEST(Format, AnAbsurdPrecisionIsCappedRatherThanTrusted) {
   char buffer[128];
   int rc = format_byte_units(buffer, sizeof(buffer), 5 * kGB, 200);
   EXPECT_GE(rc, 0);
-  // 15 places is the ceiling the double itself allows
+  // 15 places is the ceiling; the remainders run dry well before it
   std::string text(buffer);
   size_t point = text.find('.');
   ASSERT_NE(point, std::string::npos);

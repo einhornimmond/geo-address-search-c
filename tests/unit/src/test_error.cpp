@@ -68,7 +68,9 @@ TEST(ErrorInfo, AnEmptyMessageIsNoCrash) {
 // ---------------------------------------------------------------------------
 
 TEST(ErrorFatalDeathTest, EndsTheProcessWithAFailure) {
-  EXPECT_EXIT(fatal(ERROR_IO, "die Datei blieb zu"), ::testing::ExitedWithCode(1), "die Datei blieb zu");
+  EXPECT_EXIT(
+      fatal(ERROR_IO, "die Datei blieb zu"), ::testing::ExitedWithCode(1), "die Datei blieb zu"
+  );
 }
 
 TEST(ErrorFatalDeathTest, FormatsBeforeItGoes) {
@@ -79,7 +81,7 @@ TEST(ErrorFatalDeathTest, FormatsBeforeItGoes) {
 }
 
 TEST(ErrorFatalDeathTest, EveryKindEndsTheSameWay) {
-  const ErrorArt kinds[] = {ERROR_USAGE, ERROR_IO,     ERROR_JSON,           ERROR_ZSTD,
+  const ErrorArt kinds[] = {ERROR_USAGE,  ERROR_IO,     ERROR_JSON,           ERROR_ZSTD,
                             ERROR_ASSERT, ERROR_MEMORY, ERROR_HASH_COLLISION, ERROR_INFO};
   for (ErrorArt art : kinds) {
     EXPECT_EXIT(fatal(art, "Schluss"), ::testing::ExitedWithCode(1), "Schluss")

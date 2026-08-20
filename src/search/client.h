@@ -15,10 +15,12 @@
  *         for an address, get a coordinate.
  *
  *  Everything a caller needs and nothing it does not: no builder, no parser,
- *  no dependency beyond the standard headers.  The handle is opaque, the
- *  status is a plain enum, and the whole surface is four functions.  That
- *  keeps it usable from C++, from a foreign function interface, and from a
- *  server that must not be taken down by a failed open.
+ *  and beyond the standard headers only two of our own — @ref geo_status and
+ *  @ref geo_query_stats, which hold an enum and a record of counters and pull
+ *  in nothing further.  The handle is opaque and the whole surface is six
+ *  functions: open, close, info, and three ways to ask.  That keeps it usable
+ *  from C++, from a foreign function interface, and from a server that must not
+ *  be taken down by a failed open.
  *
  *  ### What it promises
  *
@@ -61,24 +63,38 @@ typedef struct GeoClient GeoClient;
  * @brief One place a search found.
  *
  *  The strings are not NUL-terminated — each carries its own length and points
- *  into the mapped file.  A field the entry never had comes back as NULL.
+ *  into the mapped file.  Every one of the four may be NULL: the dump leaves
+ *  fields out, and a place that never carried a town carries none here either.
+ *  Check the pointer, not the length; a NULL always comes with a length of 0.
+ *
+ *  @c number is the one that surprises.  It is filled only where a house number
+ *  was actually found on this place — so it is NULL both for a query that asked
+ *  for no number and for one that asked for a number this place does not have.
+ *  A result may therefore come back for `Bahnhofstr 12` and carry no 12.
+ *
+ *  The coordinates are always written, and @c has_point says what they are
+ *  worth.  It reports whether the *place* carried a centroid; where a house
+ *  number was found, the point is the house's own instead.  So @c has_point 0
+ *  with a @c number is still a real position — the house's — while
+ *  @c has_point 0 without one means 0/0 and nothing at all.
  */
 typedef struct GeoAddress {
-  const char *name; /**< Street or place, as it is written. */
-  size_t name_size;
-  const char *number; /**< House number, or NULL when the query named none. */
-  size_t number_size;
-  const char *postcode; /**< Postal code, or NULL. */
-  size_t postcode_size;
-  const char *city; /**< Town, or NULL. */
-  size_t city_size;
-  double latitude; /**< Degrees; the house's own point when one was found. */
-  double longitude;
-  uint32_t document;   /**< Number of the place inside the index. */
-  uint32_t matched;    /**< Query words this place carries. */
-  uint16_t importance; /**< Weight the dump gave it, 0 … 65535. */
-  uint8_t kind;        /**< A @ref GeoPlaceKind. */
-  uint8_t has_point;   /**< False when the place never carried a coordinate. */
+  const char *name;      /**< Street or place as written, or NULL. */
+  size_t name_size;      /**< Its length in bytes; 0 when @c name is NULL. */
+  const char *number;    /**< House number, or NULL when none was found here. */
+  size_t number_size;    /**< Its length in bytes; 0 when @c number is NULL. */
+  const char *postcode;  /**< Postal code, or NULL. */
+  size_t postcode_size;  /**< Its length in bytes; 0 when @c postcode is NULL. */
+  const char *city;      /**< Town, or NULL. */
+  size_t city_size;      /**< Its length in bytes; 0 when @c city is NULL. */
+  double latitude;       /**< Degrees north; the house's point where one was found. */
+  double longitude;      /**< Degrees east, from the same point as @c latitude. */
+  uint32_t document;     /**< Number of the place inside the index. */
+  uint32_t matched;      /**< Query words this place carries. */
+  uint16_t importance;   /**< Weight the dump gave it, 0 … 65535. */
+  uint8_t kind;          /**< A @ref GeoPlaceKind. */
+  uint8_t has_point;     /**< Whether the *place* carried a coordinate; see above for what
+                              that means when a house number was found. */
 } GeoAddress;
 
 /** Counts of an opened index, for a status page or a log line. */

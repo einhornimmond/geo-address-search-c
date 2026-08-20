@@ -2,8 +2,8 @@
 
 #include "foundation/format.h"
 
-#include "gradido_blockchain_core/utils/duration.h"
-#include "gradido_blockchain_core/utils/mono_timer.h"
+#include "hostmem/duration.h"
+#include "hostmem/mono_timer.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -13,6 +13,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+/** @cond INTERNAL */
 
 enum {
   /** How wide the bar is drawn, in cells. */
@@ -44,17 +46,17 @@ static struct {
   uint64_t total;                /**< What the whole is, or 0 when unknown. */
   _Atomic uint64_t current;      /**< What has been done, as last reported. */
   ProgressPoll poll;             /**< Fetches the count when nobody reports it. */
-  void *poll_user;
-  grdu_mono_timer start;
-  pthread_t ticker;
-  pthread_mutex_t mutex;
-  pthread_cond_t wake;
-  bool running;   /**< A step is open. */
-  bool ticking;   /**< …and a thread of its own is drawing it. */
-  bool stop;      /**< Asked to end; guarded by the mutex. */
-  bool tty;       /**< Someone is watching a terminal, so the line may move. */
-  bool line_open; /**< The announcement still waits for its end. */
-  size_t drawn;   /**< Cells standing on the line, so they can be wiped. */
+  void *poll_user;               /**< Handed back to @c poll unchanged. */
+  hostmem_mono_timer start;      /**< When the step was announced. */
+  pthread_t ticker;              /**< Draws the bar; valid while @c ticking. */
+  pthread_mutex_t mutex;         /**< Guards everything below @c current. */
+  pthread_cond_t wake;           /**< How the ticker is asked to stop early. */
+  bool running;                  /**< A step is open. */
+  bool ticking;                  /**< …and a thread of its own is drawing it. */
+  bool stop;                     /**< Asked to end; guarded by the mutex. */
+  bool tty;                      /**< Someone is watching a terminal, so the line may move. */
+  bool line_open;                /**< The announcement still waits for its end. */
+  size_t drawn;                  /**< Cells standing on the line, so they can be wiped. */
 } g = {.mutex = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER};
 
 /* =========================================================================
@@ -173,7 +175,7 @@ static size_t compose_eta(
      "ETA 27.5 ms" is a number nobody ever needed */
   if (remaining < 1.0) return at;
   char eta[32];
-  grdu_duration_string(eta, sizeof(eta), (grdu_duration)(remaining * 1e9), 1);
+  hostmem_duration_string(eta, sizeof(eta), (hostmem_duration)(remaining * 1e9), 1);
   at = put(out, size, at, "   ETA ");
   return put(out, size, at, eta);
 }
@@ -207,7 +209,7 @@ static void compose_running(char *out, size_t size, double elapsed, uint64_t cur
   at = compose_eta(out, size, at, current, g.total, elapsed);
 
   char passed[32];
-  grdu_duration_string(passed, sizeof(passed), (grdu_duration)(elapsed * 1e9), 1);
+  hostmem_duration_string(passed, sizeof(passed), (hostmem_duration)(elapsed * 1e9), 1);
   at = put(out, size, at, "   ");
   put(out, size, at, passed);
 }
@@ -235,6 +237,7 @@ static bool wait_for_end(unsigned millis) {
   return stop;
 }
 
+/** The count as it stands: reported by the work, or fetched from it. */
 static uint64_t read_current(void) {
   return g.poll ? g.poll(g.poll_user) : atomic_load(&g.current);
 }
@@ -256,7 +259,7 @@ static void *ticker_run(void *unused) {
   char line[512];
 
   while (!wait_for_end(PROGRESS_DRAW_MILLIS)) {
-    double elapsed = grdu_mono_timer_seconds(g.start);
+    double elapsed = hostmem_mono_timer_seconds(g.start);
     if (elapsed * 1000.0 < PROGRESS_QUIET_MILLIS) continue;
 
     uint64_t current = read_current();
@@ -294,7 +297,7 @@ void progress_begin_polled(
   g.tty = isatty(fileno(stdout)) != 0;
   g.running = true;
   g.line_open = true;
-  grdu_mono_timer_reset(&g.start);
+  hostmem_mono_timer_reset(&g.start);
 
   /* said before the work starts, not after: the seconds before the first bar
      appears are exactly the ones in which a silent screen looks like a hang */
@@ -325,12 +328,12 @@ void progress_end(void) {
   }
   wipe_line();
 
-  double elapsed = grdu_mono_timer_seconds(g.start);
+  double elapsed = hostmem_mono_timer_seconds(g.start);
   uint64_t current = read_current();
   if (g.total && current < g.total) current = g.total; /* the step is through */
 
   char passed[32], line[256];
-  grdu_duration_string(passed, sizeof(passed), (grdu_duration)(elapsed * 1e9), 2);
+  hostmem_duration_string(passed, sizeof(passed), (hostmem_duration)(elapsed * 1e9), 2);
   /* a step nobody had to watch keeps its duration on its own line */
   size_t at = put(line, sizeof(line), 0, g.line_open ? " — done in " : "  done in ");
   at = put(line, sizeof(line), at, passed);
@@ -356,3 +359,5 @@ void progress_end(void) {
   g.poll_user = NULL;
   g.total = 0;
 }
+
+/** @endcond */

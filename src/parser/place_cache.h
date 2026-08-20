@@ -35,6 +35,12 @@
  *  That is what the manifest is for: it is written last, names what the cache
  *  was made from, and a cache without one is not read.
  *
+ *  It outlives the run, not the machine.  Records are written in host byte order
+ *  and no field says which one that was, so a cache belongs to the architecture
+ *  that wrote it.  Carrying one to a machine of the other endianness is not
+ *  supported; today such a cache is refused rather than misread, but by accident
+ *  — see the note above the fixed-width writes in place_cache.c.
+ *
  *  ### What is not kept
  *
  *  Only what @c collect_document and @c collect_house read.  A house record
@@ -60,7 +66,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "gradido_blockchain_core/result.h"
+#include "hostmem/result.h"
 #include "parser/json_parse.h"
 
 /** Eight bytes opening every cache file. */
@@ -92,8 +98,8 @@ typedef struct PlaceCacheWriter {
 
 /** Reading end of one file. */
 typedef struct PlaceCacheReader {
-  FILE *file;
-  PlaceCacheKind kind;
+  FILE *file;           /**< Open for reading, positioned past the header. */
+  PlaceCacheKind kind;  /**< Which half this file holds. */
   char *buffer;    /**< The record just read; the strings point into it. */
   size_t capacity; /**< Room in @c buffer. */
   uint64_t count;  /**< Records read so far. */
@@ -154,10 +160,10 @@ bool place_cache_is_current(const char *directory, const PlaceCacheStamp *want);
  *
  *  @param[in] directory  Where the files lie.
  *  @param[in] stamp      Stamp from place_cache_stamp_of().
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, GRD_ERROR_OUT_OF_MEMORY or
- *          GRD_ERROR_ENCODE_FAILED.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY or
+ *          HOSTMEM_ERROR_ENCODE_FAILED.
  */
-grd_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
+hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
 
 /**
  * @brief Remove the manifest and every file of a cache.
@@ -234,10 +240,10 @@ const char *place_cache_room_reason(PlaceCacheRoom room);
  *  @param[out] writer     Receives the open pair; zeroed on failure.
  *  @param[in]  directory  Where the files are laid down.
  *  @param[in]  thread     Thread number, part of the file name.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, GRD_ERROR_OUT_OF_MEMORY, or
- *          GRD_ERROR_ENCODE_FAILED when a file could not be opened.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY, or
+ *          HOSTMEM_ERROR_ENCODE_FAILED when a file could not be opened.
  */
-grd_result place_cache_writer_open(
+hostmem_result place_cache_writer_open(
     PlaceCacheWriter *writer, const char *directory, unsigned thread
 );
 
@@ -249,9 +255,13 @@ grd_result place_cache_writer_open(
  *
  *  @param[in,out] writer  Open writer.
  *  @param[in]     place   Entry as the parser handed it over.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, or GRD_ERROR_ENCODE_FAILED.
+ *  @retval HOSTMEM_SUCCESS            Written, or passed over as described above.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p writer or @p place is NULL.
+ *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The record outgrew the writer's buffer and it
+ *                                     could not be grown; nothing was written.
+ *  @retval HOSTMEM_ERROR_ENCODE_FAILED The write to the file did not go through.
  */
-grd_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
+hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
 
 /** @brief Flush and close both files, leaving them on disk. Safe with NULL. */
 void place_cache_writer_close(PlaceCacheWriter *writer);
@@ -268,11 +278,11 @@ void place_cache_writer_remove(PlaceCacheWriter *writer);
  *  @param[in]  directory  Where the files were laid down.
  *  @param[in]  thread     Thread number the file was written under.
  *  @param[in]  kind       Which half to read.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER, GRD_ERROR_OUT_OF_MEMORY,
- *          GRD_ERROR_DECODE_FAILED when the file cannot be opened, or
- *          GRD_ERROR_INVALID_PARAM when it was not written by this build.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY,
+ *          HOSTMEM_ERROR_DECODE_FAILED when the file cannot be opened, or
+ *          HOSTMEM_ERROR_INVALID_PARAM when it was not written by this build.
  */
-grd_result place_cache_reader_open(
+hostmem_result place_cache_reader_open(
     PlaceCacheReader *reader, const char *directory, unsigned thread, PlaceCacheKind kind
 );
 

@@ -24,35 +24,57 @@ using testsupport::TempPath;
 namespace {
 
 /** The words one query yields against an opened index. */
-size_t Query(const GeoIndex &index, const std::string &text, GeoHit *hits, size_t limit,
-             bool prefix_last = false) {
+size_t Query(
+    const GeoIndex &index,
+    const std::string &text,
+    GeoHit *hits,
+    size_t limit,
+    bool prefix_last = false
+) {
   TextTokenizer tok;
   return geo_index_query(&index, &tok, text.c_str(), text.size(), prefix_last, hits, limit);
 }
 
 /** The same query, with a place for it to write down what it touched. */
-size_t QueryStats(const GeoIndex &index, const std::string &text, GeoHit *hits, size_t limit,
-                  GeoQueryStats *stats, bool prefix_last = false) {
+size_t QueryStats(
+    const GeoIndex &index,
+    const std::string &text,
+    GeoHit *hits,
+    size_t limit,
+    GeoQueryStats *stats,
+    bool prefix_last = false
+) {
   TextTokenizer tok;
   GeoQueryOptions options{};
   options.prefix_last = prefix_last;
-  return geo_index_query_options(&index, &tok, text.c_str(), text.size(), &options, hits, limit,
-                                 stats);
+  return geo_index_query_options(
+      &index, &tok, text.c_str(), text.size(), &options, hits, limit, stats
+  );
 }
 
 /** Degrees as the index keeps them. */
-constexpr int32_t E7(double degrees) { return (int32_t)(degrees * 1.0e7); }
+constexpr int32_t E7(double degrees) {
+  return (int32_t)(degrees * 1.0e7);
+}
 
 /** The same query again, asked from somewhere. */
-size_t QueryFrom(const GeoIndex &index, const std::string &text, double latitude,
-                 double longitude, GeoHit *hits, size_t limit, GeoQueryStats *stats = nullptr) {
+size_t QueryFrom(
+    const GeoIndex &index,
+    const std::string &text,
+    double latitude,
+    double longitude,
+    GeoHit *hits,
+    size_t limit,
+    GeoQueryStats *stats = nullptr
+) {
   TextTokenizer tok;
   GeoQueryOptions options{};
   options.has_position = true;
   options.latitude_e7 = E7(latitude);
   options.longitude_e7 = E7(longitude);
-  return geo_index_query_options(&index, &tok, text.c_str(), text.size(), &options, hits, limit,
-                                 stats);
+  return geo_index_query_options(
+      &index, &tok, text.c_str(), text.size(), &options, hits, limit, stats
+  );
 }
 
 std::string DisplayWord(const GeoIndex &index, uint32_t rank) {
@@ -66,9 +88,11 @@ class GeoIndexTest : public ::testing::Test {
 protected:
   void SetUp() override {
     ASSERT_TRUE(BuildMiniIndex(path.c_str(), SamplePlaces())) << "could not write " << path.c_str();
-    ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+    ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   }
-  void TearDown() override { geo_index_close(&index); }
+  void TearDown() override {
+    geo_index_close(&index);
+  }
 
   /** The document a query names. The merge numbers the records as it likes, so
    *  nothing may assume a place kept the position it was written in. */
@@ -282,8 +306,7 @@ TEST_F(GeoIndexTest, TheLimitIsCappedRatherThanTrusted) {
   std::vector<GeoHit> hits(GEO_QUERY_LIMIT_MAX + 64);
   TextTokenizer tok;
   const char *q = "Berliner Straße ";
-  size_t count =
-      geo_index_query(&index, &tok, q, std::strlen(q), false, hits.data(), hits.size());
+  size_t count = geo_index_query(&index, &tok, q, std::strlen(q), false, hits.data(), hits.size());
   EXPECT_LE(count, (size_t)GEO_QUERY_LIMIT_MAX);
 }
 
@@ -437,14 +460,22 @@ TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
   // and lies nearer to the searcher than the street that is called that today
   std::vector<testsupport::MiniPlace> places = {
-      {"Friedrich-Breuer-Straße", "Bonn", "53225", 507391765, 71194806,
-       PHOTON_PLACE_TYPE_STREET, 3500, {}, true, {"Hauptstraße"}},
+      {"Friedrich-Breuer-Straße",
+       "Bonn",
+       "53225",
+       507391765,
+       71194806,
+       PHOTON_PLACE_TYPE_STREET,
+       3500,
+       {},
+       true,
+       {"Hauptstraße"}},
       {"Hauptstraße", "Bonn", "53229", 507424804, 71783745, PHOTON_PLACE_TYPE_STREET, 3500},
   };
   TempPath path{"formername"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
 
   GeoHit hits[8];
   ASSERT_EQ(QueryFrom(index, "Hauptstraße ", 50.7350, 7.0980, hits, 8), 2u)
@@ -453,8 +484,9 @@ TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
       << "what a place is called now outranks what it used to be called";
 
   // the former name is still an answer — it only stands second
-  EXPECT_EQ(DisplayWord(index, index.documents[hits[1].document].name_rank),
-            "Friedrich-Breuer-Straße");
+  EXPECT_EQ(
+      DisplayWord(index, index.documents[hits[1].document].name_rank), "Friedrich-Breuer-Straße"
+  );
   geo_index_close(&index);
 }
 
@@ -462,20 +494,28 @@ TEST(GeoIndexNear, WithoutAPositionTheNameIsNotWeighedAtAll) {
   // the same two places, asked without a position: weight decides as it always
   // has, and the former name is worth exactly as much as the current one
   std::vector<testsupport::MiniPlace> places = {
-      {"Friedrich-Breuer-Straße", "Bonn", "53225", 507391765, 71194806,
-       PHOTON_PLACE_TYPE_STREET, 9000, {}, true, {"Hauptstraße"}},
+      {"Friedrich-Breuer-Straße",
+       "Bonn",
+       "53225",
+       507391765,
+       71194806,
+       PHOTON_PLACE_TYPE_STREET,
+       9000,
+       {},
+       true,
+       {"Hauptstraße"}},
       {"Hauptstraße", "Bonn", "53229", 507424804, 71783745, PHOTON_PLACE_TYPE_STREET, 3500},
   };
   TempPath path{"formernameplain"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
 
   GeoHit hits[8];
   ASSERT_EQ(Query(index, "Hauptstraße ", hits, 8), 2u);
-  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank),
-            "Friedrich-Breuer-Straße")
-      << "the heavier of the two, however it came by the word";
+  EXPECT_EQ(
+      DisplayWord(index, index.documents[hits[0].document].name_rank), "Friedrich-Breuer-Straße"
+  ) << "the heavier of the two, however it came by the word";
   geo_index_close(&index);
 }
 
@@ -489,7 +529,7 @@ TEST(GeoIndexNear, APlaceWithoutACoordinateIsRankedLastRatherThanLost) {
   TempPath path{"nopoint"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
 
   GeoHit hits[8];
   GeoQueryStats stats{};
@@ -527,7 +567,7 @@ TEST(GeoIndexRefusal, ARewrittenMagicIsRefused) {
   TempPath path{"magic"};
   ASSERT_TRUE(WriteDamaged(path.c_str(), 0, 'X'));
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   geo_index_close(&index);
 }
 
@@ -536,7 +576,7 @@ TEST(GeoIndexRefusal, AnotherVersionIsRefused) {
   // the version follows the eight magic bytes
   ASSERT_TRUE(WriteDamaged(path.c_str(), 8, GEO_INDEX_VERSION + 7));
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   geo_index_close(&index);
 }
 
@@ -544,13 +584,13 @@ TEST(GeoIndexRefusal, TheOtherByteOrderIsRefused) {
   TempPath path{"order"};
   ASSERT_TRUE(WriteDamaged(path.c_str(), 12, 0xFF));
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   geo_index_close(&index);
 }
 
 TEST(GeoIndexRefusal, AFileThatIsNotThereIsRefused) {
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, "/nonexistent/geoindex/test.gdx"), GRD_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, "/nonexistent/geoindex/test.gdx"), HOSTMEM_SUCCESS);
   EXPECT_EQ(index.base, nullptr);
   geo_index_close(&index);
 }
@@ -559,14 +599,14 @@ TEST(GeoIndexRefusal, AnEmptyFileIsRefused) {
   TempPath path{"empty"};
   { std::ofstream out(path.c_str(), std::ios::binary); }
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   geo_index_close(&index);
 }
 
 TEST(GeoIndexRefusal, NullArgumentsAreAnswered) {
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(nullptr, "x"), GRD_SUCCESS);
-  EXPECT_NE(geo_index_open(&index, nullptr), GRD_SUCCESS);
+  EXPECT_NE(geo_index_open(nullptr, "x"), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, nullptr), HOSTMEM_SUCCESS);
   geo_index_close(nullptr);
 }
 
@@ -574,7 +614,7 @@ TEST(GeoIndexWrite, AnIndexWithoutPlacesIsStillAnIndex) {
   TempPath path{"nothing"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), {}));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   EXPECT_EQ(index.document_count, 0u);
   GeoHit hits[4];
   EXPECT_EQ(Query(index, "Berlin ", hits, 4), 0u);
@@ -585,7 +625,7 @@ TEST(GeoIndexWrite, ClosingTwiceIsSafe) {
   TempPath path{"twice"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), SamplePlaces()));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), GRD_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
   geo_index_close(&index);
   geo_index_close(&index);
   EXPECT_EQ(index.base, nullptr);

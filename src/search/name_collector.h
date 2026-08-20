@@ -7,7 +7,7 @@
  *  Each parser thread owns one @ref NameCollector.  A name's first
  *  @ref NAME_PREFIX_DEPTH bytes travel down the index tree and come back as a
  *  dense group index; the name itself is stored **without** those bytes,
- *  copied into a @ref MetaAreaAllocator.  Only prefixes that actually occur
+ *  copied into a @c hostmem_multi_arena.  Only prefixes that actually occur
  *  exist — no empty space is reserved for the ones that never come.  Nothing
  *  here is synchronised; a collector belongs to exactly one thread and
  *  collecting stays lock-free.
@@ -45,12 +45,20 @@
 
 #include <stddef.h>
 
-#include "foundation/meta_area_allocator.h"
-#include "gradido_blockchain_core/result.h"
-#include "gradido_blockchain_core/utils/bucket_vector.h"
+#include "hostmem/bucket_vector.h"
+#include "hostmem/multi_arena.h"
+#include "hostmem/result.h"
 #include "search/prefix_tree.h"
 
-/** A stored name remainder — points into meta-arena memory, never owned by the vector. */
+/** Bytes an arena of the name chain reserves — 32 MiB.
+ *
+ *  Name remainders are short, so what this figure decides is how often the chain asks the
+ *  host for ground and how many arenas a first-fit scan can end up walking.  One arena per
+ *  32 MiB of text keeps both small.  The full threshold stays at hostmem's default: a
+ *  remainder under 136 bytes holds no name worth the walk past it. */
+#define NAME_ARENA_CAPACITY ((uint32_t)32 * 1024 * 1024)
+
+/** A stored name remainder — points into arena memory, never owned by the vector. */
 typedef const char *NameRef;
 
 /** Leading bytes carried by the tree instead of by the stored strings. */
@@ -77,11 +85,11 @@ static_assert(
 #define NAME_RECENT_SLOTS 64
 
 /** Bucket vector over stored name remainders, shared across translation units. */
-GRDU_BVEC_DECLARE(name_vec, NameRef, NAME_VEC_BUCKET_LOG2, extern)
+HOSTMEM_BVEC_DECLARE(name_vec, NameRef, NAME_VEC_BUCKET_LOG2, extern)
 
 /** Bucket vector over the prefix groups — pointer-stable, so growth never
  *  disturbs a vector a caller is currently filling. */
-GRDU_BVEC_DECLARE(name_group_vec, name_vec, NAME_GROUP_VEC_BUCKET_LOG2, extern)
+HOSTMEM_BVEC_DECLARE(name_group_vec, name_vec, NAME_GROUP_VEC_BUCKET_LOG2, extern)
 
 /**
  * @brief A name the collector has just stored, held for comparison.
@@ -107,7 +115,7 @@ typedef struct NameRecent {
 typedef struct NameCollector {
   PrefixTree prefixes;                  /**< Leading bytes → group index. */
   name_group_vec groups;                /**< One vector of remainders per occurring prefix. */
-  MetaAreaAllocator *alloc;             /**< Arena the remainders are drawn from; not owned. */
+  hostmem_multi_arena *alloc;           /**< Arena the remainders are drawn from; not owned. */
   size_t size;                          /**< Names stored, duplicates included. */
   size_t seen;                          /**< Names offered, including those the filter absorbed. */
   NameRecent recent[NAME_RECENT_SLOTS]; /**< Ring of the last names stored. */
@@ -123,9 +131,9 @@ typedef struct NameCollector {
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
  *  @param[in]     alloc      Arena for the name bytes; must not be NULL and
  *                            must not be shared with another thread.
- *  @return GRD_SUCCESS, or GRD_ERROR_NULL_POINTER if an argument is NULL.
+ *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER if an argument is NULL.
  */
-grd_result name_collector_init(NameCollector *collector, MetaAreaAllocator *alloc);
+hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena *alloc);
 
 /**
  * @brief File @p name under its prefix, keeping only the remainder.
@@ -138,14 +146,27 @@ grd_result name_collector_init(NameCollector *collector, MetaAreaAllocator *allo
  *
  *  @param[in,out] collector  Collector receiving the name.
  *  @param[in]     name       NUL-terminated name, or NULL.
- *  @param[in]     name_size  Byte length of @p name without the NUL.
- *  @return GRD_SUCCESS on success (including the NULL case),
- *          GRD_ERROR_NULL_POINTER if @p collector is NULL,
- *          or the allocator's error when memory could not be served.
+ *  @param[in]     name_size  Byte length of @p name without the NUL.  What is stored
+ *                            is the remainder after the prefix, and the arena measures
+ *                            that in `uint32_t` — so a name of
+ *                            `UINT32_MAX + NAME_PREFIX_DEPTH` bytes or more is refused
+ *                            rather than truncated.  No dump comes near it; the bound
+ *                            is there because a truncated size would reserve short and
+ *                            copy long.
+ *  @retval HOSTMEM_SUCCESS            The name is filed, or @p name was NULL and there
+ *                                     was nothing to file.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p collector is NULL.
+ *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW @p name_size is at or above the bound above.
+ *  @retval Anything the prefix tree, the group vectors or the arena answer with when
+ *          they cannot take what this name needs, passed on unchanged.
+ *  @note A refusal is not undone.  A name that fails partway may leave a key in the
+ *       tree, an empty group behind it or a few arena bytes nobody points at — all of
+ *       it released with the collector.  The counts stay honest either way: @c size
+ *       rises only once the name is really filed.
  *
  *  @whisper Every name is kept, its first letters carried by the branch it hangs on
  */
-grd_result name_collector_add(NameCollector *collector, const char *name, size_t name_size);
+hostmem_result name_collector_add(NameCollector *collector, const char *name, size_t name_size);
 
 /** @brief Number of names stored so far (duplicates included). */
 size_t name_collector_size(const NameCollector *collector);
@@ -207,12 +228,12 @@ typedef struct NameRun {
  *
  *  @param[in,out] collector  Collector to drain; must not be NULL.
  *  @param[out]    run        Receives the sorted run.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument, or
- *          GRD_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken.
  *
  *  @whisper The stream stops running and lets its sediment lie in order
  */
-grd_result name_collector_finish(NameCollector *collector, NameRun *run);
+hostmem_result name_collector_finish(NameCollector *collector, NameRun *run);
 
 /**
  * @brief Release the arrays of a run; the strings belong to the arena.
@@ -261,13 +282,15 @@ typedef struct NameSet {
  *  @param[in]  worker_count  Merge threads to use; clamped to
  *                            [1, NAME_RUN_MAX].  Threads that cannot be
  *                            created have their share done by the caller.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument,
- *          GRD_ERROR_INVALID_PARAM if @p run_count exceeds NAME_RUN_MAX, or
- *          GRD_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
+ *          HOSTMEM_ERROR_INVALID_PARAM if @p run_count exceeds NAME_RUN_MAX, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken — or
+ *          when the size one of them would need cannot be expressed at all, which is
+ *          refused before the allocator is asked for anything.
  *
  *  @whisper Many streams reach the same lake, and what was said twice becomes one
  */
-grd_result name_run_merge(
+hostmem_result name_run_merge(
     NameSet *out, const NameRun *const *runs, size_t run_count, unsigned worker_count
 );
 

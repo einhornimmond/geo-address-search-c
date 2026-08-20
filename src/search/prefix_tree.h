@@ -32,7 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "gradido_blockchain_core/result.h"
+#include "hostmem/result.h"
 
 /** Slots per level — one for every possible byte value. */
 #define PREFIX_TREE_FANOUT 256
@@ -62,10 +62,10 @@ typedef struct PrefixTree {
  *
  *  @param[in,out] tree   Tree to initialise; must not be NULL.
  *  @param[in]     depth  Key length in bytes, in [1, PREFIX_TREE_DEPTH_MAX].
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER if @p tree is NULL, or
- *          GRD_ERROR_INVALID_PARAM if @p depth is out of range.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER if @p tree is NULL, or
+ *          HOSTMEM_ERROR_INVALID_PARAM if @p depth is out of range.
  */
-grd_result prefix_tree_init(PrefixTree *tree, unsigned depth);
+hostmem_result prefix_tree_init(PrefixTree *tree, unsigned depth);
 
 /**
  * @brief Release every level, leaving a reusable empty tree.
@@ -106,12 +106,12 @@ static inline void prefix_tree_key(
  *  @param[in]     key          @c tree->depth bytes.
  *  @param[out]    out_index    Receives the index belonging to @p key.
  *  @param[out]    out_created  Set true if the key was new; may be NULL.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument, or
- *          GRD_ERROR_OUT_OF_MEMORY when a level could not be opened.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when a level could not be opened.
  *
  *  @whisper A new word is given its number, an old one recognised
  */
-grd_result prefix_tree_intern(
+hostmem_result prefix_tree_intern(
     PrefixTree *tree, const uint8_t *key, size_t *out_index, bool *out_created
 );
 

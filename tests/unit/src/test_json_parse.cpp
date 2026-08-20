@@ -29,7 +29,9 @@ struct Parsed {
   uint8_t search_dropped = 0;
 };
 
-std::string Str(const PhotonString &s) { return s.data ? std::string(s.data, s.size) : std::string(); }
+std::string Str(const PhotonString &s) {
+  return s.data ? std::string(s.data, s.size) : std::string();
+}
 
 int Capture(const PhotonPlace *place, void *user) {
   auto *out = static_cast<std::vector<Parsed> *>(user);
@@ -293,10 +295,10 @@ TEST(JsonParseTypes, RecognisesEveryAddressTypeTheDumpUses) {
     const char *text;
     PhotonPlaceType expected;
   } cases[] = {
-      {"country", PHOTON_PLACE_TYPE_COUNTRY}, {"state", PHOTON_PLACE_TYPE_STATE},
-      {"county", PHOTON_PLACE_TYPE_COUNTY},   {"city", PHOTON_PLACE_TYPE_CITY},
-      {"street", PHOTON_PLACE_TYPE_STREET},   {"district", PHOTON_PLACE_TYPE_DISTRICT},
-      {"locality", PHOTON_PLACE_TYPE_LOCALITY},
+      {"country", PHOTON_PLACE_TYPE_COUNTRY},   {"state", PHOTON_PLACE_TYPE_STATE},
+      {"county", PHOTON_PLACE_TYPE_COUNTY},     {"city", PHOTON_PLACE_TYPE_CITY},
+      {"street", PHOTON_PLACE_TYPE_STREET},     {"district", PHOTON_PLACE_TYPE_DISTRICT},
+      {"locality", PHOTON_PLACE_TYPE_LOCALITY}, {"house", PHOTON_PLACE_TYPE_HOUSE},
   };
   for (const auto &c : cases) {
     std::string line = std::string(R"({"type":"Place","content":[{"address_type":")") + c.text +
@@ -305,6 +307,40 @@ TEST(JsonParseTypes, RecognisesEveryAddressTypeTheDumpUses) {
     ASSERT_EQ(got.size(), 1u) << c.text;
     EXPECT_EQ(got[0].type_enum, c.expected) << c.text;
   }
+}
+
+TEST(JsonParseTypes, OtherIsRecognisedWhenItCarriesANumber) {
+  // "other" without a house number is passed over, so it needs one to be seen at all.
+  std::string line = R"({"type":"Place","content":[{"address_type":"other","housenumber":"3",)"
+                     R"("name":{"name":"X"},"address":{"street":"Weg","city":"Bonn"}}]})";
+  std::vector<Parsed> got = Parse(line);
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].type_enum, PHOTON_PLACE_TYPE_OTHER);
+}
+
+/** One line carrying @p address_type, for the refusals below. */
+std::string LineWithType(const std::string &address_type) {
+  return R"({"type":"Place","content":[{"address_type":")" + address_type +
+         R"(","name":{"name":"X"},"address":{"city":"Bonn"}}]})";
+}
+
+TEST(JsonParseTypesDeathTest, AValueThatMerelyStartsAlikeIsNotThatValue) {
+  // The old dispatch read the first byte and stopped, so anything beginning
+  // with 'h' became a house. Recognition is over the whole string now, and an
+  // unrecognised type stops the build rather than being filed under a guess.
+  EXPECT_EXIT(Parse(LineWithType("horse")), ::testing::ExitedWithCode(1), "unknown type");
+  EXPECT_EXIT(Parse(LineWithType("hamlet")), ::testing::ExitedWithCode(1), "unknown type");
+  EXPECT_EXIT(Parse(LineWithType("cityscape")), ::testing::ExitedWithCode(1), "unknown type");
+  EXPECT_EXIT(Parse(LineWithType("stateless")), ::testing::ExitedWithCode(1), "unknown type");
+}
+
+TEST(JsonParseTypesDeathTest, AValueTooShortToBeAnyOfThemReadsNoFurtherThanItself) {
+  // These are the inputs the old dispatch ran off the end of: "s" reached for
+  // type[2], "c" for type[5]. Both are refusals now, and under a sanitizer this
+  // test is also what proves nothing is read past the terminator.
+  EXPECT_EXIT(Parse(LineWithType("s")), ::testing::ExitedWithCode(1), "unknown type");
+  EXPECT_EXIT(Parse(LineWithType("c")), ::testing::ExitedWithCode(1), "unknown type");
+  EXPECT_EXIT(Parse(LineWithType("")), ::testing::ExitedWithCode(1), "unknown type");
 }
 
 TEST(JsonParseTypes, TheKindNumbersMatchWhatTheClientHandsOut) {

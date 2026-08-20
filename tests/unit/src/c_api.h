@@ -23,11 +23,12 @@
    for them again, their include guards make it a no-op. */
 #include <roaring/roaring.h>
 
-#include "gradido_blockchain_core/memory.h"
-#include "gradido_blockchain_core/result.h"
-#include "gradido_blockchain_core/utils/bucket_vector.h"
-#include "gradido_blockchain_core/utils/converter.h"
-#include "gradido_blockchain_core/utils/mono_timer.h"
+#include "hostmem/memory.h"
+#include "hostmem/result.h"
+#include "hostmem/bucket_vector.h"
+#include "hostmem/converter.h"
+#include "hostmem/mono_timer.h"
+#include "hostmem/multi_arena.h"
 
 #ifdef __cplusplus
 #ifndef _Noreturn
@@ -44,7 +45,6 @@ extern "C" {
 #include "foundation/error.h"
 #include "foundation/format.h"
 #include "foundation/line_buffer.h"
-#include "foundation/meta_area_allocator.h"
 #include "foundation/progress.h"
 #include "parser/json_parse.h"
 #include "parser/json_stats.h"

@@ -60,7 +60,7 @@
 
 #include <roaring/roaring.h>
 
-#include "gradido_blockchain_core/result.h"
+#include "hostmem/result.h"
 #include "search/doc_collector.h"
 #include "search/house_collector.h"
 #include "search/name_collector.h"
@@ -133,9 +133,9 @@ typedef struct GeoDictionary {
   const GeoIndexGroup *groups; /**< Group table inside the mapping. */
   const uint32_t *offsets;     /**< Offset table inside the mapping. */
   const char *text;            /**< Word bytes inside the mapping. */
-  size_t group_count;
-  size_t word_count;
-  size_t text_size;
+  size_t group_count;          /**< Entries in @c groups. */
+  size_t word_count;           /**< Words the dictionary holds; @c offsets has one more. */
+  size_t text_size;            /**< Bytes in @c text. */
   PrefixTree prefixes; /**< Leading bytes → group index, rebuilt on open. */
 } GeoDictionary;
 
@@ -150,17 +150,17 @@ typedef struct GeoIndex {
   size_t size;           /**< Mapped bytes. */
   GeoDictionary words;   /**< Folded words — the search side. */
   GeoDictionary display; /**< Written spellings — the answer side. */
-  const GeoDocument *documents;
-  const uint16_t *importance; /**< One weight per document, read while ranking. */
-  size_t document_count;
+  const GeoDocument *documents; /**< One record per place, inside the mapping. */
+  const uint16_t *importance;   /**< One weight per document, read while ranking. */
+  size_t document_count;        /**< Entries in @c documents. */
   const uint64_t *posting_offsets; /**< words.word_count + 1 byte offsets into @c postings. */
   const char *postings;            /**< Serialized bitmaps, one per word. */
   size_t posting_bytes;            /**< Length of the bitmap blob. */
   size_t posting_count;            /**< Word-to-document connections held in it. */
   const GeoHouse *houses;          /**< House numbers, ordered by street. */
   const uint32_t *house_offsets;   /**< document_count + 1 entries into @c houses. */
-  size_t house_count;
-  uint64_t total_terms;
+  size_t house_count;              /**< Entries in @c houses. */
+  uint64_t total_terms;            /**< Terms seen while building; reporting only. */
 } GeoIndex;
 
 /**
@@ -176,14 +176,14 @@ typedef struct GeoIndex {
  *  @param[in] documents    Joined documents and postings.
  *  @param[in] houses       Joined house numbers, ordered by street.
  *  @param[in] total_terms  Terms seen while building, kept for the report.
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument,
- *          GRD_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB,
- *          GRD_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
- *          GRD_ERROR_ENCODE_FAILED when the file could not be written.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
+ *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB,
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
+ *          HOSTMEM_ERROR_ENCODE_FAILED when the file could not be written.
  *
  *  @whisper The work of minutes lies down in the order it will be read
  */
-grd_result geo_index_write(
+hostmem_result geo_index_write(
     const char *path,
     const NameSet *words,
     const NameSet *display,
@@ -201,12 +201,12 @@ grd_result geo_index_write(
  *
  *  @param[out] index  Receives the opened index; zeroed on failure.
  *  @param[in]  path   File written by geo_index_write().
- *  @return GRD_SUCCESS, GRD_ERROR_NULL_POINTER on a NULL argument,
- *          GRD_ERROR_DECODE_FAILED when the file cannot be opened or mapped,
- *          GRD_ERROR_INVALID_PARAM when the header does not fit this build, or
- *          GRD_ERROR_OUT_OF_MEMORY when a tree could not be rebuilt.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
+ *          HOSTMEM_ERROR_DECODE_FAILED when the file cannot be opened or mapped,
+ *          HOSTMEM_ERROR_INVALID_PARAM when the header does not fit this build, or
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when a tree could not be rebuilt.
  */
-grd_result geo_index_open(GeoIndex *index, const char *path);
+hostmem_result geo_index_open(GeoIndex *index, const char *path);
 
 /**
  * @brief Release the mapping and the trees.
@@ -279,7 +279,9 @@ typedef struct GeoHit {
  * size its own array to it, and a second copy of the number living somewhere
  * else would be free to drift away from this one.
  */
-enum { GEO_QUERY_LIMIT_MAX = 256 };
+enum {
+  GEO_QUERY_LIMIT_MAX = 256 /**< Most results one query may be asked for. */
+};
 
 /**
  * @brief Borrow the house numbers standing on one document.

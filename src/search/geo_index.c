@@ -55,42 +55,42 @@ static size_t key_length(const uint8_t *key) {
  * ========================================================================= */
 
 /** Pad the file until @p position sits on a multiple of @p alignment. */
-static grd_result pad_to(FILE *file, uint64_t *position, uint64_t alignment) {
+static hostmem_result pad_to(FILE *file, uint64_t *position, uint64_t alignment) {
   static const char zeros[GEO_INDEX_BITMAP_ALIGNMENT] = {0};
   uint64_t misaligned = *position % alignment;
-  if (!misaligned) return GRD_SUCCESS;
+  if (!misaligned) return HOSTMEM_SUCCESS;
   size_t padding = (size_t)(alignment - misaligned);
-  if (fwrite(zeros, 1, padding, file) != padding) return GRD_ERROR_ENCODE_FAILED;
+  if (fwrite(zeros, 1, padding, file) != padding) return HOSTMEM_ERROR_ENCODE_FAILED;
   *position += padding;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
 /** Pad the file to the next section boundary. */
-static grd_result pad_to_alignment(FILE *file, uint64_t *position) {
+static hostmem_result pad_to_alignment(FILE *file, uint64_t *position) {
   return pad_to(file, position, GEO_INDEX_ALIGNMENT);
 }
 
 /** Open one section at the current position. */
-static grd_result section_begin(
+static hostmem_result section_begin(
     FILE *file, uint64_t *position, GeoIndexSection *section, GeoIndexSectionKind kind
 ) {
-  grd_result result = pad_to_alignment(file, position);
-  if (result != GRD_SUCCESS) return result;
+  hostmem_result result = pad_to_alignment(file, position);
+  if (result != HOSTMEM_SUCCESS) return result;
   section->kind = (uint32_t)kind;
   section->flags = 0;
   section->offset = *position;
   section->size = 0;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
 /** Append bytes to the open section. */
-static grd_result section_put(
+static hostmem_result section_put(
     FILE *file, uint64_t *position, GeoIndexSection *section, const void *data, size_t size
 ) {
-  if (size && fwrite(data, 1, size, file) != size) return GRD_ERROR_ENCODE_FAILED;
+  if (size && fwrite(data, 1, size, file) != size) return HOSTMEM_ERROR_ENCODE_FAILED;
   *position += size;
   section->size = *position - section->offset;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
 /**
@@ -100,7 +100,7 @@ static grd_result section_put(
  *  remainder that was stored.  What was split for order is joined again for
  *  reading.
  */
-static grd_result write_dictionary(
+static hostmem_result write_dictionary(
     FILE *file,
     uint64_t *position,
     const NameSet *set,
@@ -111,7 +111,7 @@ static grd_result write_dictionary(
 ) {
   /* --- the offset table has to exist before the text it describes --- */
   uint32_t *offsets = malloc((set->count + 1) * sizeof(*offsets));
-  if (!offsets) return GRD_ERROR_OUT_OF_MEMORY;
+  if (!offsets) return HOSTMEM_ERROR_OUT_OF_MEMORY;
 
   uint64_t text_size = 0;
   size_t counted = 0;
@@ -123,14 +123,14 @@ static grd_result write_dictionary(
       text_size += head + strlen(set->names[group->start + i]);
       if (text_size > UINT32_MAX) { /* offsets are 32 bit — say so instead of wrapping */
         free(offsets);
-        return GRD_ERROR_ARITHMETIC_OVERFLOW;
+        return HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
       }
     }
   }
   offsets[counted] = (uint32_t)text_size;
 
-  grd_result result = section_begin(file, position, &sections[0], groups_kind);
-  if (result != GRD_SUCCESS) goto done;
+  hostmem_result result = section_begin(file, position, &sections[0], groups_kind);
+  if (result != HOSTMEM_SUCCESS) goto done;
   for (size_t g = 0; g < set->group_count; ++g) {
     GeoIndexGroup record;
     memset(&record, 0, sizeof(record));
@@ -138,25 +138,25 @@ static grd_result write_dictionary(
     record.start = (uint32_t)set->groups[g].start;
     record.count = (uint32_t)set->groups[g].count;
     result = section_put(file, position, &sections[0], &record, sizeof(record));
-    if (result != GRD_SUCCESS) goto done;
+    if (result != HOSTMEM_SUCCESS) goto done;
   }
 
   result = section_begin(file, position, &sections[1], offsets_kind);
-  if (result != GRD_SUCCESS) goto done;
+  if (result != HOSTMEM_SUCCESS) goto done;
   result = section_put(file, position, &sections[1], offsets, (set->count + 1) * sizeof(*offsets));
-  if (result != GRD_SUCCESS) goto done;
+  if (result != HOSTMEM_SUCCESS) goto done;
 
   result = section_begin(file, position, &sections[2], text_kind);
-  if (result != GRD_SUCCESS) goto done;
+  if (result != HOSTMEM_SUCCESS) goto done;
   for (size_t g = 0; g < set->group_count; ++g) {
     const NameGroup *group = &set->groups[g];
     size_t head = key_length(group->key);
     for (size_t i = 0; i < group->count; ++i) {
       const char *rest = set->names[group->start + i];
       result = section_put(file, position, &sections[2], group->key, head);
-      if (result != GRD_SUCCESS) goto done;
+      if (result != HOSTMEM_SUCCESS) goto done;
       result = section_put(file, position, &sections[2], rest, strlen(rest));
-      if (result != GRD_SUCCESS) goto done;
+      if (result != HOSTMEM_SUCCESS) goto done;
     }
   }
 
@@ -183,7 +183,7 @@ done:
  *  @param[out] out_offsets  Receives a table of word_count + 1 byte offsets,
  *                           to be freed by the caller.
  */
-static grd_result write_postings(
+static hostmem_result write_postings(
     FILE *file,
     uint64_t *position,
     GeoIndexSection *section,
@@ -192,13 +192,13 @@ static grd_result write_postings(
 ) {
   size_t word_count = documents->word_count;
   uint64_t *offsets = malloc((word_count + 1) * sizeof(*offsets));
-  if (!offsets) return GRD_ERROR_OUT_OF_MEMORY;
+  if (!offsets) return HOSTMEM_ERROR_OUT_OF_MEMORY;
 
-  grd_result result = pad_to(file, position, GEO_INDEX_BITMAP_ALIGNMENT);
-  if (result == GRD_SUCCESS) {
+  hostmem_result result = pad_to(file, position, GEO_INDEX_BITMAP_ALIGNMENT);
+  if (result == HOSTMEM_SUCCESS) {
     result = section_begin(file, position, section, GEO_INDEX_SECTION_POSTINGS);
   }
-  if (result != GRD_SUCCESS) {
+  if (result != HOSTMEM_SUCCESS) {
     free(offsets);
     return result;
   }
@@ -217,13 +217,13 @@ static grd_result write_postings(
 
     roaring_bitmap_t *bitmap = roaring_bitmap_of_ptr(last - first, documents->postings + first);
     if (!bitmap) {
-      result = GRD_ERROR_OUT_OF_MEMORY;
+      result = HOSTMEM_ERROR_OUT_OF_MEMORY;
       break;
     }
     roaring_bitmap_run_optimize(bitmap);
 
     result = pad_to(file, position, GEO_INDEX_BITMAP_ALIGNMENT);
-    if (result != GRD_SUCCESS) {
+    if (result != HOSTMEM_SUCCESS) {
       roaring_bitmap_free(bitmap);
       break;
     }
@@ -234,7 +234,7 @@ static grd_result write_postings(
       char *grown = realloc(buffer, needed);
       if (!grown) {
         roaring_bitmap_free(bitmap);
-        result = GRD_ERROR_OUT_OF_MEMORY;
+        result = HOSTMEM_ERROR_OUT_OF_MEMORY;
         break;
       }
       buffer = grown;
@@ -244,20 +244,20 @@ static grd_result write_postings(
     roaring_bitmap_free(bitmap);
 
     result = section_put(file, position, section, buffer, needed);
-    if (result != GRD_SUCCESS) break;
+    if (result != HOSTMEM_SUCCESS) break;
   }
   offsets[word_count] = *position - section->offset;
 
   free(buffer);
-  if (result != GRD_SUCCESS) {
+  if (result != HOSTMEM_SUCCESS) {
     free(offsets);
     return result;
   }
   *out_offsets = offsets;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
-grd_result geo_index_write(
+hostmem_result geo_index_write(
     const char *path,
     const NameSet *words,
     const NameSet *display,
@@ -265,10 +265,10 @@ grd_result geo_index_write(
     const HouseSet *houses,
     uint64_t total_terms
 ) {
-  if (!path || !words || !display || !documents || !houses) return GRD_ERROR_NULL_POINTER;
+  if (!path || !words || !display || !documents || !houses) return HOSTMEM_ERROR_NULL_POINTER;
 
   FILE *file = fopen(path, "wb");
-  if (!file) return GRD_ERROR_ENCODE_FAILED;
+  if (!file) return HOSTMEM_ERROR_ENCODE_FAILED;
   static char write_buffer[1 << 20];
   setvbuf(file, write_buffer, _IOFBF, sizeof(write_buffer));
 
@@ -279,67 +279,67 @@ grd_result geo_index_write(
 
   uint64_t position = sizeof(header) + sizeof(sections);
   uint64_t *posting_offsets = NULL;
-  grd_result result = GRD_ERROR_ENCODE_FAILED;
+  hostmem_result result = HOSTMEM_ERROR_ENCODE_FAILED;
   if (fseek(file, (long)position, SEEK_SET) != 0) goto failed;
 
   result = write_dictionary(
       file, &position, words, &sections[0], GEO_INDEX_SECTION_WORD_GROUPS,
       GEO_INDEX_SECTION_WORD_OFFSETS, GEO_INDEX_SECTION_WORD_TEXT
   );
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   result = write_dictionary(
       file, &position, display, &sections[3], GEO_INDEX_SECTION_DISPLAY_GROUPS,
       GEO_INDEX_SECTION_DISPLAY_OFFSETS, GEO_INDEX_SECTION_DISPLAY_TEXT
   );
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   result = section_begin(file, &position, &sections[6], GEO_INDEX_SECTION_DOCUMENTS);
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
   result = section_put(
       file, &position, &sections[6], documents->documents,
       documents->document_count * sizeof(GeoDocument)
   );
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   /* The bitmaps go down first and tell us their sizes on the way; the table of
      offsets follows behind them, because only then is it known. */
   result = write_postings(file, &position, &sections[8], documents, &posting_offsets);
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   /* the weights travel apart from the records: ranking touches nothing else,
      and a hundred megabytes of them fit into the caches far better than two
      gigabytes of full documents */
   result = section_begin(file, &position, &sections[9], GEO_INDEX_SECTION_IMPORTANCE);
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
   for (size_t d = 0; d < documents->document_count; ++d) {
     uint16_t weight = documents->documents[d].importance;
     result = section_put(file, &position, &sections[9], &weight, sizeof(weight));
-    if (result != GRD_SUCCESS) goto failed;
+    if (result != HOSTMEM_SUCCESS) goto failed;
   }
 
   result = section_begin(file, &position, &sections[7], GEO_INDEX_SECTION_POSTING_OFFSETS);
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
   result = section_put(
       file, &position, &sections[7], posting_offsets,
       (documents->word_count + 1) * sizeof(*posting_offsets)
   );
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   result = section_begin(file, &position, &sections[10], GEO_INDEX_SECTION_HOUSES);
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
   result = section_put(
       file, &position, &sections[10], houses->houses, houses->house_count * sizeof(GeoHouse)
   );
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   result = section_begin(file, &position, &sections[11], GEO_INDEX_SECTION_HOUSE_OFFSETS);
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
   result = section_put(
       file, &position, &sections[11], houses->offsets,
       (documents->document_count + 1) * sizeof(uint32_t)
   );
-  if (result != GRD_SUCCESS) goto failed;
+  if (result != HOSTMEM_SUCCESS) goto failed;
 
   /* --- back to the front, now that every offset is known --- */
   memcpy(header.magic, GEO_INDEX_MAGIC, sizeof(header.magic));
@@ -357,16 +357,16 @@ grd_result geo_index_write(
   header.house_count = houses->house_count;
   header.total_terms = total_terms;
 
-  result = GRD_ERROR_ENCODE_FAILED;
+  result = HOSTMEM_ERROR_ENCODE_FAILED;
   if (fseek(file, 0, SEEK_SET) != 0) goto failed;
   if (fwrite(&header, sizeof(header), 1, file) != 1) goto failed;
   if (fwrite(sections, sizeof(sections), 1, file) != 1) goto failed;
   if (fflush(file)) goto failed;
-  result = GRD_SUCCESS;
+  result = HOSTMEM_SUCCESS;
 
 failed:
   free(posting_offsets);
-  if (fclose(file) != 0 && result == GRD_SUCCESS) result = GRD_ERROR_ENCODE_FAILED;
+  if (fclose(file) != 0 && result == HOSTMEM_SUCCESS) result = HOSTMEM_ERROR_ENCODE_FAILED;
   return result;
 }
 
@@ -396,7 +396,7 @@ static const void *section_of(
 }
 
 /** Bind one dictionary to its three sections and rebuild its tree. */
-static grd_result open_dictionary(
+static hostmem_result open_dictionary(
     GeoDictionary *dictionary,
     const uint8_t *base,
     size_t size,
@@ -417,17 +417,17 @@ static grd_result open_dictionary(
       base, size, sections, section_count, offsets_kind, (word_count + 1) * sizeof(uint32_t), NULL
   );
   const char *text = section_of(base, size, sections, section_count, text_kind, 0, &text_size);
-  if (!groups || !offsets || !text) return GRD_ERROR_INVALID_PARAM;
-  if (word_count && offsets[word_count] > text_size) return GRD_ERROR_INVALID_PARAM;
+  if (!groups || !offsets || !text) return HOSTMEM_ERROR_INVALID_PARAM;
+  if (word_count && offsets[word_count] > text_size) return HOSTMEM_ERROR_INVALID_PARAM;
 
-  grd_result result = prefix_tree_init(&dictionary->prefixes, NAME_PREFIX_DEPTH);
-  if (result != GRD_SUCCESS) return result;
+  hostmem_result result = prefix_tree_init(&dictionary->prefixes, NAME_PREFIX_DEPTH);
+  if (result != HOSTMEM_SUCCESS) return result;
   for (uint64_t g = 0; g < group_count; ++g) {
     size_t assigned = 0;
     result = prefix_tree_intern(&dictionary->prefixes, groups[g].key, &assigned, NULL);
     /* the groups were written in key order; anything else is not our file */
-    if (result == GRD_SUCCESS && assigned != g) result = GRD_ERROR_INVALID_PARAM;
-    if (result != GRD_SUCCESS) {
+    if (result == HOSTMEM_SUCCESS && assigned != g) result = HOSTMEM_ERROR_INVALID_PARAM;
+    if (result != HOSTMEM_SUCCESS) {
       prefix_tree_free(&dictionary->prefixes);
       return result;
     }
@@ -439,32 +439,32 @@ static grd_result open_dictionary(
   dictionary->group_count = (size_t)group_count;
   dictionary->word_count = (size_t)word_count;
   dictionary->text_size = (size_t)text_size;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
-grd_result geo_index_open(GeoIndex *index, const char *path) {
-  if (!index || !path) return GRD_ERROR_NULL_POINTER;
+hostmem_result geo_index_open(GeoIndex *index, const char *path) {
+  if (!index || !path) return HOSTMEM_ERROR_NULL_POINTER;
   memset(index, 0, sizeof(*index));
 
   int descriptor = open(path, O_RDONLY);
-  if (descriptor < 0) return GRD_ERROR_DECODE_FAILED;
+  if (descriptor < 0) return HOSTMEM_ERROR_DECODE_FAILED;
 
   struct stat status;
   if (fstat(descriptor, &status) != 0 || status.st_size <= (off_t)sizeof(GeoIndexHeader)) {
     close(descriptor);
-    return GRD_ERROR_DECODE_FAILED;
+    return HOSTMEM_ERROR_DECODE_FAILED;
   }
   size_t size = (size_t)status.st_size;
 
   void *mapping = mmap(NULL, size, PROT_READ, MAP_PRIVATE, descriptor, 0);
   close(descriptor); /* the mapping keeps the file alive on its own */
-  if (mapping == MAP_FAILED) return GRD_ERROR_DECODE_FAILED;
+  if (mapping == MAP_FAILED) return HOSTMEM_ERROR_DECODE_FAILED;
 
   const uint8_t *base = mapping;
   const GeoIndexHeader *header = (const GeoIndexHeader *)base;
 
   /* --- nothing is trusted before the header agrees --- */
-  grd_result result = GRD_ERROR_INVALID_PARAM;
+  hostmem_result result = HOSTMEM_ERROR_INVALID_PARAM;
   if (memcmp(header->magic, GEO_INDEX_MAGIC, sizeof(header->magic)) != 0) goto refused;
   if (header->version != GEO_INDEX_VERSION) goto refused;
   if (header->byte_order != GEO_INDEX_BYTE_ORDER) goto refused;
@@ -486,18 +486,18 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
       header->word_group_count, GEO_INDEX_SECTION_WORD_GROUPS, GEO_INDEX_SECTION_WORD_OFFSETS,
       GEO_INDEX_SECTION_WORD_TEXT
   );
-  if (result != GRD_SUCCESS) goto refused;
+  if (result != HOSTMEM_SUCCESS) goto refused;
   result = open_dictionary(
       &index->display, base, size, sections, header->section_count, header->display_count,
       header->display_group_count, GEO_INDEX_SECTION_DISPLAY_GROUPS,
       GEO_INDEX_SECTION_DISPLAY_OFFSETS, GEO_INDEX_SECTION_DISPLAY_TEXT
   );
-  if (result != GRD_SUCCESS) {
+  if (result != HOSTMEM_SUCCESS) {
     prefix_tree_free(&index->words.prefixes);
     goto refused;
   }
 
-  result = GRD_ERROR_INVALID_PARAM;
+  result = HOSTMEM_ERROR_INVALID_PARAM;
   const GeoDocument *documents = section_of(
       base, size, sections, header->section_count, GEO_INDEX_SECTION_DOCUMENTS,
       header->document_count * sizeof(GeoDocument), NULL
@@ -542,7 +542,7 @@ grd_result geo_index_open(GeoIndex *index, const char *path) {
   index->posting_bytes = (size_t)posting_bytes;
   index->posting_count = (size_t)header->posting_count;
   index->total_terms = header->total_terms;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 
 refused_dictionaries:
   prefix_tree_free(&index->words.prefixes);

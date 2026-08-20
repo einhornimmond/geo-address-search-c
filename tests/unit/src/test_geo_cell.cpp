@@ -20,7 +20,9 @@
 namespace {
 
 /** Degrees as the index keeps them. */
-constexpr int32_t E7(double degrees) { return (int32_t)(degrees * 1.0e7); }
+constexpr int32_t E7(double degrees) {
+  return (int32_t)(degrees * 1.0e7);
+}
 
 std::string Token(int32_t lat_e7, int32_t lon_e7) {
   char buffer[GEO_CELL_TOKEN_SIZE];
@@ -102,8 +104,9 @@ TEST(GeoCellToken, BeginsWithAByteNoWordCanBeginWith) {
   const char *written = "Am Dom @ Köln";
   size_t count = text_tokenize(&tok, written, std::strlen(written));
   for (size_t i = 0; i < count; ++i) {
-    EXPECT_EQ(std::string(tok.tokens[i].data, tok.tokens[i].size).find(GEO_CELL_MARK),
-              std::string::npos);
+    EXPECT_EQ(
+        std::string(tok.tokens[i].data, tok.tokens[i].size).find(GEO_CELL_MARK), std::string::npos
+    );
   }
 }
 
@@ -173,8 +176,7 @@ TEST(GeoCellRing, ARingHoldsItsNeighbours) {
   for (double lat : {49.95, 50.05, 50.15}) {
     for (double lon : {5.95, 6.05, 6.15}) {
       uint32_t neighbour = geo_cell_of(E7(lat), E7(lon));
-      EXPECT_NE(std::find(ring.begin(), ring.end(), neighbour), ring.end())
-          << lat << ", " << lon;
+      EXPECT_NE(std::find(ring.begin(), ring.end(), neighbour), ring.end()) << lat << ", " << lon;
     }
   }
 }

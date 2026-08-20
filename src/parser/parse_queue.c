@@ -3,15 +3,18 @@
 #include <pthread.h>
 #include <stdlib.h>
 
+/** @cond INTERNAL */
+
+/** A ring of parcels with a lock around it; the two conditions are the two waits. */
 struct ParseQueue {
-  ParseBatch batches[PARSE_QUEUE_CAPACITY];
-  size_t head;
-  size_t tail;
-  size_t count;
-  int closed;
-  pthread_mutex_t mutex;
-  pthread_cond_t not_empty;
-  pthread_cond_t not_full;
+  ParseBatch batches[PARSE_QUEUE_CAPACITY]; /**< The ring itself, by value. */
+  size_t head;                              /**< Where the next pop reads. */
+  size_t tail;                              /**< Where the next push writes. */
+  size_t count;                             /**< Parcels standing in the ring. */
+  int closed;                               /**< Set once; never cleared. */
+  pthread_mutex_t mutex;                    /**< Guards everything above. */
+  pthread_cond_t not_empty;                 /**< A consumer waits here. */
+  pthread_cond_t not_full;                  /**< A producer waits here. */
 };
 
 ParseQueue *parse_queue_create(void) {
@@ -47,9 +50,13 @@ void parse_queue_push(ParseQueue *queue, ParseBatch batch) {
 
 int parse_queue_pop(ParseQueue *queue, ParseBatch *batch) {
   pthread_mutex_lock(&queue->mutex);
+  /* Waiting ends on either condition; emptiness alone is not the end of the
+     stream, and closing alone is not either. */
   while (queue->count == 0 && !queue->closed) {
     pthread_cond_wait(&queue->not_empty, &queue->mutex);
   }
+  /* Closed and empty: only now is there nothing more to come. A closed queue
+     that still holds parcels hands them out first. */
   if (queue->count == 0) {
     pthread_mutex_unlock(&queue->mutex);
     return 0;
@@ -65,6 +72,9 @@ int parse_queue_pop(ParseQueue *queue, ParseBatch *batch) {
 void parse_queue_close(ParseQueue *queue) {
   pthread_mutex_lock(&queue->mutex);
   queue->closed = 1;
+  /* Broadcast, not signal: every consumer has to learn of the end, not one. */
   pthread_cond_broadcast(&queue->not_empty);
   pthread_mutex_unlock(&queue->mutex);
 }
+
+/** @endcond */

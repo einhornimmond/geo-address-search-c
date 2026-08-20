@@ -135,21 +135,21 @@ bool place_cache_stamp_of(const char *dump_path, unsigned threads, PlaceCacheSta
   return true;
 }
 
-grd_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp) {
-  if (!directory || !stamp) return GRD_ERROR_NULL_POINTER;
+hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp) {
+  if (!directory || !stamp) return HOSTMEM_ERROR_NULL_POINTER;
   char *path = manifest_path(directory);
-  if (!path) return GRD_ERROR_OUT_OF_MEMORY;
+  if (!path) return HOSTMEM_ERROR_OUT_OF_MEMORY;
 
-  grd_result result = GRD_ERROR_ENCODE_FAILED;
+  hostmem_result result = HOSTMEM_ERROR_ENCODE_FAILED;
   FILE *file = fopen(path, "wb");
   if (file) {
     /* The magic goes down with the rest, and the file appears whole or not at
        all — a half-written manifest would claim a cache that is not there. */
     if (fwrite(PLACE_CACHE_MAGIC, 8, 1, file) == 1 && fwrite(stamp, sizeof(*stamp), 1, file) == 1) {
-      result = GRD_SUCCESS;
+      result = HOSTMEM_SUCCESS;
     }
-    if (fclose(file) != 0) result = GRD_ERROR_ENCODE_FAILED;
-    if (result != GRD_SUCCESS) remove(path);
+    if (fclose(file) != 0) result = HOSTMEM_ERROR_ENCODE_FAILED;
+    if (result != HOSTMEM_SUCCESS) remove(path);
   }
   free(path);
   return result;
@@ -233,6 +233,14 @@ typedef struct RecordBuilder {
   bool overflowed;
 } RecordBuilder;
 
+/**
+ * @brief Append raw bytes, growing the buffer when they do not fit.
+ *
+ *  The writing family below all comes through here, and so does the one way it
+ *  can fail: a growth that cannot be served sets @c overflowed and every later
+ *  put becomes a no-op.  Nothing is checked at each call site, and the record is
+ *  discarded once, at the end, by whoever reads that flag.
+ */
 static void put_bytes(RecordBuilder *b, const void *data, size_t size) {
   if (b->overflowed) return;
   if (b->used + size > *b->capacity) {
@@ -248,6 +256,20 @@ static void put_bytes(RecordBuilder *b, const void *data, size_t size) {
   memcpy(*b->buffer + b->used, data, size);
   b->used += size;
 }
+
+/* Fixed-width writes in host byte order, and doubles in whatever the host calls
+   IEEE 754. The format is therefore not portable, and nothing in it says so: no
+   field records the byte order and nothing validates one. PLACE_CACHE_MAGIC is no
+   help there — eight raw characters read the same on either endianness, so it
+   answers "is this one of ours", not "was it written the way we read".
+
+   What keeps a foreign-endian cache from being misread today is an accident
+   rather than a check: the layout number in every file header, and the whole
+   stamp in the manifest, are themselves read byte-swapped, so 1 arrives as
+   16777216 and the comparison fails. The cache is refused and the dump is
+   unpacked instead — the right outcome, reached by luck. Anyone moving a cache
+   between machines of different byte order, or making that supported, has to add
+   a byte-order field and check it. */
 
 static void put_u8(RecordBuilder *b, uint8_t value) {
   put_bytes(b, &value, 1);
@@ -284,26 +306,26 @@ static bool becomes_document(const PhotonPlace *place) {
   return !place->house.data && place->typeEnum != PHOTON_PLACE_TYPE_HOUSE;
 }
 
-grd_result place_cache_writer_open(
+hostmem_result place_cache_writer_open(
     PlaceCacheWriter *writer, const char *directory, unsigned thread
 ) {
-  if (!writer || !directory) return GRD_ERROR_NULL_POINTER;
+  if (!writer || !directory) return HOSTMEM_ERROR_NULL_POINTER;
   memset(writer, 0, sizeof(*writer));
 
   writer->capacity = 64 * 1024;
   writer->buffer = malloc(writer->capacity);
-  if (!writer->buffer) return GRD_ERROR_OUT_OF_MEMORY;
+  if (!writer->buffer) return HOSTMEM_ERROR_OUT_OF_MEMORY;
 
   for (int k = 0; k < 2; ++k) {
     writer->path[k] = file_path(directory, thread, (PlaceCacheKind)k);
     if (!writer->path[k]) {
       place_cache_writer_remove(writer);
-      return GRD_ERROR_OUT_OF_MEMORY;
+      return HOSTMEM_ERROR_OUT_OF_MEMORY;
     }
     writer->file[k] = fopen(writer->path[k], "wb");
     if (!writer->file[k]) {
       place_cache_writer_remove(writer);
-      return GRD_ERROR_ENCODE_FAILED;
+      return HOSTMEM_ERROR_ENCODE_FAILED;
     }
     /* a megabyte of buffer per file: the write is sequential and wants to
        arrive at the disk in pieces the disk likes */
@@ -313,15 +335,15 @@ grd_result place_cache_writer_open(
     if (fwrite(PLACE_CACHE_MAGIC, 8, 1, writer->file[k]) != 1 ||
         fwrite(header, sizeof(header), 1, writer->file[k]) != 1) {
       place_cache_writer_remove(writer);
-      return GRD_ERROR_ENCODE_FAILED;
+      return HOSTMEM_ERROR_ENCODE_FAILED;
     }
     writer->bytes[k] = 8 + sizeof(header);
   }
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
-grd_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place) {
-  if (!writer || !place) return GRD_ERROR_NULL_POINTER;
+hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place) {
+  if (!writer || !place) return HOSTMEM_ERROR_NULL_POINTER;
 
   /* Everything that is not a document of its own goes to the other file, the
      numbered doors and the house-level entries the dump left without a number
@@ -357,16 +379,16 @@ grd_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place)
     put_string(&builder, place->postcode);
     put_string(&builder, place->house);
   }
-  if (builder.overflowed) return GRD_ERROR_OUT_OF_MEMORY;
+  if (builder.overflowed) return HOSTMEM_ERROR_OUT_OF_MEMORY;
 
   uint32_t payload = (uint32_t)(builder.used - 4);
   memcpy(writer->buffer, &payload, 4);
   if (fwrite(writer->buffer, builder.used, 1, writer->file[kind]) != 1) {
-    return GRD_ERROR_ENCODE_FAILED;
+    return HOSTMEM_ERROR_ENCODE_FAILED;
   }
   ++writer->count[kind];
   writer->bytes[kind] += builder.used;
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
 void place_cache_writer_close(PlaceCacheWriter *writer) {
@@ -398,17 +420,17 @@ void place_cache_writer_remove(PlaceCacheWriter *writer) {
  *  Reading
  * ========================================================================= */
 
-grd_result place_cache_reader_open(
+hostmem_result place_cache_reader_open(
     PlaceCacheReader *reader, const char *directory, unsigned thread, PlaceCacheKind kind
 ) {
-  if (!reader || !directory) return GRD_ERROR_NULL_POINTER;
+  if (!reader || !directory) return HOSTMEM_ERROR_NULL_POINTER;
   memset(reader, 0, sizeof(*reader));
 
   char *path = file_path(directory, thread, kind);
-  if (!path) return GRD_ERROR_OUT_OF_MEMORY;
+  if (!path) return HOSTMEM_ERROR_OUT_OF_MEMORY;
   reader->file = fopen(path, "rb");
   free(path);
-  if (!reader->file) return GRD_ERROR_DECODE_FAILED;
+  if (!reader->file) return HOSTMEM_ERROR_DECODE_FAILED;
   setvbuf(reader->file, NULL, _IOFBF, 1u << 20);
 
   char magic[8];
@@ -419,7 +441,7 @@ grd_result place_cache_reader_open(
       header[1] != (uint32_t)kind) {
     fclose(reader->file);
     memset(reader, 0, sizeof(*reader));
-    return GRD_ERROR_INVALID_PARAM;
+    return HOSTMEM_ERROR_INVALID_PARAM;
   }
 
   reader->kind = kind;
@@ -428,10 +450,10 @@ grd_result place_cache_reader_open(
   if (!reader->buffer) {
     fclose(reader->file);
     memset(reader, 0, sizeof(*reader));
-    return GRD_ERROR_OUT_OF_MEMORY;
+    return HOSTMEM_ERROR_OUT_OF_MEMORY;
   }
   reader->bytes = sizeof(magic) + sizeof(header);
-  return GRD_SUCCESS;
+  return HOSTMEM_SUCCESS;
 }
 
 /** Walk a record: the cursor moves, the strings stay where they lie. */
@@ -442,6 +464,14 @@ typedef struct RecordCursor {
   bool short_of_bytes;
 } RecordCursor;
 
+/**
+ * @brief Borrow @p size bytes from the cursor, or refuse for good.
+ *
+ *  The mirror of put_bytes(): the reading family comes through here, and a
+ *  record that runs short sets @c short_of_bytes once.  Every take after that
+ *  answers with nothing, so a truncated file is caught at the end of the record
+ *  rather than checked field by field.
+ */
 static const void *take(RecordCursor *c, size_t size) {
   if (c->short_of_bytes || c->position + size > c->size) {
     c->short_of_bytes = true;
@@ -451,6 +481,9 @@ static const void *take(RecordCursor *c, size_t size) {
   c->position += size;
   return at;
 }
+
+/* Fixed-width reads mirroring the writes above; a short record yields zeros,
+   and the cursor's flag is what says they are not real values. */
 
 static uint8_t take_u8(RecordCursor *c) {
   const uint8_t *at = take(c, 1);

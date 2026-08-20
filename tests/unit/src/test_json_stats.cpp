@@ -75,9 +75,7 @@ TEST(JsonStats, CountsEveryKindOfEntryInItsOwnColumn) {
     json_stats_count_place(&stats, &place);
   }
 
-  for (const auto &c : cases) {
-    EXPECT_EQ(stats.*(c.field), 1u) << "kind " << (int)c.type;
-  }
+  for (const auto &c : cases) { EXPECT_EQ(stats.*(c.field), 1u) << "kind " << (int)c.type; }
 }
 
 TEST(JsonStats, TheEntryCountComesFromTheDocumentNotFromThePlaces) {

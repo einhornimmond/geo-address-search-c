@@ -32,7 +32,9 @@ protected:
     queue = parse_queue_create();
     ASSERT_NE(queue, nullptr);
   }
-  void TearDown() override { parse_queue_destroy(queue); }
+  void TearDown() override {
+    parse_queue_destroy(queue);
+  }
   ParseQueue *queue = nullptr;
 };
 

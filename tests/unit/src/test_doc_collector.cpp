@@ -16,8 +16,13 @@
 
 namespace {
 
-GeoDocument Doc(uint32_t name_rank, uint32_t city_rank = GEO_RANK_NONE,
-                uint32_t postcode_rank = GEO_RANK_NONE, int32_t lat = 0, int32_t lon = 0) {
+GeoDocument Doc(
+    uint32_t name_rank,
+    uint32_t city_rank = GEO_RANK_NONE,
+    uint32_t postcode_rank = GEO_RANK_NONE,
+    int32_t lat = 0,
+    int32_t lon = 0
+) {
   GeoDocument d{};
   d.lat_e7 = lat;
   d.lon_e7 = lon;
@@ -42,7 +47,9 @@ std::set<uint32_t> DocumentsOf(const DocSet &set, uint32_t word) {
 
 class DocCollectorTest : public ::testing::Test {
 protected:
-  void SetUp() override { ASSERT_EQ(doc_collector_init(&collector), GRD_SUCCESS); }
+  void SetUp() override {
+    ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  }
   void TearDown() override {
     doc_set_free(&set);
     doc_collector_free(&collector);
@@ -50,15 +57,15 @@ protected:
 
   uint32_t AddDoc(const GeoDocument &d) {
     uint32_t number = UINT32_MAX;
-    EXPECT_EQ(doc_collector_add_document(&collector, &d, &number), GRD_SUCCESS);
+    EXPECT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
     return number;
   }
   void AddWord(uint32_t word) {
-    EXPECT_EQ(doc_collector_add_posting(&collector, word), GRD_SUCCESS);
+    EXPECT_EQ(doc_collector_add_posting(&collector, word), HOSTMEM_SUCCESS);
   }
   void Merge(size_t word_count) {
     DocCollector *list[1] = {&collector};
-    ASSERT_EQ(doc_collector_merge(&set, list, 1, word_count), GRD_SUCCESS);
+    ASSERT_EQ(doc_collector_merge(&set, list, 1, word_count), HOSTMEM_SUCCESS);
   }
 
   DocCollector collector{};
@@ -186,26 +193,26 @@ TEST_F(DocCollectorTest, HandlesManyDocuments) {
 
 TEST(DocCollectorMerge, RenumbersTheDocumentsOfEveryThread) {
   DocCollector a{}, b{};
-  ASSERT_EQ(doc_collector_init(&a), GRD_SUCCESS);
-  ASSERT_EQ(doc_collector_init(&b), GRD_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&a), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&b), HOSTMEM_SUCCESS);
 
   uint32_t number = 0;
   GeoDocument first = Doc(10);
   GeoDocument second = Doc(20);
   GeoDocument third = Doc(30);
-  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), GRD_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), HOSTMEM_SUCCESS);
   EXPECT_EQ(number, 0u);
   doc_collector_add_posting(&a, 1);
-  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), GRD_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), HOSTMEM_SUCCESS);
   EXPECT_EQ(number, 0u) << "each thread counts from zero on its own";
   doc_collector_add_posting(&b, 1);
-  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), GRD_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), HOSTMEM_SUCCESS);
   EXPECT_EQ(number, 1u);
   doc_collector_add_posting(&b, 2);
 
   DocSet set{};
   DocCollector *list[2] = {&a, &b};
-  ASSERT_EQ(doc_collector_merge(&set, list, 2, 4), GRD_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 2, 4), HOSTMEM_SUCCESS);
 
   EXPECT_EQ(set.document_count, 3u) << "and the merge gives them one numbering";
   std::set<uint32_t> names;
@@ -223,13 +230,13 @@ TEST(DocCollectorMerge, RenumbersTheDocumentsOfEveryThread) {
 
 TEST(DocCollectorMerge, NoCollectorsYieldAnEmptySet) {
   DocSet set{};
-  EXPECT_EQ(doc_collector_merge(&set, nullptr, 0, 0), GRD_SUCCESS);
+  EXPECT_EQ(doc_collector_merge(&set, nullptr, 0, 0), HOSTMEM_SUCCESS);
   EXPECT_EQ(set.document_count, 0u);
   doc_set_free(&set);
 }
 
 TEST(DocCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
-  EXPECT_NE(doc_collector_init(nullptr), GRD_SUCCESS);
+  EXPECT_NE(doc_collector_init(nullptr), HOSTMEM_SUCCESS);
   EXPECT_EQ(doc_collector_document_count(nullptr), 0u);
   EXPECT_EQ(doc_collector_posting_count(nullptr), 0u);
   doc_collector_free(nullptr);
@@ -238,7 +245,7 @@ TEST(DocCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
 
 TEST(DocCollectorGuards, APostingBeforeAnyDocumentIsRefused) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), GRD_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
   // no document is open, so the word has nothing to point at
   doc_collector_add_posting(&collector, 1);
   EXPECT_EQ(doc_collector_document_count(&collector), 0u);
