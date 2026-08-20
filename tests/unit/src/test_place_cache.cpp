@@ -414,7 +414,7 @@ TEST(PlaceCacheManifest, ASealedCacheIsReadAgain) {
   FakeDump dump{"sealed", 1024};
 
   PlaceCacheStamp stamp{};
-  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, &stamp));
+  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, nullptr, &stamp));
   EXPECT_EQ(stamp.dump_bytes, 1024u);
   EXPECT_EQ(stamp.threads, 1u);
 
@@ -431,7 +431,7 @@ TEST(PlaceCacheManifest, AnotherDumpIsNotThisOne) {
   TempDir directory{"otherdump"};
   FakeDump dump{"otherdump", 1024};
   PlaceCacheStamp stamp{};
-  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, &stamp));
+  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, nullptr, &stamp));
 
   PlaceCacheWriter writer{};
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
@@ -461,7 +461,7 @@ TEST(PlaceCacheManifest, AMissingFileUndoesTheSeal) {
   TempDir directory{"halfgone"};
   FakeDump dump{"halfgone", 1024};
   PlaceCacheStamp stamp{};
-  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, &stamp));
+  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, nullptr, &stamp));
 
   PlaceCacheWriter writer{};
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
@@ -478,7 +478,7 @@ TEST(PlaceCacheManifest, DiscardLeavesNothingBehind) {
   TempDir directory{"discard"};
   FakeDump dump{"discard", 1024};
   PlaceCacheStamp stamp{};
-  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 2, &stamp));
+  ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 2, nullptr, &stamp));
 
   for (unsigned t = 0; t < 2; ++t) {
     PlaceCacheWriter writer{};
@@ -496,8 +496,8 @@ TEST(PlaceCacheManifest, DiscardLeavesNothingBehind) {
 
 TEST(PlaceCacheManifest, NoStampWithoutADump) {
   PlaceCacheStamp stamp{};
-  EXPECT_FALSE(place_cache_stamp_of("/nonexistent/photon/dump.zst", 1, &stamp));
-  EXPECT_FALSE(place_cache_stamp_of(nullptr, 1, &stamp));
+  EXPECT_FALSE(place_cache_stamp_of("/nonexistent/photon/dump.zst", 1, nullptr, &stamp));
+  EXPECT_FALSE(place_cache_stamp_of(nullptr, 1, nullptr, &stamp));
 }
 
 // ---------------------------------------------------------------------------

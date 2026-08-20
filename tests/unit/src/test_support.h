@@ -85,6 +85,15 @@ struct MiniPlace {
    *  a name in another language.  Searchable, never displayed — which is what
    *  the dump's `old_name` and `name:xx` fields amount to. */
   std::vector<std::string> aliases;
+  /** How other languages write this place.  The tag names one of the languages
+   *  handed to BuildMiniIndex(); an empty field means that language adds
+   *  nothing of its own and the default reading stands. */
+  struct Reading {
+    std::string tag;
+    std::string name;
+    std::string city;
+  };
+  std::vector<Reading> readings;
 };
 
 /**
@@ -96,10 +105,19 @@ struct MiniPlace {
  *  tokenizer a query goes through, so what the tests type finds what they
  *  wrote.
  *
+ *  @p languages names the readings the index shall hold, the first being the
+ *  default one — the same list the builder takes from `--languages`.  Left
+ *  empty, the index holds no language table at all, which is what an index of
+ *  one reading has always looked like.
+ *
  *  @return true when the file was written; on failure everything taken is
  *          given back and the file does not exist.
  */
-inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &places) {
+inline bool BuildMiniIndex(
+    const char *path,
+    const std::vector<MiniPlace> &places,
+    const std::vector<std::string> &languages = {}
+) {
   hostmem_multi_arena *alloc = hostmem_multi_arena_create(NAME_ARENA_CAPACITY, 0, nullptr, nullptr);
   if (!alloc) return false;
 
@@ -162,6 +180,13 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     add_written(p.city);
     add_written(p.postcode);
     for (const std::string &number : p.houses) add_written(number);
+    for (const MiniPlace::Reading &reading : p.readings) {
+      add_written(reading.name);
+      add_written(reading.city);
+      /* a localized ancestor reading is searchable exactly as the plain one is */
+      add_folded(reading.name);
+      add_folded(reading.city);
+    }
   }
 
   if (name_collector_finish(&words, &word_run) != HOSTMEM_SUCCESS) goto done;
@@ -189,9 +214,30 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     uint32_t number = 0;
     if (doc_collector_add_document(&docs, &record, &number) != HOSTMEM_SUCCESS) goto done;
 
+    for (const MiniPlace::Reading &reading : p.readings) {
+      size_t language = languages.size();
+      for (size_t l = 0; l < languages.size(); ++l) {
+        if (languages[l] == reading.tag) {
+          language = l;
+          break;
+        }
+      }
+      if (language == 0 || language >= languages.size()) continue; /* default, or unknown */
+      if (doc_collector_add_variant(
+              &docs, (uint32_t)language, rank_of(&display_set, reading.name),
+              rank_of(&display_set, reading.city)
+          ) != HOSTMEM_SUCCESS) {
+        goto done;
+      }
+    }
+
     {
       std::vector<const std::string *> texts = {&p.name, &p.city, &p.postcode};
       for (const std::string &alias : p.aliases) texts.push_back(&alias);
+      for (const MiniPlace::Reading &reading : p.readings) {
+        texts.push_back(&reading.name);
+        texts.push_back(&reading.city);
+      }
       for (const std::string *text : texts) {
         if (text->empty()) continue;
         size_t n = text_tokenize(&tok, text->c_str(), text->size());
@@ -213,7 +259,7 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
   }
   {
     DocCollector *doc_list[1] = {&docs};
-    if (doc_collector_merge(&doc_set, doc_list, 1, word_set.count) != HOSTMEM_SUCCESS) goto done;
+    if (doc_collector_merge(&doc_set, doc_list, 1, word_set.count, languages.size()) != HOSTMEM_SUCCESS) goto done;
   }
 
   /* --- pass three: the numbers hang on the streets they belong to.
@@ -247,8 +293,17 @@ inline bool BuildMiniIndex(const char *path, const std::vector<MiniPlace> &place
     }
   }
 
-  ok = geo_index_write(path, &word_set, &display_set, &doc_set, &house_set, total_terms) ==
-       HOSTMEM_SUCCESS;
+  {
+    char tags[GEO_LANGUAGE_MAX][GEO_LANGUAGE_TAG_MAX];
+    std::memset(tags, 0, sizeof(tags));
+    for (size_t l = 0; l < languages.size() && l < GEO_LANGUAGE_MAX; ++l) {
+      std::snprintf(tags[l], GEO_LANGUAGE_TAG_MAX, "%s", languages[l].c_str());
+    }
+    ok = geo_index_write(
+             path, &word_set, &display_set, &doc_set, &house_set,
+             languages.empty() ? nullptr : tags, total_terms
+         ) == HOSTMEM_SUCCESS;
+  }
 
 done:
   house_set_free(&house_set);

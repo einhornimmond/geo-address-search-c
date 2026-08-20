@@ -33,7 +33,8 @@ static uint32_t layout_hash(void) {
       (uint32_t)sizeof(GeoIndexHeader),  (uint32_t)sizeof(GeoIndexSection),
       (uint32_t)sizeof(GeoIndexGroup),   (uint32_t)sizeof(GeoDocument),
       (uint32_t)PREFIX_TREE_DEPTH_MAX,   (uint32_t)NAME_PREFIX_DEPTH,
-      (uint32_t)GEO_INDEX_SECTION_COUNT,
+      (uint32_t)GEO_INDEX_SECTION_COUNT, (uint32_t)sizeof(GeoIndexLanguage),
+      (uint32_t)sizeof(GeoVariant),
   };
   uint32_t hash = 2166136261u; /* FNV-1a */
   for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) {
@@ -263,6 +264,7 @@ hostmem_result geo_index_write(
     const NameSet *display,
     const DocSet *documents,
     const HouseSet *houses,
+    const char (*language_tags)[GEO_LANGUAGE_TAG_MAX],
     uint64_t total_terms
 ) {
   if (!path || !words || !display || !documents || !houses) return HOSTMEM_ERROR_NULL_POINTER;
@@ -341,6 +343,39 @@ hostmem_result geo_index_write(
   );
   if (result != HOSTMEM_SUCCESS) goto failed;
 
+  /* The languages and their readings go down last: a build that named one
+     language writes two empty sections here, and an older reader that never
+     heard of them would walk past two descriptors it does not know. */
+  /* A run is addressed by two uint32; a table beyond that would be written
+     truncated and read as something else entirely. */
+  if (documents->variant_count > UINT32_MAX || documents->language_count > GEO_LANGUAGE_MAX) {
+    result = HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
+    goto failed;
+  }
+  result = section_begin(file, &position, &sections[12], GEO_INDEX_SECTION_LANGUAGES);
+  if (result != HOSTMEM_SUCCESS) goto failed;
+  for (size_t l = 0; l < documents->language_count; ++l) {
+    GeoIndexLanguage entry;
+    memset(&entry, 0, sizeof(entry));
+    if (language_tags) {
+      memcpy(entry.tag, language_tags[l], GEO_LANGUAGE_TAG_MAX);
+      entry.tag[GEO_LANGUAGE_TAG_MAX - 1] = '\0';
+    }
+    entry.start = documents->language_offsets ? documents->language_offsets[l] : 0;
+    entry.count =
+        documents->language_offsets ? documents->language_offsets[l + 1] - entry.start : 0;
+    result = section_put(file, &position, &sections[12], &entry, sizeof(entry));
+    if (result != HOSTMEM_SUCCESS) goto failed;
+  }
+
+  result = section_begin(file, &position, &sections[13], GEO_INDEX_SECTION_VARIANTS);
+  if (result != HOSTMEM_SUCCESS) goto failed;
+  result = section_put(
+      file, &position, &sections[13], documents->variants,
+      documents->variant_count * sizeof(GeoVariant)
+  );
+  if (result != HOSTMEM_SUCCESS) goto failed;
+
   /* --- back to the front, now that every offset is known --- */
   memcpy(header.magic, GEO_INDEX_MAGIC, sizeof(header.magic));
   header.version = GEO_INDEX_VERSION;
@@ -356,6 +391,8 @@ hostmem_result geo_index_write(
   header.posting_count = documents->posting_count;
   header.house_count = houses->house_count;
   header.total_terms = total_terms;
+  header.language_count = documents->language_count;
+  header.variant_count = documents->variant_count;
 
   result = HOSTMEM_ERROR_ENCODE_FAILED;
   if (fseek(file, 0, SEEK_SET) != 0) goto failed;
@@ -368,6 +405,36 @@ failed:
   free(posting_offsets);
   if (fclose(file) != 0 && result == HOSTMEM_SUCCESS) result = HOSTMEM_ERROR_ENCODE_FAILED;
   return result;
+}
+
+/* =========================================================================
+ *  Languages
+ * ========================================================================= */
+
+int geo_index_language(const GeoIndex *index, const char *tag) {
+  if (!index || !tag || !*tag || !index->languages) return -1;
+  for (size_t l = 0; l < index->language_count; ++l) {
+    if (strncmp(index->languages[l].tag, tag, GEO_LANGUAGE_TAG_MAX) == 0) return (int)l;
+  }
+  return -1;
+}
+
+const GeoVariant *geo_index_variant(const GeoIndex *index, int language, uint32_t document) {
+  if (!index || language < 0 || (size_t)language >= index->language_count) return NULL;
+  const GeoIndexLanguage *entry = &index->languages[language];
+  size_t low = entry->start;
+  size_t high = low + entry->count;
+  while (low < high) {
+    size_t middle = low + (high - low) / 2;
+    uint32_t held = index->variants[middle].document;
+    if (held == document) return &index->variants[middle];
+    if (held < document) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return NULL;
 }
 
 /* =========================================================================
@@ -475,6 +542,9 @@ hostmem_result geo_index_open(GeoIndex *index, const char *path) {
     goto refused;
   }
   if (header->word_count > UINT32_MAX || header->display_count > UINT32_MAX) goto refused;
+  if (header->language_count > GEO_LANGUAGE_MAX) goto refused;
+  if (header->variant_count > UINT32_MAX) goto refused;
+  if (!header->language_count && header->variant_count) goto refused;
   if (header->document_count > UINT32_MAX || header->posting_count > UINT32_MAX) goto refused;
   if (header->house_count > UINT32_MAX) goto refused;
   if (header->word_group_count > header->word_count) goto refused;
@@ -522,6 +592,28 @@ hostmem_result geo_index_open(GeoIndex *index, const char *path) {
   const char *postings = section_of(
       base, size, sections, header->section_count, GEO_INDEX_SECTION_POSTINGS, 0, &posting_bytes
   );
+  const GeoIndexLanguage *languages = NULL;
+  const GeoVariant *variants = NULL;
+  if (header->language_count) {
+    languages = section_of(
+        base, size, sections, header->section_count, GEO_INDEX_SECTION_LANGUAGES,
+        header->language_count * sizeof(GeoIndexLanguage), NULL
+    );
+    variants = section_of(
+        base, size, sections, header->section_count, GEO_INDEX_SECTION_VARIANTS,
+        header->variant_count * sizeof(GeoVariant), NULL
+    );
+    if (!languages || !variants) goto refused_dictionaries;
+    /* Every run must lie inside the table and every rank inside the dictionary;
+       both are checked here, once, rather than on every answer. */
+    for (uint64_t l = 0; l < header->language_count; ++l) {
+      uint64_t start = languages[l].start;
+      uint64_t count = languages[l].count;
+      if (start > header->variant_count || count > header->variant_count - start) {
+        goto refused_dictionaries;
+      }
+    }
+  }
   if (!documents || !importance || !posting_offsets || !postings) goto refused_dictionaries;
   if (!houses || !house_offsets) goto refused_dictionaries;
   if (house_offsets[header->document_count] != header->house_count) goto refused_dictionaries;
@@ -542,6 +634,10 @@ hostmem_result geo_index_open(GeoIndex *index, const char *path) {
   index->posting_bytes = (size_t)posting_bytes;
   index->posting_count = (size_t)header->posting_count;
   index->total_terms = header->total_terms;
+  index->languages = languages;
+  index->language_count = (size_t)header->language_count;
+  index->variants = variants;
+  index->variant_count = (size_t)header->variant_count;
   return HOSTMEM_SUCCESS;
 
 refused_dictionaries:

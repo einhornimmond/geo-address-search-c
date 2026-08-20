@@ -100,10 +100,14 @@ static napi_value binding_open(napi_env env, napi_callback_info info) {
   if (status != GEO_OK) {
     free(handle);
     switch (status) {
-    case GEO_ERROR_FILE: return fail(env, "file cannot be read or mapped");
-    case GEO_ERROR_FORMAT: return fail(env, "not an index this build can read");
-    case GEO_ERROR_MEMORY: return fail(env, "out of memory");
-    default: return fail(env, "invalid argument");
+    case GEO_ERROR_FILE:
+      return fail(env, "file cannot be read or mapped");
+    case GEO_ERROR_FORMAT:
+      return fail(env, "not an index this build can read");
+    case GEO_ERROR_MEMORY:
+      return fail(env, "out of memory");
+    default:
+      return fail(env, "invalid argument");
     }
   }
 
@@ -170,16 +174,37 @@ static napi_value binding_info(napi_env env, napi_callback_info info) {
       !set_number(env, object, "format", (double)counts.format)) {
     return fail(env, "cannot build the counts object");
   }
+
+  /* The tags come out as an array rather than a number: a caller needs to know
+     which readings it may ask for, not merely how many there are. */
+  napi_value languages;
+  if (napi_create_array_with_length(env, counts.languages, &languages) != napi_ok) {
+    return fail(env, "out of memory");
+  }
+  for (uint32_t l = 0; l < counts.languages; ++l) {
+    char tag[GEO_CLIENT_LANGUAGE_MAX] = {0};
+    if (geo_client_language(handle->client, l, tag, sizeof(tag)) != GEO_OK) continue;
+    napi_value text;
+    if (napi_create_string_utf8(env, tag, NAPI_AUTO_LENGTH, &text) != napi_ok) {
+      return fail(env, "cannot hand a language over");
+    }
+    if (napi_set_element(env, languages, l, text) != napi_ok) {
+      return fail(env, "cannot build the language list");
+    }
+  }
+  if (napi_set_named_property(env, object, "languages", languages) != napi_ok) {
+    return fail(env, "cannot build the counts object");
+  }
   return object;
 }
 
 /* =========================================================================
- *  searchJson(handle, query, prefixLast, limit) -> string
+ *  searchJson(handle, query, prefixLast, limit, language) -> string
  * ========================================================================= */
 
 static napi_value binding_search(napi_env env, napi_callback_info info) {
-  size_t argc = 4;
-  napi_value argv[4];
+  size_t argc = 5;
+  napi_value argv[5];
   if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 4) {
     return fail(env, "searchJson() needs a handle, a query, a flag and a limit");
   }
@@ -198,34 +223,57 @@ static napi_value binding_search(napi_env env, napi_callback_info info) {
   napi_get_value_int32(env, argv[3], &limit);
   if (limit < 1) limit = 1;
 
+  /* An absent or empty language is no language: the answer comes back in the
+     reading the index holds by default. */
+  char *language = NULL;
+  if (argc >= 5) {
+    napi_valuetype kind = napi_undefined;
+    napi_typeof(env, argv[4], &kind);
+    if (kind == napi_string) {
+      size_t language_size = 0;
+      language = string_argument(env, argv[4], &language_size);
+      if (language && !language_size) {
+        free(language);
+        language = NULL;
+      }
+    }
+  }
+
   if (!handle->buffer) {
     handle->buffer = malloc(INITIAL_BUFFER);
     if (!handle->buffer) {
       free(query);
+      free(language);
       return fail(env, "out of memory");
     }
     handle->capacity = INITIAL_BUFFER;
   }
 
+  GeoSearchOptions options;
+  memset(&options, 0, sizeof(options));
+  options.prefix_last = prefix_last;
+  options.language = language;
+
   /* Twice at most: if the answer does not fit, the buffer grows to the size
      the library reported and the call is repeated once. */
   size_t needed = 0;
   for (int attempt = 0; attempt < 2; ++attempt) {
-    needed = geo_client_search_json(
-        handle->client, query, query_size, prefix_last, (size_t)limit, handle->buffer,
-        handle->capacity
+    needed = geo_client_search_json_options(
+        handle->client, query, query_size, &options, (size_t)limit, handle->buffer, handle->capacity
     );
     if (needed < handle->capacity) break;
 
     char *grown = realloc(handle->buffer, needed + 1);
     if (!grown) {
       free(query);
+      free(language);
       return fail(env, "out of memory");
     }
     handle->buffer = grown;
     handle->capacity = needed + 1;
   }
   free(query);
+  free(language);
   /* The second call fits by construction; should it ever not, this throws
      rather than reading `needed` bytes out of a smaller buffer. */
   if (needed >= handle->capacity) {

@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37,12 +38,91 @@ typedef struct PhotonString {
   size_t size;      /**< Byte length without the terminating NUL. */
 } PhotonString;
 
+/** Room for a language tag and its terminator — `de`, `en`, `pt-BR`. */
+enum { PHOTON_LANGUAGE_TAG_MAX = 8 };
+
+/** Languages one build may keep, and localized readings one entry may carry.
+ *
+ *  Both are small on purpose.  A dump offers thirty translations of a capital
+ *  city and none of a field path; keeping all of them everywhere is what makes
+ *  an index unbuildable, so a build names the few it wants. */
+enum { PHOTON_LANGUAGE_MAX = 32, PHOTON_PLACE_VARIANT_MAX = 32 };
+
+/**
+ * @brief The languages a build reads out of the dump.
+ *
+ *  The first is the one an answer shows by default and the one written into
+ *  the document record; the rest become variants beside it.  Empty means the
+ *  build asked for nothing beyond the unlocalized reading.
+ */
+typedef struct PhotonLanguages {
+  char tag[PHOTON_LANGUAGE_MAX][PHOTON_LANGUAGE_TAG_MAX]; /**< Lowercase, NUL-terminated. */
+  uint8_t tag_size[PHOTON_LANGUAGE_MAX];                  /**< Length of each tag. */
+  /** The same tags as one integer each — length in the low byte, the letters
+   *  above it.  A tag is two or three bytes, and asking the C library to
+   *  compare that many costs more in call overhead than the comparison does in
+   *  work; as a number it is a single instruction.  On a planet dump this is
+   *  asked once per localized address key, which is tens of millions of times. */
+  uint64_t tag_word[PHOTON_LANGUAGE_MAX];
+  uint8_t count; /**< Tags in use. */
+  bool every;    /**< Take whatever tag the dump offers, up to the cap. */
+  /** The keys of the default reading — `"name:de"`, `"city:de"`, `"street:de"` —
+   *  built once here rather than per entry.  They are the same for every one of
+   *  a planet's 356 million entries, and both building and searching for them
+   *  cost more than the fields they name.  Recognising the two address keys by
+   *  a whole-string compare is what keeps the colon out of the hot path: an
+   *  entry that becomes no document never has to look for one. */
+  char name_key[PHOTON_LANGUAGE_TAG_MAX + 6];
+  char city_key[PHOTON_LANGUAGE_TAG_MAX + 6];
+  char street_key[PHOTON_LANGUAGE_TAG_MAX + 8];
+  uint8_t city_key_size;   /**< Length of @c city_key; 0 where there is none. */
+  uint8_t street_key_size; /**< Length of @c street_key; 0 where there is none. */
+} PhotonLanguages;
+
+/**
+ * @brief One entry as one language writes it.
+ *
+ *  Only what actually differs is kept: a variant exists where the dump named a
+ *  reading of its own, and its fields are NULL where it did not.  A street in
+ *  Prague carries a Czech `name` and an English `city`, and nothing else.
+ */
+typedef struct PhotonVariant {
+  char tag[PHOTON_LANGUAGE_TAG_MAX]; /**< Which language, NUL-terminated. */
+  PhotonString name;                 /**< The entry's own name in it, or NULL. */
+  PhotonString city;                 /**< The town of its address in it, or NULL. */
+} PhotonVariant;
+
+/**
+ * @brief Read a comma-separated list of tags — `de,en,fr`, or `all`.
+ *
+ *  Tags are lowercased, trimmed of spaces and deduplicated; an empty piece is
+ *  passed over.  `all` sets @c every and leaves the list itself empty, which
+ *  makes the first reading the dump offers the default one.
+ *
+ *  @param[in]  text  The list as written; NULL or empty yields a count of 0.
+ *  @param[out] out   Zeroed first, then filled.
+ *  @return false when a tag was too long or there were more than
+ *          @ref PHOTON_LANGUAGE_MAX of them; @p out then holds what fit.
+ */
+bool photon_languages_parse(const char *text, PhotonLanguages *out);
+
+/** Whether @p tag is one of the languages @p languages asked for. */
+bool photon_languages_hold(const PhotonLanguages *languages, const char *tag, size_t tag_size);
+
+/** Where @p tag stands in the list, or -1 when it is not in it.
+ *
+ *  The place is what a variant record keeps, because a number is what the file
+ *  is ordered by; the tag itself is written once, in the language table. */
+int photon_languages_index(const PhotonLanguages *languages, const char *tag);
+
 /** Capacity for the role-free search strings of one entry.
  *
  *  The address block carries a localized variant per language — a German
  *  entry measured 30 distinct texts on average, so this must sit well above
- *  that or names quietly fall off the end. @c search_dropped counts what
- *  still does not fit. */
+ *  that or names quietly fall off the end.  A build that asks for many
+ *  languages raises that figure by roughly one text per language and level,
+ *  which is why the cap is what it is and why @c search_dropped is worth
+ *  watching: it counts what still did not fit. */
 enum { PHOTON_PLACE_SEARCH_MAX = 128 };
 
 /**
@@ -63,7 +143,7 @@ enum { PHOTON_PLACE_SEARCH_MAX = 128 };
 typedef struct PhotonPlace {
   const char *type;         /**< The address_type as written: "country", "state", … */
   PhotonPlaceType typeEnum; /**< The same, folded to a number; never UNKNOWN here. */
-  PhotonString own_name;    /**< Display name — "name:de" where there is one, else "name". */
+  PhotonString own_name;    /**< Display name in the default language, else the plain "name". */
   PhotonString street;      /**< Street of the address, or the entry itself. */
   PhotonString house;       /**< House number, verbatim: "12A", "12-14", … */
   PhotonString postcode;    /**< Postal code as written. */
@@ -73,10 +153,36 @@ typedef struct PhotonPlace {
   int32_t lon_e7;           /**< Longitude × 10⁷; meaningless unless @c has_point. */
   int32_t lat_e7;           /**< Latitude × 10⁷; meaningless unless @c has_point. */
   int has_point;            /**< A centroid was present. */
-  PhotonString search[PHOTON_PLACE_SEARCH_MAX]; /**< Role-free index texts. */
-  uint8_t search_count;                         /**< How many of them are filled. */
-  uint8_t search_dropped;                       /**< How many did not fit; 0 in sane data. */
+  uint8_t search_count;     /**< How many of @c search are filled. */
+  uint8_t search_dropped;   /**< How many did not fit; 0 in sane data. */
+  uint8_t variant_count;    /**< How many of @c variants are filled. */
+  uint8_t variant_dropped;  /**< How many did not fit. */
+  /* The two arrays stand last, and the counts in front of them, so that
+     photon_place_reset() can leave three kilobytes untouched — see there. */
+  PhotonString search[PHOTON_PLACE_SEARCH_MAX];     /**< Role-free index texts. */
+  PhotonVariant variants[PHOTON_PLACE_VARIANT_MAX]; /**< Readings beside the default one. */
 } PhotonPlace;
+
+/* Nothing may stand behind the arrays: photon_place_reset() zeroes what comes
+   before them and nothing else, so a field added at the end would be read as
+   whatever the last entry left there.  This says so at compile time. */
+static_assert(
+    sizeof(PhotonPlace) == offsetof(PhotonPlace, search) + sizeof(((PhotonPlace *)0)->search) +
+                               sizeof(((PhotonPlace *)0)->variants),
+    "a field was added behind the arrays of PhotonPlace; photon_place_reset() would miss it"
+);
+
+/**
+ * @brief Empty an entry so it can be filled again.
+ *
+ *  Everything up to @c search is zeroed and the two arrays are not, because
+ *  nothing ever reads past their counts and those counts stand in the part that
+ *  is.  It is a small distinction and worth three kilobytes of writing per
+ *  entry — on a planet dump, per entry means 356 million times.
+ *
+ *  @param[out] place  Entry to empty; must not be NULL.
+ */
+void photon_place_reset(PhotonPlace *place);
 
 /**
  * @brief Whether the entry brought a coordinate of its own.
@@ -127,6 +233,9 @@ typedef struct {
  *
  *  @param[in]  line      JSON text; need not be terminated.
  *  @param[in]  len       Byte length of @p line.
+ *  @param[in]  languages Localized readings to keep; NULL keeps only the
+ *                        unlocalized one.  The first tag is the default —
+ *                        what @c own_name and @c city come back as.
  *  @param[in]  callback  Invoked once per Place content entry that survives.
  *  @param[in]  user_data Forwarded to @p callback unchanged.
  *  @param[out] result    Document-level counts, for the statistics to add up.
@@ -141,6 +250,7 @@ typedef struct {
 int json_parse_line(
     const char *line,
     size_t len,
+    const PhotonLanguages *languages,
     PhotonPlaceCallback callback,
     void *user_data,
     JsonParseResult *result

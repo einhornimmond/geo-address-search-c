@@ -9,6 +9,7 @@
 #include <string.h>
 
 HOSTMEM_BVEC_DEFINE(geo_document_vec, GeoDocument, 9, )
+HOSTMEM_BVEC_DEFINE(geo_variant_vec, GeoVariantRecord, 10, )
 HOSTMEM_BVEC_DEFINE(geo_word_vec, uint32_t, 12, )
 HOSTMEM_BVEC_DEFINE(geo_start_vec, uint32_t, 12, )
 
@@ -23,6 +24,8 @@ hostmem_result doc_collector_init(DocCollector *collector) {
   collector->seen_count = 0;
   hostmem_result result = geo_document_vec_init(&collector->documents, NULL);
   if (result != HOSTMEM_SUCCESS) return result;
+  result = geo_variant_vec_init(&collector->variants, NULL);
+  if (result != HOSTMEM_SUCCESS) return result;
   result = geo_word_vec_init(&collector->words, NULL);
   if (result != HOSTMEM_SUCCESS) return result;
   return geo_start_vec_init(&collector->starts, NULL);
@@ -31,6 +34,7 @@ hostmem_result doc_collector_init(DocCollector *collector) {
 void doc_collector_free(DocCollector *collector) {
   if (!collector) return;
   geo_document_vec_free(&collector->documents);
+  geo_variant_vec_free(&collector->variants);
   geo_word_vec_free(&collector->words);
   geo_start_vec_free(&collector->starts);
   collector->dropped_words = 0;
@@ -52,6 +56,23 @@ hostmem_result doc_collector_add_document(
   collector->seen_count = 0; /* a fresh document has heard nothing yet */
   *out_number = (uint32_t)number;
   return HOSTMEM_SUCCESS;
+}
+
+hostmem_result doc_collector_add_variant(
+    DocCollector *collector, uint32_t language, uint32_t name_rank, uint32_t city_rank
+) {
+  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
+  if (name_rank == GEO_RANK_NONE && city_rank == GEO_RANK_NONE) return HOSTMEM_SUCCESS;
+  size_t documents = geo_document_vec_size(&collector->documents);
+  if (!documents) return HOSTMEM_SUCCESS; /* nothing is open to hang it on */
+
+  GeoVariantRecord reading = {
+      .record = (uint32_t)(documents - 1),
+      .name_rank = name_rank,
+      .city_rank = city_rank,
+      .language = language,
+  };
+  return geo_variant_vec_push_ptr(&collector->variants, &reading);
 }
 
 hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
@@ -148,6 +169,22 @@ static size_t thread_of(const uint32_t *base, size_t collector_count, uint32_t r
   return thread;
 }
 
+/** A localized reading with its final document number, waiting to be ordered. */
+typedef struct VariantSlot {
+  uint32_t language;
+  uint32_t document;
+  uint32_t name_rank;
+  uint32_t city_rank;
+} VariantSlot;
+
+/** By language first, then by document — the order the file is searched in. */
+static int compare_variant_slot(const void *left, const void *right) {
+  const VariantSlot *a = left, *b = right;
+  if (a->language != b->language) return a->language < b->language ? -1 : 1;
+  if (a->document != b->document) return a->document < b->document ? -1 : 1;
+  return 0;
+}
+
 /** Where one record's words lie, and in which thread's vector. */
 typedef struct WordRange {
   const geo_word_vec *words;
@@ -175,7 +212,11 @@ static WordRange word_range_of(
 }
 
 hostmem_result doc_collector_merge(
-    DocSet *out, DocCollector *const *collectors, size_t collector_count, size_t word_count
+    DocSet *out,
+    DocCollector *const *collectors,
+    size_t collector_count,
+    size_t word_count,
+    size_t language_count
 ) {
   if (!out) return HOSTMEM_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
@@ -192,13 +233,27 @@ hostmem_result doc_collector_merge(
   out->segment_count = record_count;
   if (!record_count) {
     out->posting_offsets = calloc(word_count + 1, sizeof(uint32_t));
-    return out->posting_offsets ? HOSTMEM_SUCCESS : HOSTMEM_ERROR_OUT_OF_MEMORY;
+    if (!out->posting_offsets) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    if (language_count) {
+      out->language_offsets = calloc(language_count + 1, sizeof(uint32_t));
+      if (!out->language_offsets) {
+        free(out->posting_offsets);
+        memset(out, 0, sizeof(*out));
+        return HOSTMEM_ERROR_OUT_OF_MEMORY;
+      }
+      out->language_count = language_count;
+    }
+    return HOSTMEM_SUCCESS;
   }
 
   /* --- the records move into one array, thread after thread --- */
   GeoDocument *documents = NULL;
   uint32_t *assign = NULL;
   GeoStreetKey *streets = NULL;
+  GeoVariant *variants = NULL;
+  uint32_t *language_offsets = NULL;
+  VariantSlot *slots = NULL;
+  size_t variant_count = 0;
   GeoDocument *records = malloc(record_count * sizeof(*records));
   MergeKey *keys = malloc(record_count * sizeof(*keys));
   uint32_t *counts = calloc(word_count + 1, sizeof(*counts));
@@ -347,6 +402,81 @@ hostmem_result doc_collector_merge(
     if (shrunk) streets = shrunk;
   }
 
+  /* --- the localized readings follow their records into the new numbering ---
+         A reading was collected against a thread-local record; that record has
+         since been shifted into one range and possibly merged with others into
+         a single document.  Both moves are the same lookup, so the readings
+         travel through `assign` exactly as the postings do.  Where several
+         segments of one street each brought a reading, the fields are gathered
+         rather than fought over: the first segment that names the street in
+         English names it for the whole street. */
+  if (language_count) {
+    language_offsets = calloc(language_count + 1, sizeof(*language_offsets));
+    if (!language_offsets) { goto out_of_memory; }
+
+    size_t gathered = 0;
+    for (size_t c = 0; c < collector_count; ++c) {
+      gathered += geo_variant_vec_size(&collectors[c]->variants);
+    }
+    if (gathered) {
+      slots = malloc(gathered * sizeof(*slots));
+      if (!slots) { goto out_of_memory; }
+      size_t taken = 0;
+      for (size_t c = 0; c < collector_count; ++c) {
+        geo_variant_vec *vec = &collectors[c]->variants;
+        for (size_t v = 0, held = geo_variant_vec_size(vec); v < held; ++v) {
+          const GeoVariantRecord *reading = geo_variant_vec_get(vec, v);
+          if (reading->language >= language_count) continue; /* not a language of this build */
+          uint32_t record = base[c] + reading->record;
+          if (record >= record_count) continue;
+          slots[taken].language = reading->language;
+          slots[taken].document = assign[record];
+          slots[taken].name_rank = reading->name_rank;
+          slots[taken].city_rank = reading->city_rank;
+          ++taken;
+        }
+      }
+      qsort(slots, taken, sizeof(*slots), compare_variant_slot);
+
+      /* one entry per language and document, the fields of its segments joined */
+      for (size_t i = 0; i < taken;) {
+        size_t end = i + 1;
+        while (end < taken && slots[end].language == slots[i].language &&
+               slots[end].document == slots[i].document) {
+          ++end;
+        }
+        uint32_t name = GEO_RANK_NONE, city = GEO_RANK_NONE;
+        for (size_t m = i; m < end; ++m) {
+          if (name == GEO_RANK_NONE) name = slots[m].name_rank;
+          if (city == GEO_RANK_NONE) city = slots[m].city_rank;
+        }
+        if (name != GEO_RANK_NONE || city != GEO_RANK_NONE) {
+          slots[variant_count].language = slots[i].language;
+          slots[variant_count].document = slots[i].document;
+          slots[variant_count].name_rank = name;
+          slots[variant_count].city_rank = city;
+          ++variant_count;
+        }
+        i = end;
+      }
+    }
+
+    if (variant_count) {
+      variants = malloc(variant_count * sizeof(*variants));
+      if (!variants) { goto out_of_memory; }
+      for (size_t v = 0; v < variant_count; ++v) {
+        variants[v].document = slots[v].document;
+        variants[v].name_rank = slots[v].name_rank;
+        variants[v].city_rank = slots[v].city_rank;
+        ++language_offsets[slots[v].language + 1];
+      }
+    }
+    for (size_t l = 0; l < language_count; ++l) { language_offsets[l + 1] += language_offsets[l]; }
+    free(slots);
+    slots = NULL;
+  }
+  for (size_t c = 0; c < collector_count; ++c) { geo_variant_vec_free(&collectors[c]->variants); }
+
   free(records);
   records = NULL;
   if (document_count < record_count) { /* the merged places left room behind */
@@ -421,12 +551,19 @@ hostmem_result doc_collector_merge(
   out->posting_count = posting_count;
   out->streets = streets;
   out->street_count = street_count;
+  out->variants = variants;
+  out->variant_count = variant_count;
+  out->language_offsets = language_offsets;
+  out->language_count = language_count;
   return HOSTMEM_SUCCESS;
 
 out_of_memory:
   free(records);
   free(documents);
   free(streets);
+  free(variants);
+  free(language_offsets);
+  free(slots);
   free(assign);
   free(keys);
   free(counts);
@@ -572,6 +709,8 @@ void doc_set_free(DocSet *set) {
   free(set->postings);
   free(set->posting_offsets);
   free(set->streets);
+  free(set->variants);
+  free(set->language_offsets);
   memset(set, 0, sizeof(*set));
 }
 

@@ -70,8 +70,43 @@ typedef struct GeoDocument {
 /** Set when the document carries a usable coordinate. */
 #define GEO_DOCUMENT_HAS_POINT 0x01u
 
+/**
+ * @brief One place as one language writes it, in the file.
+ *
+ *  A side table beside the documents, and a sparse one: a place appears here
+ *  once per language that names it differently, and the overwhelming majority
+ *  of places — a field path in Brandenburg, a cul-de-sac in Ohio — appear not
+ *  at all.  That sparseness is the whole reason this is a table of its own
+ *  rather than three more fields in every document record.
+ *
+ *  The ranks point into the same display dictionary the documents use, so a
+ *  spelling shared between languages costs one entry, not one per language.
+ */
+typedef struct GeoVariant {
+  uint32_t document;  /**< Which place, after merging. */
+  uint32_t name_rank; /**< Its name in this language, or GEO_RANK_NONE. */
+  uint32_t city_rank; /**< Its town in this language, or GEO_RANK_NONE. */
+} GeoVariant;
+
+/**
+ * @brief One localized reading as a thread collected it, before renumbering.
+ *
+ *  @c record is the thread's own document number.  Segments merge and documents
+ *  are renumbered when the threads join, and a reading has to travel with its
+ *  record through both — which is why this is not a @ref GeoVariant yet.
+ */
+typedef struct GeoVariantRecord {
+  uint32_t record;    /**< Thread-local document number. */
+  uint32_t name_rank; /**< Display rank, or GEO_RANK_NONE. */
+  uint32_t city_rank; /**< Display rank, or GEO_RANK_NONE. */
+  uint32_t language;  /**< Index into the build's language list. */
+} GeoVariantRecord;
+
 /** Documents of one thread — 512 per bucket, 12 KiB of contiguous records. */
 HOSTMEM_BVEC_DECLARE(geo_document_vec, GeoDocument, 9, extern)
+
+/** Localized readings of one thread — 1024 per bucket, 16 KiB. */
+HOSTMEM_BVEC_DECLARE(geo_variant_vec, GeoVariantRecord, 10, extern)
 
 /** Word ranks of one thread — 4096 per bucket, 16 KiB. */
 HOSTMEM_BVEC_DECLARE(geo_word_vec, uint32_t, 12, extern)
@@ -123,6 +158,7 @@ typedef struct GeoStreetKey {
  */
 typedef struct DocCollector {
   geo_document_vec documents;     /**< One record per place this thread met. */
+  geo_variant_vec variants;       /**< Localized readings, pointing back at those records. */
   geo_word_vec words;             /**< Word ranks, grouped by document. */
   geo_start_vec starts;           /**< First word of each document. */
   uint64_t dropped_words;         /**< Tokens the dictionary did not know — 0 in a sound build. */
@@ -178,6 +214,23 @@ hostmem_result doc_collector_add_document(
  */
 hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word);
 
+/**
+ * @brief Note how @p language writes the document opened last.
+ *
+ *  Nothing is stored where the language adds neither a name nor a town: a
+ *  reading that repeats the default one is not a reading, and a planet's worth
+ *  of those would fill the side table with copies.
+ *
+ *  @param[in,out] collector  Collector receiving the reading.
+ *  @param[in]     language   Index into the build's language list.
+ *  @param[in]     name_rank  Display rank of the name, or GEO_RANK_NONE.
+ *  @param[in]     city_rank  Display rank of the town, or GEO_RANK_NONE.
+ *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
+ */
+hostmem_result doc_collector_add_variant(
+    DocCollector *collector, uint32_t language, uint32_t name_rank, uint32_t city_rank
+);
+
 /** @brief Documents collected so far. */
 size_t doc_collector_document_count(const DocCollector *collector);
 
@@ -202,6 +255,10 @@ typedef struct DocSet {
   size_t word_count;         /**< Words the offsets cover. */
   GeoStreetKey *streets;     /**< Street keys, ascending, for the houses to find. */
   size_t street_count;       /**< Entries in @c streets. */
+  GeoVariant *variants;      /**< Localized readings, ascending by language then document. */
+  size_t variant_count;      /**< Entries in @c variants. */
+  uint32_t *language_offsets; /**< Where each language's run begins; @c language_count + 1. */
+  size_t language_count;      /**< Languages the offsets cover. */
 } DocSet;
 
 /**
@@ -281,6 +338,8 @@ uint32_t doc_set_find_street(
  *  @param[in]  collector_count  Number of collectors; 0 yields an empty set, and 64 is
  *                               the most that may be joined at once.
  *  @param[in]  word_count       Words in the dictionary the postings refer to.
+ *  @param[in]  language_count   Languages beside the default one; 0 leaves the
+ *                               variant table empty and costs nothing.
  *  @retval HOSTMEM_SUCCESS            The set is joined and owns its arrays.
  *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
  *  @retval HOSTMEM_ERROR_INVALID_PARAM @p collector_count is above 64 — one per parser
@@ -293,7 +352,11 @@ uint32_t doc_set_find_street(
  *  @whisper Many voices name the same places, and the names are gathered under one roof
  */
 hostmem_result doc_collector_merge(
-    DocSet *out, DocCollector *const *collectors, size_t collector_count, size_t word_count
+    DocSet *out,
+    DocCollector *const *collectors,
+    size_t collector_count,
+    size_t word_count,
+    size_t language_count
 );
 
 /** @brief Release the joined arrays. Safe to call with NULL. */

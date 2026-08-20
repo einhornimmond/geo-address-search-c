@@ -39,6 +39,11 @@
 
 #include <zstd.h>
 
+/* The parser and the file must mean the same thing by a language tag, or the
+   builder would write eight bytes the reader cuts at seven. */
+static_assert(PHOTON_LANGUAGE_TAG_MAX == GEO_LANGUAGE_TAG_MAX, "language tag width drifted");
+static_assert(PHOTON_LANGUAGE_MAX <= GEO_LANGUAGE_MAX, "more languages than a file may hold");
+
 #include "hostmem/converter.h"
 #include "hostmem/duration.h"
 #include "hostmem/mono_timer.h"
@@ -115,27 +120,28 @@ typedef struct ParserThreadArgs {
   ParseQueue *queue;
   BufferPool *pool;
   ParserPass pass;
-  PassSource source;              /**< Where this pass takes its entries from. */
-  unsigned thread;                /**< This thread's number, and its cache file's. */
-  const char *cache_directory;    /**< Where the cache lies, or NULL. */
-  PlaceCacheWriter *cache_write;  /**< Set while the first pass fills the cache. */
-  hostmem_result cache_result;    /**< First failure of the cache, either way. */
-  _Atomic uint64_t cache_bytes;   /**< Cache bytes this thread has read, for the progress. */
-  _Atomic bool cache_finished;    /**< Set when this thread has read its last record. */
-  hostmem_multi_arena *names;     /**< Private arena chain — a chain is not thread-safe. */
-  NameCollector words;            /**< Folded search words of this thread. */
-  NameCollector display;          /**< The same places as they are written. */
-  TextTokenizer tokenizer;        /**< Folding scratch space, one per thread. */
-  NameRun word_run;               /**< Words, sorted once the queue ran dry. */
-  NameRun display_run;            /**< Spellings, likewise. */
-  hostmem_result finish_result;   /**< Outcome of the thread's own sorting pass. */
-  const NameSet *word_set;        /**< Second pass: where a word finds its rank. */
-  const NameSet *display_set;     /**< Second pass: where a spelling finds its rank. */
-  DocCollector documents;         /**< Second pass: what this thread found. */
-  hostmem_result document_result; /**< First failure while collecting documents. */
-  const DocSet *doc_set;          /**< Third pass: where a street became a document. */
-  HouseCollector houses;          /**< Third pass: the numbers this thread met. */
-  hostmem_result house_result;    /**< First failure while collecting houses. */
+  const PhotonLanguages *languages; /**< Readings this build keeps; never NULL. */
+  PassSource source;                /**< Where this pass takes its entries from. */
+  unsigned thread;                  /**< This thread's number, and its cache file's. */
+  const char *cache_directory;      /**< Where the cache lies, or NULL. */
+  PlaceCacheWriter *cache_write;    /**< Set while the first pass fills the cache. */
+  hostmem_result cache_result;      /**< First failure of the cache, either way. */
+  _Atomic uint64_t cache_bytes;     /**< Cache bytes this thread has read, for the progress. */
+  _Atomic bool cache_finished;      /**< Set when this thread has read its last record. */
+  hostmem_multi_arena *names;       /**< Private arena chain — a chain is not thread-safe. */
+  NameCollector words;              /**< Folded search words of this thread. */
+  NameCollector display;            /**< The same places as they are written. */
+  TextTokenizer tokenizer;          /**< Folding scratch space, one per thread. */
+  NameRun word_run;                 /**< Words, sorted once the queue ran dry. */
+  NameRun display_run;              /**< Spellings, likewise. */
+  hostmem_result finish_result;     /**< Outcome of the thread's own sorting pass. */
+  const NameSet *word_set;          /**< Second pass: where a word finds its rank. */
+  const NameSet *display_set;       /**< Second pass: where a spelling finds its rank. */
+  DocCollector documents;           /**< Second pass: what this thread found. */
+  hostmem_result document_result;   /**< First failure while collecting documents. */
+  const DocSet *doc_set;            /**< Third pass: where a street became a document. */
+  HouseCollector houses;            /**< Third pass: the numbers this thread met. */
+  hostmem_result house_result;      /**< First failure while collecting houses. */
   JsonStats stats;
 } ParserThreadArgs;
 
@@ -226,6 +232,22 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
       fatal(ERROR_MEMORY, "Failed to keep display text (hostmem_result %d).", (int)result);
     }
   }
+
+  /* The other readings join the same dictionary — "Prague" is a spelling like
+     "Praha", and a spelling two languages share costs one entry, not two.
+     Only a place that becomes a document can show them. */
+  if (place_becomes_document(place)) {
+    for (uint8_t v = 0; v < place->variant_count; ++v) {
+      const PhotonString reading[] = {place->variants[v].name, place->variants[v].city};
+      for (size_t i = 0; i < sizeof(reading) / sizeof(reading[0]); ++i) {
+        hostmem_result result =
+            name_collector_add(&args->display, reading[i].data, reading[i].size);
+        if (result != HOSTMEM_SUCCESS) {
+          fatal(ERROR_MEMORY, "Failed to keep localized text (hostmem_result %d).", (int)result);
+        }
+      }
+    }
+  }
 }
 
 /** Third pass: the house finds its street and hangs its number there. */
@@ -290,6 +312,24 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   if (result != HOSTMEM_SUCCESS) {
     if (args->document_result == HOSTMEM_SUCCESS) args->document_result = result;
     return;
+  }
+
+  /* The readings beside the default one hang on the document just opened.  The
+     default itself is already in the record above, which is why the language at
+     place 0 never gathers a variant — a caller asking for it is answered by the
+     record, and the side table stays as small as the data makes it. */
+  for (uint8_t v = 0; v < place->variant_count; ++v) {
+    int language = photon_languages_index(args->languages, place->variants[v].tag);
+    if (language <= 0) continue;
+    result = doc_collector_add_variant(
+        &args->documents, (uint32_t)language,
+        display_rank(args->display_set, place->variants[v].name),
+        display_rank(args->display_set, place->variants[v].city)
+    );
+    if (result != HOSTMEM_SUCCESS && args->document_result == HOSTMEM_SUCCESS) {
+      args->document_result = result;
+      return;
+    }
   }
 
   for (uint8_t i = 0; i < place->search_count; ++i) {
@@ -363,7 +403,7 @@ static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
     if (len > 0 && line[len - 1] == '\r') { --len; }
     if (len > 0) {
       JsonParseResult result;
-      json_parse_line(line, len, process_place_callback, args, &result);
+      json_parse_line(line, len, args->languages, process_place_callback, args, &result);
       if (args->pass == PARSER_PASS_VOCABULARY) json_stats_count_document(&args->stats, &result);
     }
     line = newline ? newline + 1 : end;
@@ -661,13 +701,16 @@ static uint64_t file_bytes(void *user_data) {
  *  @param[in] parser_thread_count Parser threads, 1 … 10.
  *  @param[in] cache_directory     Where a place cache may be kept, or NULL for
  *                                 the plain three walks over the dump.
+ *  @param[in] languages           Readings to keep; the first is the one an
+ *                                 answer shows unless a caller asks otherwise.
  *  @return 0 on success; failures end the program through fatal().
  */
 static int build_index(
     const char *dump_path,
     const char *index_path,
     unsigned parser_thread_count,
-    const char *cache_directory
+    const char *cache_directory,
+    const PhotonLanguages *languages
 ) {
   hostmem_mono_timer timeUsedAll;
   hostmem_mono_timer_reset(&timeUsedAll);
@@ -679,7 +722,7 @@ static int build_index(
   bool cache_write = false, cache_read = false;
   if (cache_directory) {
     uint64_t free_bytes = 0;
-    if (!place_cache_stamp_of(dump_path, parser_thread_count, &stamp)) {
+    if (!place_cache_stamp_of(dump_path, parser_thread_count, languages, &stamp)) {
       fatal(ERROR_IO, "Cannot look at '%s'.", dump_path);
     }
 
@@ -696,6 +739,18 @@ static int build_index(
          the way of its successor — on a disk sized for one cache, leaving it
          standing while measuring the room refuses the very partition that was
          made for the job.  So it goes first, and the room is counted after. */
+      uint64_t stale_bytes = place_cache_size(cache_directory);
+      if (stale_bytes) {
+        char staleBuffer[32];
+        format_byte_units(staleBuffer, sizeof(staleBuffer), stale_bytes, 2);
+        printf(
+            "Place cache in '%s' does not answer for this run — removing %s first.\n",
+            cache_directory, staleBuffer
+        );
+        /* Said before the wait, not after it: unlinking that much takes
+           seconds, and the line is the only sign that anything is happening. */
+        fflush(stdout);
+      }
       place_cache_discard(cache_directory, parser_thread_count);
 
       PlaceCacheRoom room = place_cache_make_room(cache_directory, stamp.dump_bytes, &free_bytes);
@@ -759,6 +814,7 @@ static int build_index(
       fatal(ERROR_MEMORY, "Failed to init collectors for parser thread %u.", i);
     }
     text_tokenizer_init(&parser_args[i].tokenizer);
+    parser_args[i].languages = languages;
     parser_args[i].thread = i;
     parser_args[i].cache_directory = cache_directory;
     parser_args[i].cache_result = HOSTMEM_SUCCESS;
@@ -947,8 +1003,9 @@ static int build_index(
 
   progress_begin("Joining the documents of all threads", 0);
   DocSet documents;
-  hostmem_result doc_result =
-      doc_collector_merge(&documents, doc_collectors, parser_thread_count, words.count);
+  hostmem_result doc_result = doc_collector_merge(
+      &documents, doc_collectors, parser_thread_count, words.count, languages->count
+  );
   if (doc_result != HOSTMEM_SUCCESS) {
     fatal(ERROR_MEMORY, "Failed to join the documents (hostmem_result %d).", (int)doc_result);
   }
@@ -1040,11 +1097,21 @@ static int build_index(
   }
 
   /* --- the result lies down in the shape it will be read in --- */
+  /* The tags travel to the writer as plain text, so that the file format owes
+     nothing to the parser's idea of a language list. */
+  char language_tags[PHOTON_LANGUAGE_MAX][GEO_LANGUAGE_TAG_MAX];
+  memset(language_tags, 0, sizeof(language_tags));
+  for (uint8_t l = 0; l < languages->count; ++l) {
+    memcpy(language_tags[l], languages->tag[l], GEO_LANGUAGE_TAG_MAX);
+    language_tags[l][GEO_LANGUAGE_TAG_MAX - 1] = '\0';
+  }
+
   char writeLabel[256];
   snprintf(writeLabel, sizeof(writeLabel), "Writing the index to '%s'", index_path);
   progress_begin_polled(writeLabel, 0, file_bytes, (void *)index_path);
-  hostmem_result write_result =
-      geo_index_write(index_path, &words, &display, &documents, &houses, words.total);
+  hostmem_result write_result = geo_index_write(
+      index_path, &words, &display, &documents, &houses, language_tags, words.total
+  );
   if (write_result != HOSTMEM_SUCCESS) {
     fatal(
         ERROR_IO, "Failed to write index '%s' (hostmem_result %d).", index_path, (int)write_result
@@ -1240,6 +1307,15 @@ static int open_index(
   printf("  documents:      %" PRIu64 "\n", info.documents);
   printf("  house numbers:  %" PRIu64 "\n", info.houses);
   printf("  postings:       %" PRIu64 "\n", info.postings);
+  if (info.languages) {
+    printf("  readings:       ");
+    for (uint32_t l = 0; l < info.languages; ++l) {
+      char tag[GEO_CLIENT_LANGUAGE_MAX] = {0};
+      if (geo_client_language(client, l, tag, sizeof(tag)) != GEO_OK) continue;
+      printf("%s%s", l ? ", " : "", tag);
+    }
+    printf("  (the first is shown unless --language asks otherwise)\n");
+  }
 
   if (query) {
     GeoAddress found[64];
@@ -1321,6 +1397,7 @@ static void print_usage(const char *program) {
       ERROR_USAGE,
       "Usage:\n"
       "  %s <photon_dump.jsonl.zst> [index%s] [parser_threads: 1-10] [--cache=<dir>]\n"
+      "      [--languages=de,en,fr]\n"
       "      Builds the search index from the dump and writes it as a binary file.\n"
       "      Without a destination the name comes from the dump\n"
       "      (planet.jsonl.zst -> planet%s). parser_threads defaults to 4.\n"
@@ -1328,8 +1405,12 @@ static void print_usage(const char *program) {
       "      once, and reads them instead of unpacking the dump twice more. It needs\n"
       "      twice the dump's size free and is passed over when it is not; what it\n"
       "      leaves behind is read again by the next build of the same dump.\n"
+      "      --languages names the readings the index keeps. The first is the one an\n"
+      "      answer shows unless a search asks otherwise; every further one costs\n"
+      "      index size and build memory, so name only what you will ask for.\n"
+      "      Without it the index keeps German alone, as it always did.\n"
       "\n"
-      "  %s <index%s> [\"query\"] [max_results] [lat,lon]\n"
+      "  %s <index%s> [\"query\"] [max_results] [lat,lon] [--language=en]\n"
       "      Maps a finished index, shows its counts and — when a query is given —\n"
       "      the places that carry all of its words, in any order.\n"
       "      The last word counts as still being typed and is read as a beginning\n"
@@ -1338,6 +1419,8 @@ static void print_usage(const char *program) {
       "      max_results defaults to %d. Given lat,lon the search narrows to the\n"
       "      places around that point first and orders what is left by distance,\n"
       "      after everything the query named outright.\n"
+      "      --language picks which reading the answer shows, out of the ones the\n"
+      "      index was built with; an index that has none is answered as it stands.\n"
       "\n"
       "The path decides which way it goes: a file ending in %s is loaded,\n"
       "anything else is built.\n"
@@ -1403,21 +1486,23 @@ static GeoSearchOptions parse_position(const char *text) {
  *  @param[in,out] argv  Argument vector, closed up.
  *  @return The directory, or NULL when the option was not given.
  */
-static const char *take_cache_option(int *argc, char *argv[]) {
-  static const char OPTION[] = "--cache";
-  const char *directory = NULL;
+static const char *take_option(int *argc, char *argv[], const char *option, const char *wants) {
+  size_t option_size = strlen(option);
+  const char *value = NULL;
 
   for (int i = 1; i < *argc;) {
     const char *argument = argv[i];
     size_t taken = 0;
-    if (strncmp(argument, OPTION, sizeof(OPTION) - 1) == 0) {
-      const char *rest = argument + sizeof(OPTION) - 1;
+    if (strncmp(argument, option, option_size) == 0) {
+      /* `--language` must not swallow `--languages`: only a name that ends
+         here, or ends at its own `=`, is this option. */
+      const char *rest = argument + option_size;
       if (*rest == '=') {
-        directory = rest + 1;
+        value = rest + 1;
         taken = 1;
       } else if (*rest == '\0') {
-        if (i + 1 >= *argc) { fatal(ERROR_USAGE, "%s wants a directory.", OPTION); }
-        directory = argv[i + 1];
+        if (i + 1 >= *argc) { fatal(ERROR_USAGE, "%s wants %s.", option, wants); }
+        value = argv[i + 1];
         taken = 2;
       }
     }
@@ -1428,24 +1513,57 @@ static const char *take_cache_option(int *argc, char *argv[]) {
     for (int m = i; m + (int)taken < *argc; ++m) { argv[m] = argv[m + taken]; }
     *argc -= (int)taken;
   }
-  if (directory && !*directory) { fatal(ERROR_USAGE, "%s wants a directory.", OPTION); }
-  return directory;
+  if (value && !*value) { fatal(ERROR_USAGE, "%s wants %s.", option, wants); }
+  return value;
 }
 
 int main(int argc, char *argv[]) {
-  const char *cache_directory = take_cache_option(&argc, argv);
+  const char *cache_directory = take_option(&argc, argv, "--cache", "a directory");
+  const char *language_list = take_option(&argc, argv, "--languages", "a list of language tags");
+  const char *language = take_option(&argc, argv, "--language", "a language tag");
   if (argc < 2 || argc > 5) { print_usage(argv[0]); }
-  if (cache_directory && has_extension(argv[1], GEO_INDEX_EXTENSION)) {
+
+  const bool searching = has_extension(argv[1], GEO_INDEX_EXTENSION);
+  if (cache_directory && searching) {
     fatal(ERROR_USAGE, "--cache belongs to a build, not to a search.");
   }
+  if (language_list && searching) {
+    fatal(ERROR_USAGE, "--languages belongs to a build; a search asks with --language.");
+  }
+  if (language && !searching) {
+    fatal(
+        ERROR_USAGE, "--language belongs to a search; a build names its readings with --languages."
+    );
+  }
+
+  /* Without a word on the matter a build keeps the German reading, as every
+     build did before there was a choice — an index made today answers exactly
+     as the one made yesterday does. */
+  PhotonLanguages languages;
+  if (!photon_languages_parse(language_list ? language_list : "de", &languages)) {
+    fatal(
+        ERROR_USAGE, "--languages: a tag may hold %d bytes and there may be %d of them.",
+        PHOTON_LANGUAGE_TAG_MAX - 1, PHOTON_LANGUAGE_MAX
+    );
+  }
+  if (languages.every) {
+    fatal(
+        ERROR_USAGE,
+        "--languages=all is not supported: the tags have to be known before the second pass,\n"
+        "and a planet dump offers more of them than an index may hold. Name the ones you want,\n"
+        "for instance --languages=de,en,fr."
+    );
+  }
+  if (!languages.count) { fatal(ERROR_USAGE, "--languages names no language."); }
 
   const char *input = argv[1];
-  if (has_extension(input, GEO_INDEX_EXTENSION)) {
+  if (searching) {
     const char *query = argc >= 3 ? argv[2] : NULL;
     unsigned limit = argc >= 4 ? parse_count(argv[3], 1, 64, "max_treffer") : DEFAULT_RESULT_LIMIT;
 
     GeoSearchOptions near = {0};
     if (argc == 5) near = parse_position(argv[4]);
+    near.language = language;
 
     /* A word is still being typed unless something closed it: a trailing space
        or comma says the writer is done with it, and then it is read as it
@@ -1477,7 +1595,7 @@ int main(int argc, char *argv[]) {
   }
 
   hostmem_mono_timer_init();
-  return build_index(input, index_path, parser_thread_count, cache_directory);
+  return build_index(input, index_path, parser_thread_count, cache_directory, &languages);
 }
 
 /** @endcond */

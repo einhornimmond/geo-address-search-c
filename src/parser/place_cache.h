@@ -73,7 +73,7 @@
 #define PLACE_CACHE_MAGIC "GRDPCACH"
 
 /** Raise this when a record gains, loses or reorders a field. */
-#define PLACE_CACHE_LAYOUT 1u
+#define PLACE_CACHE_LAYOUT 2u
 
 /** Most parser threads a build may use, and so most files a cache may hold.
  *  Removal reaches this far whatever this run was asked for — otherwise a cache
@@ -114,15 +114,21 @@ typedef struct PlaceCacheReader {
  *
  *  A cache is worth reading again only when nothing it was made from has
  *  moved: the same dump, byte for byte and to the second; the same number of
- *  threads, because a thread reads back what it wrote; and the same record
+ *  threads, because a thread reads back what it wrote; the same record
  *  layout, because a field added to a record is a field an older file does not
- *  carry and would answer with silence.
+ *  carry and would answer with silence; and the same languages, for the very
+ *  same reason one level up.
  */
 typedef struct PlaceCacheStamp {
   uint64_t dump_bytes; /**< Size of the compressed dump. */
   uint64_t dump_mtime; /**< Its last modification, in seconds. */
   uint32_t threads;    /**< Parser threads the files were written by. */
   uint32_t layout;     /**< @ref PLACE_CACHE_LAYOUT at the time of writing. */
+  /** Hash over the languages the run was asked for.  A cache written for
+   *  German alone carries no English reading, and reading it again for a build
+   *  that wants English would leave every English name missing without a word
+   *  of complaint — the fields are simply not in the file. */
+  uint64_t languages;
 } PlaceCacheStamp;
 
 /**
@@ -130,10 +136,13 @@ typedef struct PlaceCacheStamp {
  *
  *  @param[in]  dump_path  The compressed dump.
  *  @param[in]  threads    Parser threads this run will use.
+ *  @param[in]  languages  Localized readings this run asks for; may be NULL.
  *  @param[out] out        Receives the stamp.
  *  @return false when the dump cannot be looked at.
  */
-bool place_cache_stamp_of(const char *dump_path, unsigned threads, PlaceCacheStamp *out);
+bool place_cache_stamp_of(
+    const char *dump_path, unsigned threads, const PhotonLanguages *languages, PlaceCacheStamp *out
+);
 
 /**
  * @brief Does a cache under @p directory answer for exactly this run?
@@ -164,6 +173,20 @@ bool place_cache_is_current(const char *directory, const PlaceCacheStamp *want);
  *          HOSTMEM_ERROR_ENCODE_FAILED.
  */
 hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
+
+/**
+ * @brief How many bytes of a cache lie under @p directory.
+ *
+ *  Asked before a stale cache is removed, so the wait can be announced instead
+ *  of merely endured: unlinking thirty gigabytes takes seconds, and a silent
+ *  pause in front of a build that is otherwise all progress lines reads as a
+ *  hang.  Reaches as wide as place_cache_discard() does, so what it counts is
+ *  what will go.
+ *
+ *  @param[in] directory  Where a cache might lie; NULL yields 0.
+ *  @return Bytes the files hold together; 0 when there is nothing to remove.
+ */
+uint64_t place_cache_size(const char *directory);
 
 /**
  * @brief Remove the manifest and every file of a cache.
