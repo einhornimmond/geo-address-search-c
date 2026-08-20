@@ -54,10 +54,13 @@ _Noreturn void fatal(ErrorArt art, const char *fmt, ...);
  *
  *  @param fmt  printf-style format.
  *  @param ...  Arguments for @p fmt.
- *  @warning Currently silent: the body returns before writing anything, so a call
- *           costs nothing and shows nothing.  The call sites are written as though
- *           it printed — read them that way, and do not read a missing line as a
- *           sign that nothing happened.
+ *  @warning Currently silent: the body returns before it formats or writes anything.
+ *           Silent is not free — the arguments are evaluated at the call site like
+ *           any other call, and whatever was done to prepare them is done whether or
+ *           not a line appears.  The one live caller spends two format_byte_units()
+ *           calls on a note nobody sees.  The call sites are written as though it
+ *           printed: read them that way, and do not take a missing line as a sign
+ *           that nothing happened.
  *  @whisper A quiet note on passing water
  */
 void info(const char *fmt, ...);

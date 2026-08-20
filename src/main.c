@@ -380,7 +380,6 @@ static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
  *  The first pass wants both halves, because the vocabulary is made of all of
  *  them; the later two want one each.
  */
-/** Read this thread's cache files instead of the dump, and feed the same collectors. */
 static void replay_cache(ParserThreadArgs *args) {
   PlaceCacheKind kinds[2];
   size_t count = 0;
@@ -480,7 +479,6 @@ static void enqueue_complete_lines(
  *  Rewinds the file and restarts the stream, so the same dump can be walked
  *  again for the second pass.  Closes the queue when the last line is in.
  */
-/** Unpack the dump and hand it out in batches; the one thread that touches zstd. */
 static void stream_dump(
     FILE *fp,
     ZSTD_DStream *dstream,
@@ -535,7 +533,6 @@ static void stream_dump(
  *  nothing else is said — which reads exactly like a program that has died.
  *  So the wait gets a name of its own.
  */
-/** What the threads are doing while a pass winds down, for the progress line. */
 static const char *settle_label(ParserPass pass) {
   return pass == PARSER_PASS_VOCABULARY ? "Each thread sorts the words it gathered"
                                         : "The parser threads finish their last batches";
@@ -647,7 +644,6 @@ static void run_cached_pass(
  *  system reports lags behind by whatever still sits in the stream's buffer,
  *  which for a progress line is close enough.
  */
-/** How far the output file has grown, polled by the progress bar while writing. */
 static uint64_t file_bytes(void *user_data) {
   struct stat status;
   if (stat((const char *)user_data, &status) != 0) return 0;
@@ -1097,17 +1093,7 @@ static int build_index(
  *  The short way: a finished index
  * ========================================================================= */
 
-/**
- * @brief Map a finished index and report what it holds.
- *
- *  Mapping is constant time — the numbers below appear before the disk has
- *  been touched beyond the header.
- *
- *  @param[in] index_path  File written by a previous build.
- *  @return 0 on success; a failed open ends the program through fatal().
- */
 /** Print one borrowed text, or a placeholder when the entry never carried it. */
-/** Write a borrowed, unterminated string; nothing at all when it is absent. */
 static void print_text(const char *text, size_t size) {
   if (!text || !size) {
     printf("—");
@@ -1189,7 +1175,6 @@ static void print_count(const char *label, uint64_t value) {
  *  @param[in] stats     Counts of the search just run.
  *  @param[in] duration  How long it took, already formatted.
  */
-/** What the query had to touch, under the answer — the numbers behind the duration. */
 static void print_query_stats(const GeoQueryStats *stats, const char *duration, bool near) {
   printf("\nSearched in %s\n", duration);
   print_count("passes:", stats->passes);
@@ -1214,6 +1199,9 @@ static void print_query_stats(const GeoQueryStats *stats, const char *duration, 
  *  Everything here goes through the client library — the same door a server
  *  would use, so what the command line shows is what an embedder gets.
  *
+ *  Mapping is constant time, so the counts appear before the disk has been
+ *  touched beyond the header.
+ *
  *  @param[in] index_path    File written by a previous build.
  *  @param[in] query         Free text to search for, or NULL for counts only.
  *  @param[in] result_limit  Most results to show.
@@ -1221,7 +1209,6 @@ static void print_query_stats(const GeoQueryStats *stats, const char *duration, 
  *  @param[in] near          Where the searcher stands, or NULL.
  *  @return 0 on success; a failed open ends the program through fatal().
  */
-/** Open an index and answer from it: the second of the two programs in this file. */
 static int open_index(
     const char *index_path,
     const char *query,
@@ -1287,7 +1274,14 @@ static int open_index(
  *  Command line
  * ========================================================================= */
 
-/** Case-sensitive suffix test — this is what decides which program runs. */
+/**
+ * @brief Does @p path end in @p extension, whatever the case?
+ *
+ *  The comparison goes through strcasecmp(), so `planet.gdx`, `planet.GDX` and
+ *  `planet.Gdx` are one and the same name here.  This is what decides which of
+ *  the two programs in this file runs, and a caller who typed the suffix in
+ *  capitals meant the index either way.
+ */
 static bool has_extension(const char *path, const char *extension) {
   size_t path_size = strlen(path);
   size_t extension_size = strlen(extension);
@@ -1301,7 +1295,6 @@ static bool has_extension(const char *path, const char *extension) {
  *  `planet.jsonl.zst` becomes `planet.gdx` — the known dump suffixes fall
  *  away, everything else keeps its name.
  */
-/** The index path a dump implies when the caller named none. */
 static void derive_index_path(char *out, size_t size, const char *dump_path) {
   static const char *const suffixes[] = {".jsonl.zst", ".json.zst", ".zst", ".jsonl"};
   size_t length = strlen(dump_path);
@@ -1381,7 +1374,6 @@ static unsigned parse_count(const char *text, unsigned low, unsigned high, const
  *  is a mistyped argument rather than a place on earth, and a search silently
  *  run from nowhere would be the worse answer.
  */
-/** Read a "lat,lon" pair into search options; an unreadable one leaves them unset. */
 static GeoSearchOptions parse_position(const char *text) {
   char *end = NULL;
   double latitude = strtod(text, &end);
@@ -1411,7 +1403,6 @@ static GeoSearchOptions parse_position(const char *text) {
  *  @param[in,out] argv  Argument vector, closed up.
  *  @return The directory, or NULL when the option was not given.
  */
-/** Lift `--cache <dir>` out of the arguments so the rest can be read positionally. */
 static const char *take_cache_option(int *argc, char *argv[]) {
   static const char OPTION[] = "--cache";
   const char *directory = NULL;

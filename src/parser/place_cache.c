@@ -257,8 +257,19 @@ static void put_bytes(RecordBuilder *b, const void *data, size_t size) {
   b->used += size;
 }
 
-/* Fixed-width writes, host byte order throughout — a cache is read only by the
-   machine that wrote it, and PLACE_CACHE_MAGIC plus the stamp make sure of it. */
+/* Fixed-width writes in host byte order, and doubles in whatever the host calls
+   IEEE 754. The format is therefore not portable, and nothing in it says so: no
+   field records the byte order and nothing validates one. PLACE_CACHE_MAGIC is no
+   help there — eight raw characters read the same on either endianness, so it
+   answers "is this one of ours", not "was it written the way we read".
+
+   What keeps a foreign-endian cache from being misread today is an accident
+   rather than a check: the layout number in every file header, and the whole
+   stamp in the manifest, are themselves read byte-swapped, so 1 arrives as
+   16777216 and the comparison fails. The cache is refused and the dump is
+   unpacked instead — the right outcome, reached by luck. Anyone moving a cache
+   between machines of different byte order, or making that supported, has to add
+   a byte-order field and check it. */
 
 static void put_u8(RecordBuilder *b, uint8_t value) {
   put_bytes(b, &value, 1);

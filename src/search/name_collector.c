@@ -403,7 +403,13 @@ hostmem_result name_run_merge(
   }
   out->total = total;
   if (!input || !group_bound) return HOSTMEM_SUCCESS;
+  /* Both products are refused before either malloc sees them.  A wrapped size
+     would be served as a small block and then written past — the one failure
+     here that would not announce itself.  MergeGroup is some twenty times the
+     width of a pointer, so it is the group bound, not the name count, that runs
+     out first. */
   if (input > SIZE_MAX / sizeof(const char *)) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (group_bound > SIZE_MAX / sizeof(MergeGroup)) return HOSTMEM_ERROR_OUT_OF_MEMORY;
 
   if (worker_count < 1) worker_count = 1;
   if (worker_count > NAME_RUN_MAX) worker_count = NAME_RUN_MAX;

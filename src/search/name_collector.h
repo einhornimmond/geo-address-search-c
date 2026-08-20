@@ -146,10 +146,23 @@ hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena
  *
  *  @param[in,out] collector  Collector receiving the name.
  *  @param[in]     name       NUL-terminated name, or NULL.
- *  @param[in]     name_size  Byte length of @p name without the NUL.
- *  @return HOSTMEM_SUCCESS on success (including the NULL case),
- *          HOSTMEM_ERROR_NULL_POINTER if @p collector is NULL,
- *          or the allocator's error when memory could not be served.
+ *  @param[in]     name_size  Byte length of @p name without the NUL.  What is stored
+ *                            is the remainder after the prefix, and the arena measures
+ *                            that in `uint32_t` — so a name of
+ *                            `UINT32_MAX + NAME_PREFIX_DEPTH` bytes or more is refused
+ *                            rather than truncated.  No dump comes near it; the bound
+ *                            is there because a truncated size would reserve short and
+ *                            copy long.
+ *  @retval HOSTMEM_SUCCESS            The name is filed, or @p name was NULL and there
+ *                                     was nothing to file.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p collector is NULL.
+ *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW @p name_size is at or above the bound above.
+ *  @retval Anything the prefix tree, the group vectors or the arena answer with when
+ *          they cannot take what this name needs, passed on unchanged.
+ *  @note A refusal is not undone.  A name that fails partway may leave a key in the
+ *       tree, an empty group behind it or a few arena bytes nobody points at — all of
+ *       it released with the collector.  The counts stay honest either way: @c size
+ *       rises only once the name is really filed.
  *
  *  @whisper Every name is kept, its first letters carried by the branch it hangs on
  */
@@ -271,7 +284,9 @@ typedef struct NameSet {
  *                            created have their share done by the caller.
  *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
  *          HOSTMEM_ERROR_INVALID_PARAM if @p run_count exceeds NAME_RUN_MAX, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken.
+ *          HOSTMEM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken — or
+ *          when the size one of them would need cannot be expressed at all, which is
+ *          refused before the allocator is asked for anything.
  *
  *  @whisper Many streams reach the same lake, and what was said twice becomes one
  */

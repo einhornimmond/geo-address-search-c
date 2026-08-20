@@ -24,6 +24,13 @@
  *  1024.  Decimals are cut, never rounded — `precision` 3 over 1.234567 MB
  *  yields `"1.234 MB"`, and the digits that fall away fall away silently.
  *
+ *  Cut exactly, at every size there is.  The whole part and each decimal place
+ *  come from integer division by the divisor, never from a `double`: the largest
+ *  count of all reads `"16777215.99 TB"`, where a `double` quotient would have
+ *  rounded up to `16777216.00` and turned a truncation into its opposite.  `TB`
+ *  is the last unit, so beyond 1024 TB the figure in front of the point simply
+ *  grows.
+ *
  *  Bytes are the one scale with no decimals: a count under 1024 is a whole
  *  number already, so `precision` is ignored there and `"512 B"` comes back
  *  however many places were asked for.
@@ -35,13 +42,15 @@
  *  @param[out] buffer      Destination; untouched when the result would not fit.
  *  @param[in]  buffer_size Bytes available in @p buffer, the terminator included.
  *  @param[in]  bytes       The count to spell out.
- *  @param[in]  precision   Decimal places to keep; anything above 15 is taken as 15,
- *                          which is where a `double` runs out of digits to be honest about.
+ *  @param[in]  precision   Decimal places to keep; anything above 15 is taken as 15.
+ *                          The remainders run dry before that in any case — a divisor of
+ *                          2^40 has some thirteen decimal places in it, and the rest of
+ *                          what is asked for comes back as zeros.
  *  @return Characters written, the terminator not counted — so a destination holds the
  *          result when it has one byte more than this.  When @p buffer_size did not
- *          reach, the same figure comes back for a result that was not written; it is an
- *          upper bound there, since the guard allows for a point and a full fraction the
- *          shorter scales never write.  Never negative.
+ *          reach, the very same figure comes back for a result that was not written, so
+ *          a caller may size from it and call again.  Never negative, and never above
+ *          39: twenty digits, a point, fifteen places and the longest suffix.
  *  @note A caller that only wants the length may pass 0 for @p buffer_size: nothing is
  *        written and the figure comes back all the same.
  *  @whisper Size settles into the scale it needs

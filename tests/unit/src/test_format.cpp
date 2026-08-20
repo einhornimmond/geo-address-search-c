@@ -50,6 +50,23 @@ TEST(Format, BeyondTerabytesTheUnitStandsStill) {
   EXPECT_NE(Format(UINT64_MAX, 2).find("TB"), std::string::npos);
 }
 
+TEST(Format, TheLargestCountTruncatesInsteadOfRoundingUp) {
+  // UINT64_MAX / 2^40 is 16777215.999999999999, so truncation owes 16777215.99.
+  // Reaching that through a double cannot work: (double)UINT64_MAX is 2^64, and
+  // the quotient lands on exactly 16777216 — a place the real value never gets to.
+  EXPECT_EQ(Format(UINT64_MAX, 2), "16777215.99 TB");
+  EXPECT_EQ(Format(UINT64_MAX, 0), "16777215 TB");
+  EXPECT_EQ(Format(UINT64_MAX, 6), "16777215.999999 TB");
+}
+
+TEST(Format, OneByteShortOfTheNextThousandStaysShortOfIt) {
+  // Not the rounding trap above — both of these fit a double exactly, and the old
+  // implementation got them right too. They pin the plainer promise: a count just
+  // under the next round figure must never be shown as having reached it.
+  EXPECT_EQ(Format(1024ULL * kTB - 1, 2), "1023.99 TB");
+  EXPECT_EQ(Format(kTB - 1, 2), "1023.99 GB");
+}
+
 TEST(Format, PrecisionDecidesHowManyPlacesFollow) {
   EXPECT_EQ(Format(kKB + kKB / 2, 0), "1 KB");
   EXPECT_EQ(Format(kKB + kKB / 2, 1), "1.5 KB");
@@ -83,7 +100,7 @@ TEST(Format, AnAbsurdPrecisionIsCappedRatherThanTrusted) {
   char buffer[128];
   int rc = format_byte_units(buffer, sizeof(buffer), 5 * kGB, 200);
   EXPECT_GE(rc, 0);
-  // 15 places is the ceiling the double itself allows
+  // 15 places is the ceiling; the remainders run dry well before it
   std::string text(buffer);
   size_t point = text.find('.');
   ASSERT_NE(point, std::string::npos);

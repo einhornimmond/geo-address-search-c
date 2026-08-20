@@ -4,9 +4,20 @@
  *         named where every module can reach it.
  *
  *  A log line carries its context in this enum rather than in a string the
- *  reader has to parse back.  The values live for the length of the process and
- *  no longer: nothing on disk and nothing a caller sees depends on them, so they
- *  may be reordered freely.
+ *  reader has to parse back.  That is the whole of its scope: it reaches exactly
+ *  one function, fatal(), which reads it to choose a banner and then forgets it.
+ *
+ *  Valid values are the enumerators named below and nothing else.  fatal()
+ *  switches over them without a default branch, on purpose — adding a variant
+ *  without a banner should be a compiler warning rather than a silent blank — so
+ *  a value from outside the set loses its banner and still ends the process with
+ *  the message and exit status it came for.
+ *
+ *  The numbers themselves carry no weight.  Nothing writes them to disk, nothing
+ *  reads them back, and no caller of ours ever sees one: this header is not among
+ *  those the client library installs, so the type never leaves the build.  They
+ *  may therefore be reordered, renumbered or removed as freely as the code that
+ *  names them allows.
  *  @{
  */
 

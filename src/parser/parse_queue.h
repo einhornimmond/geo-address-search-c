@@ -45,13 +45,25 @@ typedef struct ParseQueue ParseQueue;
 ParseQueue *parse_queue_create(void);
 
 /**
- * @brief Close the queue down and give its own memory back.
+ * @brief Give the queue's own memory back.
  *
- *  Only the queue's — the buffers of any batch still standing in it belong to
- *  the pool and are not touched.  Destroying a queue that still holds work
- *  therefore leaks nothing here, but loses the work.
+ *  Its own and nothing else: the ring is freed, and whatever batches were still
+ *  standing in it are simply gone.  A buffer one of them carried is dropped with
+ *  it — the pool it came from handed it out and stopped tracking it, so the pool
+ *  can no longer free it either, and this call never knew it was there.  That is a leak, not a
+ *  transfer: nothing here is arena memory that a later reset would sweep up.
+ *
+ *  So the precondition is a quiet queue: closed, every producer and consumer
+ *  joined, nothing left inside.  That is not a rule a caller has to remember —
+ *  it falls out of parse_queue_pop(), which reports the end only once the queue
+ *  is closed *and* empty.  A consumer that runs to that point has, by
+ *  definition, taken everything; joining it is what makes the queue safe to
+ *  destroy.
  *
  *  @param[in] queue  Queue to tear down; NULL is a no-op.
+ *  @note Not enforced.  A test that fills a queue and never drains it is doing
+ *        something reasonable — its batches carry no buffers — and an assertion
+ *        here would refuse it for a leak that is not happening.
  */
 void parse_queue_destroy(ParseQueue *queue);
 

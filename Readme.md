@@ -180,8 +180,9 @@ NUL-terminated.
 
 The library links against hostmem: `geo_index.h` names `hostmem_result` in its headers and
 `client.c` writes its JSON numbers with hostmem's converter rather than carrying a second
-copy of one. Five files of our own are compiled: `client.c`, `geo_index.c`, `prefix_tree.c`,
-`text_tokenize.c` and `roaring.c`.
+copy of one. Five files of our own are compiled — `client.c`, `geo_cell.c`, `geo_index.c`,
+`prefix_tree.c` and `text_tokenize.c` — and beside them `roaring.c`, vendored from CRoaring
+and built with its own flags.
 
 ### From other languages
 

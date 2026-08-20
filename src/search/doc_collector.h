@@ -134,8 +134,14 @@ typedef struct DocCollector {
 /**
  * @brief Prepare an empty collector.
  *
+ *  Reserves nothing.  The vectors are set to their empty state and the first
+ *  document opens the first bucket, so there is no half-built collector to unwind:
+ *  a failure here has taken nothing, and doc_collector_free() on an untouched
+ *  collector is a no-op.
+ *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return HOSTMEM_SUCCESS or HOSTMEM_ERROR_NULL_POINTER.
+ *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER when @p collector is
+ *          NULL — the only way this can fail.
  */
 hostmem_result doc_collector_init(DocCollector *collector);
 
@@ -272,10 +278,17 @@ uint32_t doc_set_find_street(
  *
  *  @param[out] out              Receives the joined set; zeroed on failure.
  *  @param[in]  collectors       Array of @p collector_count collector pointers.
- *  @param[in]  collector_count  Number of collectors; 0 yields an empty set.
+ *  @param[in]  collector_count  Number of collectors; 0 yields an empty set, and 64 is
+ *                               the most that may be joined at once.
  *  @param[in]  word_count       Words in the dictionary the postings refer to.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
+ *  @retval HOSTMEM_SUCCESS            The set is joined and owns its arrays.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
+ *  @retval HOSTMEM_ERROR_INVALID_PARAM @p collector_count is above 64 — one per parser
+ *                                     thread, and there are never that many.
+ *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
+ *                                     documents between them, which no document number
+ *                                     could address.
+ *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The arrays could not be taken.
  *
  *  @whisper Many voices name the same places, and the names are gathered under one roof
  */

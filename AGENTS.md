@@ -1,7 +1,8 @@
 # AGENTS.md – geo-address-search-c
 
-You edit only files in src folder.
-Keep files in third_party as they are and if there is a bug, find a workaround in our own code in src.
+Everything in this repository is yours to edit — src, tests, the build files, the docs.
+The one exception is third_party: leave those files exactly as they are. A bug in a
+vendored library is worked around in our own code, never patched at the source.
 
 ## C Modules (Doxygen)
 
@@ -185,26 +186,31 @@ The structure is a suggestion, not a straitjacket. Adapt length and order as nee
  */
 ```
 
-### Core Functions – Reference to the Guiding Principles Allowed
+### The Guiding Principles – And Why They Stay Out of the Comments
 
-Three principles carry this codebase. Where a function exists *because* of one of them, the comment may name it — that tells a reader they are looking at a deliberate decision rather than an accident.
-
-#### Which Principles Exist?
+Three principles carry this codebase:
 
 - **Sufficiency** – Use only what is needed.
 - **Flow** – Never make the human wait unnecessarily.
 - **Simplicity** – Complexity must earn its place.
 
-When documenting such a function (e.g., the repetition filter in `name_collector_add`), you are free to say: *“Sufficiency guides this function: a name already stored costs no second copy.”*
+They shape what gets written and what gets left out. They do not get named in comments.
 
-**Even for core functions:** Do not preach. Name the principle, do not praise it.
+The reason is that a principle is not a fact about the code. *“Sufficiency guides this function”* cannot be checked against anything, so it cannot be wrong, so it survives every change the code makes underneath it. What a reader can check — and what actually keeps the next person from undoing the decision — is the mechanism and what it costs:
+
+```c
+/* The wait is the throttle: a producer that cannot place its batch stops
+   reading, and the stream slows to the pace the parsers set. */
+```
+
+That comment carries Flow without the word. Write the reason and its consequence; the principle is what made you write it, not part of what you write.
 
 ### What to Avoid (Short List)
 
 - Preaching (“should”, “must”, “good”, “fair”).
 - Exclamation marks.
 - Silent widths (always name the type a count or an offset is measured in where it matters).
-- Redundant philosophy in helper functions (e.g., `name_collector_size` gets no principle).
+- Naming a principle where the mechanism would say it better — which is everywhere.
 - Deleting or editing an existing `@whisper` unless the function changed completely.
 
 ### Enforcement & Maintenance

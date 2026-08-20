@@ -59,8 +59,14 @@ typedef struct HouseCollector {
 /**
  * @brief Prepare an empty collector.
  *
+ *  Reserves nothing.  The vectors are set to their empty state and the first
+ *  house opens the first bucket, so there is no half-built collector to unwind:
+ *  a failure here has taken nothing, and house_collector_free() on an untouched
+ *  collector is a no-op.
+ *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return HOSTMEM_SUCCESS or HOSTMEM_ERROR_NULL_POINTER.
+ *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER when @p collector is
+ *          NULL — the only way this can fail.
  */
 hostmem_result house_collector_init(HouseCollector *collector);
 
@@ -128,8 +134,12 @@ typedef struct HouseSet {
  *  @param[in]  collectors       Array of @p collector_count collector pointers.
  *  @param[in]  collector_count  Number of collectors.
  *  @param[in]  document_count   Documents the offsets must cover.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when the arrays could not be taken.
+ *  @retval HOSTMEM_SUCCESS            The houses are joined and ordered by street.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
+ *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
+ *                                     houses between them, which the offsets could not
+ *                                     index.
+ *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The offsets or the arrays could not be taken.
  *
  *  @whisper The numbers line up along their street, and the street knows where they start
  */

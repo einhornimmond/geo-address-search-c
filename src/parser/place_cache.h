@@ -35,6 +35,12 @@
  *  That is what the manifest is for: it is written last, names what the cache
  *  was made from, and a cache without one is not read.
  *
+ *  It outlives the run, not the machine.  Records are written in host byte order
+ *  and no field says which one that was, so a cache belongs to the architecture
+ *  that wrote it.  Carrying one to a machine of the other endianness is not
+ *  supported; today such a cache is refused rather than misread, but by accident
+ *  — see the note above the fixed-width writes in place_cache.c.
+ *
  *  ### What is not kept
  *
  *  Only what @c collect_document and @c collect_house read.  A house record
@@ -249,7 +255,11 @@ hostmem_result place_cache_writer_open(
  *
  *  @param[in,out] writer  Open writer.
  *  @param[in]     place   Entry as the parser handed it over.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_ENCODE_FAILED.
+ *  @retval HOSTMEM_SUCCESS            Written, or passed over as described above.
+ *  @retval HOSTMEM_ERROR_NULL_POINTER @p writer or @p place is NULL.
+ *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The record outgrew the writer's buffer and it
+ *                                     could not be grown; nothing was written.
+ *  @retval HOSTMEM_ERROR_ENCODE_FAILED The write to the file did not go through.
  */
 hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
 
