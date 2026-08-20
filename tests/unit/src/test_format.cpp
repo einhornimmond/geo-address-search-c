@@ -111,11 +111,16 @@ TEST(Format, NoResultOutgrowsTheDocumentedCeiling) {
   EXPECT_EQ(Format(UINT64_MAX, 15), "16777215.999999999999090 TB");
 }
 
-TEST(Format, FifteenPlacesAreRealDigitsWhereTheDivisorIsWideEnough) {
-  // A fraction over 2^40 needs forty places to terminate, so nothing is padded at
-  // the TB scale. Over 2^10 it terminates after ten, and the rest really are zeros.
+TEST(Format, WhatFillsTheFifteenPlacesDependsOnTheRemainder) {
+  // UINT64_MAX leaves a remainder of 2^40 - 1 over 2^40. It is odd, so its expansion
+  // runs the full forty places and all fifteen kept here are truncated real digits.
   EXPECT_EQ(Format(UINT64_MAX, 15), "16777215.999999999999090 TB");
+  // kMB - 1 sits at the KB scale, over 2^10, which cannot need more than ten places —
+  // so the expansion ends inside the cap and the last five are padding.
   EXPECT_EQ(Format(kMB - 1, 15), "1023.999023437500000 KB");
+  // Neither is a property of the unit. A TB remainder rich in twos ends just as early:
+  // half a terabyte is one place, and the fourteen behind it are zeros.
+  EXPECT_EQ(Format(kTB + (1ULL << 39), 15), "1.500000000000000 TB");
 }
 
 TEST(Format, AnAbsurdPrecisionIsCappedRatherThanTrusted) {

@@ -14,9 +14,10 @@ int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t 
 
   /* The cap is what makes the result sizeable. `precision` is a uint8_t, and 255
      places would put 267 bytes on a caller who reasonably expected far fewer; at
-     15 the longest result any input can produce is 27 bytes. Nothing is lost by
-     it that the scale still holds: a remainder over 2^40 has forty decimal places
-     before it terminates, so every one of the fifteen is a real digit. */
+     15 the longest result any input can produce is 27 bytes. What is given up by
+     the cap depends on the remainder rather than on the scale: over 2^40 an odd
+     one runs the full forty places and is cut here, while one rich in twos is
+     spent long before fifteen and the rest come out as zeros either way. */
   if (precision > 15) { precision = 15; }
 
   /* A ladder of comparisons rather than a table: five rungs, each one a

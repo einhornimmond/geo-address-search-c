@@ -44,10 +44,14 @@
  *  @param[in]  bytes       The count to spell out.
  *  @param[in]  precision   Decimal places to keep; anything above 15 is taken as 15.
  *                          The cap is there to bound the result, not because the digits
- *                          run out: a divisor of 2^40 needs forty places before its
- *                          expansion terminates, so all fifteen are real digits at the
- *                          `TB` scale.  Only `KB`, whose divisor is 2^10, runs dry
- *                          inside the cap and pads the last five places with zeros.
+ *                          are worthless past it.  A remainder over a divisor of 2^n
+ *                          terminates after n places at the most, and after fewer the
+ *                          more twos the remainder itself carries.  `KB` is the only
+ *                          scale whose longest expansion — ten places, over 2^10 —
+ *                          fits inside the cap, so there the last five places are
+ *                          always zeros.  `MB`, `GB` and `TB` can outrun fifteen and
+ *                          often do, but not always: a remainder of half a terabyte
+ *                          is spent after one place and pads the other fourteen.
  *  @return Characters written, the terminator not counted — so a destination holds the
  *          result when it has one byte more than this.  When @p buffer_size did not
  *          reach, the very same figure comes back for a result that was not written, so
