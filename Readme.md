@@ -15,9 +15,10 @@ photon_dump.jsonl.zst  ──►  geo_address_search_c  ──►  index.gdx  �
 2. **Parses** every JSON line with [yyjson](https://github.com/ibireme/yyjson) and splits
    each entry in two: the fields an answer shows (street, house number, postal code,
    town, coordinate, `importance`), and the role-free text a query may match.
-3. **Folds and splits** that text: lower case, diacritics, `ß → ss`, umlauts in both
-   spellings (`ü → ue` and `ü → u`), abbreviations (`str. → strasse`, `St. → Sankt`) and
-   compounds (`superstrasse → super + strasse`).
+3. **Folds and splits** that text: lower case, diacritics over the whole Latin script
+   (`é → e`, `ș → s`, `ộ → o`, `ǎ → a`, and a combining mark folded away with the letter
+   it sits on), `ß → ss`, umlauts in both spellings (`ü → ue` and `ü → u`), abbreviations
+   (`str. → strasse`, `St. → Sankt`) and compounds (`superstrasse → super + strasse`).
 4. **Collects, sorts and deduplicates** the words — lock-free per thread, grouped by
    prefix, joined at the end in a k-way merge. A second dictionary keeps the original
    spellings for display.
@@ -67,7 +68,9 @@ geo_address_search_c planet.gdx "15328 Bleyen" 5
 
 A query walks the same folding as the index did: `Superstr.`, `superstrasse` and
 `SUPERSTRASSE` meet the same word, and `München` is also found as `Muenchen` or
-`Munchen`. A place is found where all words of the query meet; words the index does not
+`Munchen`. The folding covers every language written in Latin letters — `București` is
+found as `Bucuresti` whichever of its two s-letters the dump used, `Hồ Chí Minh` as
+`Ho Chi Minh` — and it does not matter whether a name arrives composed or decomposed. A place is found where all words of the query meet; words the index does not
 know are passed over rather than made to fail the whole query. Results are ordered by
 Photon's own `importance`, and whoever asks for a house number gets the street that
 carries it first.

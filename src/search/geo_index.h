@@ -78,8 +78,14 @@
  *  dictionary.  The layout did not change by a byte — an older file would be
  *  read without complaint and would answer every query about *near me* with
  *  nothing, silently, because the words it looks for were never written.  A
- *  refusal that names the reason is the better failure. */
-#define GEO_INDEX_VERSION 7u
+ *  refusal that names the reason is the better failure.
+ *
+ *  Version 8 widened the folding to the whole Latin script.  The layout stayed
+ *  as it was again, and again an older file would be read without complaint:
+ *  its dictionary holds *bucurești* and *nội* as the dump wrote them, while a
+ *  query now asks for *bucuresti* and *noi*.  The two would never meet, and
+ *  nothing would say why.  The index must be built again. */
+#define GEO_INDEX_VERSION 8u
 
 /** Written as 0x01020304 — a reader on the other byte order sees it reversed. */
 #define GEO_INDEX_BYTE_ORDER 0x01020304u

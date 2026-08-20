@@ -110,10 +110,57 @@ static const char LATIN_A_BASE[] = "aaaaaa"       /* U+0100 … Ā ā Ă ă Ą �
                                    "zzzzzz"       /* U+0179 … Ź … ž          */
                                    "s";           /* U+017F ſ                */
 
+/** Base letter of every code point in Latin Extended-B (U+0180 … U+024F).
+ *
+ *  The block is a rummage room rather than an alphabet: Romanian's comma-below
+ *  ș and ț live here beside pinyin's carons, Vietnamese's horned ơ and ư, and a
+ *  scattering of African letters.  A `*` marks the four click letters, which are
+ *  punctuation to a keyboard and part a word rather than join it.  The handful
+ *  of digraphs — Ǆ Ǉ Ǌ Ǣ Ǽ ƕ — carry only their first letter here; fold_code()
+ *  catches them before the lookup and writes both. */
+static const char LATIN_B_BASE[] = "bbbbbboccdddddee"  /* U+0180 ƀ … Ə */
+                                   "effgghiikkllmnno"  /* U+0190 Ɛ … Ɵ */
+                                   "oooopprssssttttu"  /* U+01A0 Ơ … Ư */
+                                   "uuvyyzzzzzzzzzzw"  /* U+01B0 ư … ƿ */
+                                   "****dddlllnnnaai"  /* U+01C0 ǀ … Ǐ */
+                                   "ioouuuuuuuuuueaa"  /* U+01D0 ǐ … ǟ */
+                                   "aaaaggggkkoooozz"  /* U+01E0 Ǡ … ǯ */
+                                   "jdddgghwnnaaaaoo"  /* U+01F0 ǰ … ǿ */
+                                   "aaaaeeeeiiiioooo"  /* U+0200 Ȁ … ȏ */
+                                   "rrrruuuussttgghh"  /* U+0210 Ȑ … ȟ */
+                                   "ndoozzaaeeoooooo"  /* U+0220 Ƞ … ȯ */
+                                   "ooyylntjdqacclts"  /* U+0230 Ȱ … ȿ */
+                                   "z**buveejjqqrryy"; /* U+0240 ɀ … ɏ */
+
+/** Base letter of every code point in Latin Extended Additional (U+1E00 … U+1EFF).
+ *
+ *  Two halves.  The first (U+1E00 … U+1E9F) is one Latin letter under every mark
+ *  Europe ever put on it — dots above and below, lines, rings.  The second
+ *  (U+1EA0 … U+1EF9) is the whole Vietnamese alphabet, where a vowel carries a
+ *  shape and a tone at once and every one of them folds back to the same five
+ *  letters.  ẞ alone yields two bytes and is caught before the lookup. */
+static const char LATIN_ADDITIONAL_BASE[] = "aabbbbbbccdddddd"  /* U+1E00 Ḁ … ḏ */
+                                            "ddddeeeeeeeeeeff"  /* U+1E10 Ḑ … ḟ */
+                                            "gghhhhhhhhhhiiii"  /* U+1E20 Ḡ … ḯ */
+                                            "kkkkkkllllllllmm"  /* U+1E30 Ḱ … ḿ */
+                                            "mmmmnnnnnnnnoooo"  /* U+1E40 Ṁ … ṏ */
+                                            "oooopppprrrrrrrr"  /* U+1E50 Ṑ … ṟ */
+                                            "sssssssssstttttt"  /* U+1E60 Ṡ … ṯ */
+                                            "ttuuuuuuuuuuvvvv"  /* U+1E70 Ṱ … ṿ */
+                                            "wwwwwwwwwwxxxxyy"  /* U+1E80 Ẁ … ẏ */
+                                            "zzzzzzhtwyassssd"  /* U+1E90 Ẑ … ẟ */
+                                            "aaaaaaaaaaaaaaaa"  /* U+1EA0 Ạ … ắ */
+                                            "aaaaaaaaeeeeeeee"  /* U+1EB0 Ằ … ế */
+                                            "eeeeeeeeiiiioooo"  /* U+1EC0 Ề … ỏ */
+                                            "oooooooooooooooo"  /* U+1ED0 Ố … ở */
+                                            "oooouuuuuuuuuuuu"  /* U+1EE0 Ỡ … ữ */
+                                            "uuyyyyyyyyllvvyy"; /* U+1EF0 Ự … ỿ */
+
 /** Outcome of folding one code point. */
 typedef enum FoldKind {
   FOLD_SEPARATOR, /**< Ends the current word. */
-  FOLD_TEXT       /**< Bytes were written. */
+  FOLD_TEXT,      /**< Bytes were written. */
+  FOLD_SKIP       /**< Nothing written, and the word goes on — a combining mark. */
 } FoldKind;
 
 /**
@@ -125,7 +172,8 @@ typedef enum FoldKind {
  *  @param[out] written Bytes written.
  *  @param[out] special Set when the code point has a German spelling at all —
  *                      the caller then knows a second variant is worth folding.
- *  @return FOLD_SEPARATOR when the code point ends a word.
+ *  @return FOLD_SEPARATOR when the code point ends a word, FOLD_SKIP when it
+ *          belongs to the letter before it and leaves nothing of its own.
  */
 static FoldKind fold_code(uint32_t code, int german, char *out, size_t *written, int *special) {
   *written = 0;
@@ -202,6 +250,84 @@ static FoldKind fold_code(uint32_t code, int german, char *out, size_t *written,
       return FOLD_TEXT;
     }
     out[(*written)++] = LATIN_A_BASE[code - 0x100];
+    return FOLD_TEXT;
+  }
+
+  /* --- Latin Extended-B --- */
+  if (code < 0x250) {
+    switch (code) {
+    case 0x195: /* ƕ */
+    case 0x1F6: /* Ƕ */
+      out[(*written)++] = 'h';
+      out[(*written)++] = 'v';
+      return FOLD_TEXT;
+    case 0x1C4: /* Ǆ ǅ ǆ */
+    case 0x1C5:
+    case 0x1C6:
+    case 0x1F1: /* Ǳ ǲ ǳ */
+    case 0x1F2:
+    case 0x1F3:
+      out[(*written)++] = 'd';
+      out[(*written)++] = 'z';
+      return FOLD_TEXT;
+    case 0x1C7: /* Ǉ ǈ ǉ */
+    case 0x1C8:
+    case 0x1C9:
+      out[(*written)++] = 'l';
+      out[(*written)++] = 'j';
+      return FOLD_TEXT;
+    case 0x1CA: /* Ǌ ǋ ǌ */
+    case 0x1CB:
+    case 0x1CC:
+      out[(*written)++] = 'n';
+      out[(*written)++] = 'j';
+      return FOLD_TEXT;
+    case 0x1E2: /* Ǣ ǣ Ǽ ǽ */
+    case 0x1E3:
+    case 0x1FC:
+    case 0x1FD:
+      out[(*written)++] = 'a';
+      out[(*written)++] = 'e';
+      return FOLD_TEXT;
+    default:
+      break;
+    }
+    char base = LATIN_B_BASE[code - 0x180];
+    if (base == '*') return FOLD_SEPARATOR; /* the click letters ǀ ǁ ǂ ǃ */
+    out[(*written)++] = base;
+    return FOLD_TEXT;
+  }
+
+  /* --- IPA extensions (U+0250 … U+02AF) are left alone: a phonetic symbol in a
+         place name is the name, not a spelling of it --- */
+
+  /* --- Modifier letters: the Hawaiian ʻokina and its kin stand where an
+         apostrophe stands, and part a word the same way --- */
+  if (code >= 0x2B0 && code <= 0x2FF) return FOLD_SEPARATOR;
+
+  /* --- Combining marks: a decomposed spelling drops its mark and keeps its
+         letter, so that whichever way the dump writes ü, the same word comes
+         out.  The word does not end here — the mark belongs to the letter
+         before it. --- */
+  if (code >= 0x300 && code <= 0x36F) return FOLD_SKIP;
+
+  /* --- Latin Extended Additional --- */
+  if (code >= 0x1E00 && code <= 0x1EFF) {
+    if (code == 0x1E9E) { /* ẞ — the capital of ß, and two s like it */
+      out[(*written)++] = 's';
+      out[(*written)++] = 's';
+      return FOLD_TEXT;
+    }
+    out[(*written)++] = LATIN_ADDITIONAL_BASE[code - 0x1E00];
+    return FOLD_TEXT;
+  }
+
+  /* --- Typographic ligatures: what a typesetter joined, a keyboard parts --- */
+  if (code >= 0xFB00 && code <= 0xFB06) {
+    static const char *const LIGATURES[] = {"ff", "fi", "fl", "ffi", "ffl", "st", "st"};
+    for (const char *letter = LIGATURES[code - 0xFB00]; *letter; ++letter) {
+      out[(*written)++] = *letter;
+    }
     return FOLD_TEXT;
   }
 
@@ -354,6 +480,8 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
   /* both readings walk the same input and break at the same places, so the
      n-th word of one is the n-th word of the other */
   uint16_t group = 0;
+  /* the last letter written on its own — what a combining mark attaches to */
+  char base = 0;
 
   for (size_t pos = 0; pos < size;) {
     uint32_t code;
@@ -361,12 +489,34 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
 
     char folded[4];
     size_t written = 0;
-    if (fold_code(code, german, folded, &written, &special) == FOLD_SEPARATOR || !written) {
+    FoldKind kind = fold_code(code, german, folded, &written, &special);
+
+    if (FOLD_SKIP == kind) {
+      /* A decomposed umlaut is the same umlaut: the mark itself is gone, but
+         the German reading it stands for must appear all the same.  Otherwise
+         a dump that writes u + combining diaeresis would reach "munchen"
+         only, while the composed ü reaches "muenchen" beside it. */
+      if (0x308 == code && ('a' == base || 'o' == base || 'u' == base)) {
+        special = 1;
+        if (german) {
+          if (tokenizer->used >= TEXT_BUFFER_MAX) {
+            ++tokenizer->dropped;
+            break;
+          }
+          tokenizer->buffer[tokenizer->used++] = 'e';
+        }
+      }
+      base = 0;
+      continue;
+    }
+
+    if (FOLD_SEPARATOR == kind || !written) {
       if (tokenizer->used > word_start) {
         word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group);
         ++group;
       }
       word_start = tokenizer->used;
+      base = 0;
       continue;
     }
     if (tokenizer->used + written > TEXT_BUFFER_MAX) {
@@ -375,6 +525,8 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
     }
     memcpy(tokenizer->buffer + tokenizer->used, folded, written);
     tokenizer->used += written;
+    /* only a lone letter can carry a mark; a digraph has already said its piece */
+    base = 1 == written ? folded[0] : 0;
   }
   word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group);
   return special;

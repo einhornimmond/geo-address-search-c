@@ -12,12 +12,18 @@
  *  ### What happens to a string
  *
  *  1. **Folding** — every character becomes lowercase and loses its
- *     diacritics: `é → e`, `ø → o`, `Č → c`.  German spellings additionally
- *     take the written form a keyboard offers: `ß → ss`, `ü → ue`, and — as
- *     a second variant of the same input — `ü → u`, so that both *München*
- *     and *Munchen* reach *muenchen* or *munchen*.  Cyrillic and Greek are
- *     lowercased and kept; scripts without a case, Chinese and Arabic among
- *     them, pass through untouched.
+ *     diacritics: `é → e`, `ø → o`, `Č → c`.  The whole Latin script is
+ *     covered, not only the half a German keyboard reaches: Romanian's
+ *     `ș → s` and its cedilla twin `ş → s` meet in the same letter,
+ *     Vietnamese `ộ → o`, pinyin `ǎ → a`, and a combining mark that arrives
+ *     on its own — the decomposed spelling of `ü` — is folded away with the
+ *     letter it sits on, so that however the dump writes a name, one word
+ *     comes out.  German spellings additionally take the written form a
+ *     keyboard offers: `ß → ss`, `ü → ue`, and — as a second variant of the
+ *     same input — `ü → u`, so that both *München* and *Munchen* reach
+ *     *muenchen* or *munchen*.  Cyrillic and Greek are lowercased and kept;
+ *     scripts without a case, Chinese and Arabic among them, pass through
+ *     untouched.
  *  2. **Splitting** — anything that is neither letter nor digit ends a word.
  *     Hyphen, dot, comma, slash and space all part *Sankt Peter-Ording* into
  *     three.
