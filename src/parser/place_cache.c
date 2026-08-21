@@ -123,7 +123,37 @@ const char *place_cache_room_reason(PlaceCacheRoom room) {
  *  The manifest — what binds a cache to one dump and one build
  * ========================================================================= */
 
-bool place_cache_stamp_of(const char *dump_path, unsigned threads, PlaceCacheStamp *out) {
+/**
+ * @brief Fold the languages of a run into one number.
+ *
+ *  FNV-1a over the tags in the order they were given, because the order is
+ *  what decides which reading a document record keeps — `de,en` and `en,de`
+ *  build different indexes and must not share a cache.  A build that asked for
+ *  every tag the dump offers folds a mark of its own, since no list describes
+ *  it.
+ */
+static uint64_t languages_hash(const PhotonLanguages *languages) {
+  uint64_t hash = 1469598103934665603u; /* FNV offset basis */
+  if (!languages) return hash;
+  if (languages->every) {
+    hash ^= (uint64_t)'*';
+    hash *= 1099511628211u;
+    return hash;
+  }
+  for (uint8_t i = 0; i < languages->count; ++i) {
+    for (const char *c = languages->tag[i]; *c; ++c) {
+      hash ^= (uint64_t)(unsigned char)*c;
+      hash *= 1099511628211u;
+    }
+    hash ^= (uint64_t)',';
+    hash *= 1099511628211u;
+  }
+  return hash;
+}
+
+bool place_cache_stamp_of(
+    const char *dump_path, unsigned threads, const PhotonLanguages *languages, PlaceCacheStamp *out
+) {
   if (!dump_path || !out) return false;
   struct stat status;
   if (stat(dump_path, &status) != 0) return false;
@@ -132,6 +162,7 @@ bool place_cache_stamp_of(const char *dump_path, unsigned threads, PlaceCacheSta
   out->threads = threads;
   out->dump_bytes = (uint64_t)status.st_size;
   out->dump_mtime = (uint64_t)status.st_mtime;
+  out->languages = languages_hash(languages);
   return true;
 }
 
@@ -168,7 +199,8 @@ bool place_cache_is_current(const char *directory, const PlaceCacheStamp *want) 
     if (fread(magic, sizeof(magic), 1, file) == 1 && memcmp(magic, PLACE_CACHE_MAGIC, 8) == 0 &&
         fread(&found, sizeof(found), 1, file) == 1) {
       current = found.layout == want->layout && found.threads == want->threads &&
-                found.dump_bytes == want->dump_bytes && found.dump_mtime == want->dump_mtime;
+                found.dump_bytes == want->dump_bytes && found.dump_mtime == want->dump_mtime &&
+                found.languages == want->languages;
     }
     fclose(file);
   }
@@ -184,6 +216,12 @@ bool place_cache_is_current(const char *directory, const PlaceCacheStamp *want) 
     }
   }
   return current;
+}
+
+uint64_t place_cache_size(const char *directory) {
+  if (!directory) return 0;
+  return place_cache_bytes(directory, PLACE_CACHE_THREADS_MAX, PLACE_CACHE_DOCUMENTS) +
+         place_cache_bytes(directory, PLACE_CACHE_THREADS_MAX, PLACE_CACHE_HOUSES);
 }
 
 void place_cache_discard(const char *directory, unsigned threads) {
@@ -369,6 +407,16 @@ hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *pl
     put_string(&builder, place->city);
     put_string(&builder, place->postcode);
     for (uint8_t i = 0; i < place->search_count; ++i) { put_string(&builder, place->search[i]); }
+    /* The localized readings ride along at the end of the record: a build that
+       asks for no language writes two zero bytes and nothing more, which is
+       what keeps a single-language cache the size it always was. */
+    put_u8(&builder, place->variant_count);
+    put_u8(&builder, place->variant_dropped);
+    for (uint8_t i = 0; i < place->variant_count; ++i) {
+      put_bytes(&builder, place->variants[i].tag, PHOTON_LANGUAGE_TAG_MAX);
+      put_string(&builder, place->variants[i].name);
+      put_string(&builder, place->variants[i].city);
+    }
   } else {
     put_u8(&builder, 0);
     put_u8(&builder, 0);
@@ -550,7 +598,7 @@ bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out) {
   }
 
   RecordCursor cursor = {.data = reader->buffer, .size = payload, .position = 0};
-  memset(out, 0, sizeof(*out));
+  photon_place_reset(out);
   out->typeEnum = (PhotonPlaceType)take_u8(&cursor);
   out->has_point = take_u8(&cursor) ? 1 : 0;
   uint8_t search_count = take_u8(&cursor);
@@ -569,6 +617,21 @@ bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out) {
     }
     for (uint8_t i = 0; i < search_count; ++i) { out->search[i] = take_string(&cursor); }
     out->search_count = search_count;
+
+    uint8_t variant_count = take_u8(&cursor);
+    out->variant_dropped = take_u8(&cursor);
+    if (variant_count > PHOTON_PLACE_VARIANT_MAX) {
+      reader->broken = true;
+      return false;
+    }
+    for (uint8_t i = 0; i < variant_count; ++i) {
+      const void *tag = take(&cursor, PHOTON_LANGUAGE_TAG_MAX);
+      if (tag) memcpy(out->variants[i].tag, tag, PHOTON_LANGUAGE_TAG_MAX);
+      out->variants[i].tag[PHOTON_LANGUAGE_TAG_MAX - 1] = '\0';
+      out->variants[i].name = take_string(&cursor);
+      out->variants[i].city = take_string(&cursor);
+    }
+    out->variant_count = variant_count;
   } else {
     out->street = take_string(&cursor);
     out->city = take_string(&cursor);

@@ -97,7 +97,7 @@ export class GeoIndex {
    * Search for a place — words in any order, house number optional.
    *
    * @param {string} query
-   * @param {{ limit?: number, prefix?: boolean }} [options]
+   * @param {{ limit?: number, prefix?: boolean, language?: string }} [options]
    * @returns {Array<object>} Results, heaviest first.
    */
   search(query, options = {}) {
@@ -105,7 +105,8 @@ export class GeoIndex {
     if (query.length === 0) return [];
     const limit = options.limit ?? 10;
     const prefix = options.prefix ?? true;
-    return JSON.parse(this.#api.searchJson(this.#handle, query, prefix, limit));
+    const language = options.language ?? null;
+    return JSON.parse(this.#api.searchJson(this.#handle, query, prefix, limit, language));
   }
 
   #assertOpen() {

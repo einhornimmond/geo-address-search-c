@@ -22,7 +22,14 @@
  *  [ postings        ] one frozen Roaring bitmap per word, 32-byte aligned
  *  [ houses          ] house numbers with their own coordinate
  *  [ house offsets   ] document_count + 1 entries into the houses
+ *  [ languages       ] one tag per language, and where its readings begin
+ *  [ variants        ] localized readings, by language then by document
  *  @endcode
+ *
+ *  A build that asked for one language writes that one language record and no
+ *  readings at all: the default reading lives in the document itself, so the
+ *  variants section stays empty.  That is why the two sit at the end and cost
+ *  such a build nothing but two descriptors and sixteen bytes.
  *
  *  Two dictionaries, because the two jobs disagree: a query types
  *  *muenchen* and an answer must read *München*.  Folded words are shared far
@@ -78,8 +85,19 @@
  *  dictionary.  The layout did not change by a byte — an older file would be
  *  read without complaint and would answer every query about *near me* with
  *  nothing, silently, because the words it looks for were never written.  A
- *  refusal that names the reason is the better failure. */
-#define GEO_INDEX_VERSION 7u
+ *  refusal that names the reason is the better failure.
+ *
+ *  Version 8 widened the folding to the whole Latin script.  The layout stayed
+ *  as it was again, and again an older file would be read without complaint:
+ *  its dictionary holds *bucurești* and *nội* as the dump wrote them, while a
+ *  query now asks for *bucuresti* and *noi*.  The two would never meet, and
+ *  nothing would say why.  The index must be built again.
+ *
+ *  Version 9 gave the header two counters and the file two sections, for the
+ *  readings a build keeps beside the default one.  Here the layout did move,
+ *  and the layout hash would have caught it — the version says the same thing
+ *  earlier and in words. */
+#define GEO_INDEX_VERSION 9u
 
 /** Written as 0x01020304 — a reader on the other byte order sees it reversed. */
 #define GEO_INDEX_BYTE_ORDER 0x01020304u
@@ -94,6 +112,25 @@ typedef struct GeoIndexSection {
   uint64_t offset; /**< Byte offset from the start of the file, multiple of 8. */
   uint64_t size;   /**< Byte length. */
 } GeoIndexSection;
+
+/** Room for a language tag and its terminator, as the file keeps it. */
+#define GEO_LANGUAGE_TAG_MAX 8
+
+/** Most languages one index may hold readings for. */
+#define GEO_LANGUAGE_MAX 64
+
+/**
+ * @brief One language the index holds readings for.
+ *
+ *  The tags stand in the order the build named them, and that order is what a
+ *  variant record's language number means.  A caller asks by tag and is given
+ *  the number once, before the results are walked.
+ */
+typedef struct GeoIndexLanguage {
+  char tag[GEO_LANGUAGE_TAG_MAX]; /**< Lowercase, NUL-terminated, zero-padded. */
+  uint32_t start;                 /**< First variant record of this language. */
+  uint32_t count;                 /**< How many it has; 0 for a language nothing named. */
+} GeoIndexLanguage;
 
 /** One prefix group: the words sharing their leading bytes. */
 typedef struct GeoIndexGroup {
@@ -118,9 +155,14 @@ typedef struct GeoIndexHeader {
   uint64_t posting_count;       /**< Word-to-document connections. */
   uint64_t house_count;         /**< House numbers hanging on the streets. */
   uint64_t total_terms;         /**< Terms seen while building — reporting only. */
+  uint64_t language_count;      /**< Languages of the build, the default one at place 0
+                                     included; also the records in the language section. */
+  uint64_t variant_count;       /**< Localized readings held for them. */
 } GeoIndexHeader;
 
-static_assert(sizeof(GeoIndexHeader) == 96, "GeoIndexHeader layout changed");
+static_assert(sizeof(GeoIndexHeader) == 112, "GeoIndexHeader layout changed");
+static_assert(sizeof(GeoIndexLanguage) == 16, "GeoIndexLanguage layout changed");
+static_assert(sizeof(GeoVariant) == 12, "GeoVariant layout changed");
 static_assert(sizeof(GeoIndexSection) == 24, "GeoIndexSection layout changed");
 static_assert(sizeof(GeoIndexGroup) == 12, "GeoIndexGroup layout changed");
 static_assert(sizeof(GeoDocument) == 24, "GeoDocument layout changed");
@@ -160,6 +202,10 @@ typedef struct GeoIndex {
   const GeoHouse *houses;          /**< House numbers, ordered by street. */
   const uint32_t *house_offsets;   /**< document_count + 1 entries into @c houses. */
   size_t house_count;              /**< Entries in @c houses. */
+  const GeoIndexLanguage *languages; /**< Language table inside the mapping, or NULL. */
+  size_t language_count;             /**< Entries in @c languages. */
+  const GeoVariant *variants;        /**< Localized readings, or NULL. */
+  size_t variant_count;              /**< Entries in @c variants. */
   uint64_t total_terms;            /**< Terms seen while building; reporting only. */
 } GeoIndex;
 
@@ -175,9 +221,13 @@ typedef struct GeoIndex {
  *  @param[in] display      Written spellings, merged and sorted.
  *  @param[in] documents    Joined documents and postings.
  *  @param[in] houses       Joined house numbers, ordered by street.
+ *  @param[in] language_tags One tag per language @p documents counted; may be
+ *                          NULL where there are none.
  *  @param[in] total_terms  Terms seen while building, kept for the report.
  *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
- *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB,
+ *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB, the
+ *          localized readings outgrow what a uint32 addresses or @p documents
+ *          counts more than @ref GEO_LANGUAGE_MAX languages,
  *          HOSTMEM_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
  *          HOSTMEM_ERROR_ENCODE_FAILED when the file could not be written.
  *
@@ -189,6 +239,7 @@ hostmem_result geo_index_write(
     const NameSet *display,
     const DocSet *documents,
     const HouseSet *houses,
+    const char (*language_tags)[GEO_LANGUAGE_TAG_MAX],
     uint64_t total_terms
 );
 
@@ -227,6 +278,36 @@ void geo_index_close(GeoIndex *index);
  *          out of range.
  */
 const char *geo_dictionary_word(const GeoDictionary *dictionary, size_t rank, size_t *out_size);
+
+/**
+ * @brief The number of the language written @p tag.
+ *
+ *  Asked once per query rather than once per result: the tag is text and the
+ *  number is what the variant table is ordered by.
+ *
+ *  @param[in] index  Opened index; must not be NULL.
+ *  @param[in] tag    Lowercase tag, NUL-terminated — `en`, `fr`.  NULL or empty
+ *                    yields -1, which is what a caller that named no language
+ *                    passes on unchanged.
+ *  @return The language's number, or -1 when this index holds no readings for it.
+ */
+int geo_index_language(const GeoIndex *index, const char *tag);
+
+/**
+ * @brief The reading @p language holds for @p document, or NULL where it holds none.
+ *
+ *  A binary search over the run of one language.  Most documents are not in it
+ *  — a village names itself the same in every language — and NULL is the
+ *  ordinary answer, not a failure.
+ *
+ *  @param[in] index     Opened index; must not be NULL.
+ *  @param[in] language  Number from geo_index_language(); a negative one yields NULL.
+ *  @param[in] document  Document number.
+ *  @return The reading, valid as long as the mapping is, or NULL.
+ *
+ *  @whisper A place answers in the tongue it was asked in, where it knows one
+ */
+const GeoVariant *geo_index_variant(const GeoIndex *index, int language, uint32_t document);
 
 /**
  * @brief Look a word up and learn its rank.

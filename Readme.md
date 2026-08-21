@@ -15,9 +15,10 @@ photon_dump.jsonl.zst  ──►  geo_address_search_c  ──►  index.gdx  �
 2. **Parses** every JSON line with [yyjson](https://github.com/ibireme/yyjson) and splits
    each entry in two: the fields an answer shows (street, house number, postal code,
    town, coordinate, `importance`), and the role-free text a query may match.
-3. **Folds and splits** that text: lower case, diacritics, `ß → ss`, umlauts in both
-   spellings (`ü → ue` and `ü → u`), abbreviations (`str. → strasse`, `St. → Sankt`) and
-   compounds (`superstrasse → super + strasse`).
+3. **Folds and splits** that text: lower case, diacritics over the whole Latin script
+   (`é → e`, `ș → s`, `ộ → o`, `ǎ → a`, and a combining mark folded away with the letter
+   it sits on), `ß → ss`, umlauts in both spellings (`ü → ue` and `ü → u`), abbreviations
+   (`str. → strasse`, `St. → Sankt`) and compounds (`superstrasse → super + strasse`).
 4. **Collects, sorts and deduplicates** the words — lock-free per thread, grouped by
    prefix, joined at the end in a k-way merge. A second dictionary keeps the original
    spellings for display.
@@ -37,8 +38,8 @@ a pond or a cycleway, and stays out.
 ## Usage
 
 ```sh
-geo_address_search_c <photon_dump.jsonl.zst> [index.gdx] [parser_threads]
-geo_address_search_c <index.gdx> ["query"] [max_results]
+geo_address_search_c <photon_dump.jsonl.zst> [index.gdx] [parser_threads] [--languages=de,en]
+geo_address_search_c <index.gdx> ["query"] [max_results] [lat,lon] [--language=en]
 ```
 
 The extension decides which way it goes: a first argument ending in `.gdx` is loaded,
@@ -52,6 +53,8 @@ anything else is built.
 | `"query"` | Words in any order | without it: counts only |
 | trailing space | Closes the last word | without it: it counts as still being typed |
 | `max_results` | Results to show | 10 |
+| `--languages` | Readings the index keeps; the first is the default | `de` |
+| `--language` | Reading an answer shows | the index's first |
 
 ```sh
 # build: planet.jsonl.zst -> planet.gdx
@@ -65,9 +68,42 @@ geo_address_search_c planet.gdx "Berlin, Superstr. 8"
 geo_address_search_c planet.gdx "15328 Bleyen" 5
 ```
 
+### Languages
+
+The dump writes every place in as many languages as OSM knows it — `name:de`, `name:en`,
+`city:fr` — and an index keeps the ones the build names:
+
+```sh
+geo_address_search_c planet.jsonl.zst planet.gdx 8 --languages=de,en,fr
+geo_address_search_c planet.gdx "Praha " --language=en    # -> Prague
+```
+
+The **first** language is the default: it fills the document records, it is what an
+answer shows when nothing is asked for, and without the option it is German — so an
+index built without `--languages` is exactly the index this program always built.
+
+Every further language costs twice. Its readings enter the *display* dictionary, and
+they enter the *search* words as well, so that a street in Prague can be found by
+`Wenceslas Square Prague` and not only by `Václavské náměstí Praha`. The second is the
+expensive half: the dump repeats the whole address chain on every entry, so each
+language adds roughly one term per ancestor per place. Name the languages you will
+actually ask for.
+
+What that buys, per place and per language, is a record in a side table — and only
+where a language really writes the place differently. A village named the same
+everywhere costs nothing, which is why the table is sparse and sits at the end of the
+file rather than inside every document record.
+
+A language the index does not hold is not an error: the same places answer, spelled the
+way the index spells them. So is a place the language has no reading of — it keeps its
+default spelling rather than coming back blank. `geo_address_search_c index.gdx` lists
+what an index holds, and so does `info().languages` in the bindings.
+
 A query walks the same folding as the index did: `Superstr.`, `superstrasse` and
 `SUPERSTRASSE` meet the same word, and `München` is also found as `Muenchen` or
-`Munchen`. A place is found where all words of the query meet; words the index does not
+`Munchen`. The folding covers every language written in Latin letters — `București` is
+found as `Bucuresti` whichever of its two s-letters the dump used, `Hồ Chí Minh` as
+`Ho Chi Minh` — and it does not matter whether a name arrives composed or decomposed. A place is found where all words of the query meet; words the index does not
 know are passed over rather than made to fail the whole query. Results are ordered by
 Photon's own `importance`, and whoever asks for a house number gets the street that
 carries it first.
@@ -146,7 +182,7 @@ Requirements: Zig ≥ 0.15.1, pthreads, Linux.
 
 ## Embedding
 
-`client.h` is the whole surface of the reading library — six functions, an opaque
+`client.h` is the whole surface of the reading library — eight functions, an opaque
 handle, its own status enum, `extern "C"` for C++. Beyond `stdbool`, `stddef` and
 `stdint` it names only two headers of ours, and both hold plain types.
 
@@ -158,6 +194,10 @@ if (geo_client_open(&client, "planet.gdx") != GEO_OK) { /* … */ }
 
 GeoAddress found[10];
 size_t count = geo_client_search(client, "Bahnhofstr 12 Altlandsberg", 26, true, found, 10);
+
+/* the same, answered in English where the index holds an English reading */
+GeoSearchOptions asked = {.prefix_last = true, .language = "en"};
+count = geo_client_search_options(client, "Praha", 5, &asked, found, 10);
 
 char json[4096];
 geo_client_search_json(client, "Bahnhofstr 12 Altlandsberg", 26, true, 10, json, sizeof(json));
@@ -196,6 +236,10 @@ import { GeoIndex } from "./bindings/node/index.js";  // Node, through a N-API a
 
 const index = GeoIndex.open("planet.gdx");
 const [best] = index.search("Bahnhofstr 12 Altlandsberg");
+
+index.info().languages;                          // ["de", "en", "fr"]
+index.search("Praha", { language: "en" });       // -> Prague
+
 index.close();
 ```
 
@@ -254,6 +298,8 @@ Details in [bindings/bun/README.md](bindings/bun/README.md) and
 [ postings        ] one frozen Roaring bitmap per word, 32-byte aligned
 [ houses          ] house numbers with their own coordinate, ordered by street
 [ house offsets   ] document_count + 1 entries into the houses
+[ languages       ] one tag per language, and where its readings begin
+[ variants        ] localized readings, by language then by document
 ```
 
 The postings are Roaring bitmaps ([CRoaring](https://github.com/RoaringBitmap/CRoaring),
@@ -261,6 +307,10 @@ vendored): a word standing on millions of places then costs a bit per place inst
 four bytes, and asking whether one of them is *this* place is a bit test instead of a
 walk through gigabytes. The *frozen* format is the memory image itself — nothing is
 decoded when the file opens, a bitmap is viewed where it lies.
+
+The last two sections are empty in a build that named one language. They are read by
+kind rather than by position, so a file that gained a section is still a file an older
+reader walks past — what it refuses is a section it needs and does not find.
 
 No pointers, only `uint32` indices and offsets; fixed field widths with `static_assert`;
 the header checks magic, version, byte order, layout hash and file size before a byte is

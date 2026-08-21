@@ -133,6 +133,52 @@ TEST_F(TextTokenizeTest, DecomposesCompoundsAndKeepsTheWhole) {
   EXPECT_EQ(parts, 2u);
 }
 
+TEST_F(TextTokenizeTest, FoldsTheWholeLatinScript) {
+  // Latin Extended-A was always covered; these blocks were not
+  EXPECT_EQ(WholeWords(&tok, "Ǎnhuī"), (std::vector<std::string>{"anhui"}));        // Extended-B
+  EXPECT_EQ(WholeWords(&tok, "Đà Nẵng"), (std::vector<std::string>{"da", "nang"})); // Vietnamese
+  EXPECT_EQ(WholeWords(&tok, "Hồ"), (std::vector<std::string>{"ho"}));
+  EXPECT_EQ(WholeWords(&tok, "Ɇ"), (std::vector<std::string>{"e"}));
+  // U+2C65 and U+2C66 are the lowercase of U+023A and U+023E: each pair has to
+  // fold to the same letter, though the two halves live in different blocks
+  EXPECT_EQ(WholeWords(&tok, "\u2C65"), (std::vector<std::string>{"a"}));
+  EXPECT_EQ(WholeWords(&tok, "\u2C65"), WholeWords(&tok, "\u023A"));
+  EXPECT_EQ(WholeWords(&tok, "\u2C66"), (std::vector<std::string>{"t"}));
+  EXPECT_EQ(WholeWords(&tok, "\u2C66"), WholeWords(&tok, "\u023E"));
+}
+
+TEST_F(TextTokenizeTest, TheTwoRomanianCommasMeet) {
+  // U+0219 is the correct letter, U+015F the cedilla it is written with just as
+  // often; a name spelled either way must reach the same word
+  EXPECT_EQ(WholeWords(&tok, "București"), (std::vector<std::string>{"bucuresti"}));
+  EXPECT_EQ(WholeWords(&tok, "Bucureşti"), (std::vector<std::string>{"bucuresti"}));
+  EXPECT_EQ(WholeWords(&tok, "Ștefan"), WholeWords(&tok, "Ştefan"));
+}
+
+TEST_F(TextTokenizeTest, DecomposedSpellingsFoldLikeComposedOnes) {
+  // "u" + U+0308 is the same name as "ü", and must yield the same words —
+  // the German reading among them
+  EXPECT_EQ(WholeWords(&tok, "Mu\u0308nchen"), WholeWords(&tok, "München"));
+  EXPECT_TRUE(Contains(WholeWords(&tok, "Mu\u0308nchen"), "muenchen"));
+  EXPECT_TRUE(Contains(WholeWords(&tok, "Mu\u0308nchen"), "munchen"));
+  EXPECT_EQ(WholeWords(&tok, "Krako\u0301w"), (std::vector<std::string>{"krakow"}));
+  // a mark never ends a word: the letters on both sides stay together
+  EXPECT_EQ(WholeWords(&tok, "Malmo\u0308"), WholeWords(&tok, "Malmö"));
+}
+
+TEST_F(TextTokenizeTest, CapitalSharpSIsTwoSLikeItsSmallForm) {
+  EXPECT_EQ(WholeWords(&tok, "GROẞE"), (std::vector<std::string>{"grosse"}));
+}
+
+TEST_F(TextTokenizeTest, LigaturesFallApart) {
+  EXPECT_EQ(WholeWords(&tok, "ﬂughafen"), (std::vector<std::string>{"flughafen"}));
+}
+
+TEST_F(TextTokenizeTest, ModifierLettersPartWordsLikeAnApostrophe) {
+  // the Hawaiian ʻokina stands where an apostrophe stands
+  EXPECT_EQ(WholeWords(&tok, "Wai\u02bbale"), WholeWords(&tok, "Wai'ale"));
+}
+
 TEST_F(TextTokenizeTest, ScriptsWithoutCasePassThrough) {
   // Chinese has no case and no diacritics to shed; it must survive intact
   std::vector<std::string> words = WholeWords(&tok, "北京");

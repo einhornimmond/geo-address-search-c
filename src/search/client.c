@@ -13,6 +13,7 @@
 
 /* The kinds a caller sees are the ones the builder wrote; if the builder ever
    renumbers them, this build refuses to compile rather than to answer wrongly. */
+static_assert(GEO_CLIENT_LANGUAGE_MAX == GEO_LANGUAGE_TAG_MAX, "language tag width drifted");
 static_assert((int)GEO_PLACE_STREET == (int)PHOTON_PLACE_TYPE_STREET, "kind numbers drifted");
 static_assert((int)GEO_PLACE_CITY == (int)PHOTON_PLACE_TYPE_CITY, "kind numbers drifted");
 static_assert((int)GEO_PLACE_HOUSE == (int)PHOTON_PLACE_TYPE_HOUSE, "kind numbers drifted");
@@ -84,6 +85,18 @@ GeoStatus geo_client_info(const GeoClient *client, GeoClientInfo *out) {
   out->spellings = client->index.display.word_count;
   out->postings = client->index.posting_count;
   out->format = GEO_INDEX_VERSION;
+  out->languages = (uint32_t)client->index.language_count;
+  return GEO_OK;
+}
+
+GeoStatus geo_client_language(const GeoClient *client, size_t number, char *out, size_t size) {
+  if (!client || !out || !size) return GEO_ERROR_ARGUMENT;
+  if (number >= client->index.language_count) return GEO_ERROR_ARGUMENT;
+  const char *tag = client->index.languages[number].tag;
+  size_t length = strnlen(tag, GEO_LANGUAGE_TAG_MAX);
+  if (length >= size) return GEO_ERROR_FORMAT;
+  memcpy(out, tag, length);
+  out[length] = '\0';
   return GEO_OK;
 }
 
@@ -105,14 +118,33 @@ static void borrow_text(
   *out_size = size;
 }
 
-/** Turn one hit into what a caller reads. */
-static void fill_address(const GeoIndex *index, const GeoHit *hit, GeoAddress *address) {
+/**
+ * @brief Turn one hit into what a caller reads.
+ *
+ *  @p language is a number from geo_index_language(), or -1 for the reading the
+ *  index keeps by default.  Where a language holds no reading of this place —
+ *  which is the ordinary case, a village being named the same everywhere — the
+ *  document's own fields stand, so an answer is never left blank by the asking.
+ */
+static void fill_address(
+    const GeoIndex *index, const GeoHit *hit, int language, GeoAddress *address
+) {
   const GeoDocument *document = &index->documents[hit->document];
   memset(address, 0, sizeof(*address));
 
-  borrow_text(index, document->name_rank, &address->name, &address->name_size);
+  uint32_t name_rank = document->name_rank;
+  uint32_t city_rank = document->city_rank;
+  if (language >= 0) {
+    const GeoVariant *reading = geo_index_variant(index, language, hit->document);
+    if (reading) {
+      if (reading->name_rank != GEO_RANK_NONE) name_rank = reading->name_rank;
+      if (reading->city_rank != GEO_RANK_NONE) city_rank = reading->city_rank;
+    }
+  }
+
+  borrow_text(index, name_rank, &address->name, &address->name_size);
   borrow_text(index, document->postcode_rank, &address->postcode, &address->postcode_size);
-  borrow_text(index, document->city_rank, &address->city, &address->city_size);
+  borrow_text(index, city_rank, &address->city, &address->city_size);
 
   int32_t lat = document->lat_e7;
   int32_t lon = document->lon_e7;
@@ -183,7 +215,8 @@ size_t geo_client_search_options(
   size_t count = geo_index_query_options(
       &client->index, &tokenizer, query, query_size, &asked, hits, limit, stats
   );
-  for (size_t i = 0; i < count; ++i) { fill_address(&client->index, &hits[i], &out[i]); }
+  const int language = geo_index_language(&client->index, options->language);
+  for (size_t i = 0; i < count; ++i) { fill_address(&client->index, &hits[i], language, &out[i]); }
   return count;
 }
 
@@ -319,9 +352,24 @@ size_t geo_client_search_json(
     char *buffer,
     size_t buffer_size
 ) {
+  GeoSearchOptions options = {.prefix_last = prefix_last};
+  return geo_client_search_json_options(
+      client, query, query_size, &options, limit, buffer, buffer_size
+  );
+}
+
+size_t geo_client_search_json_options(
+    const GeoClient *client,
+    const char *query,
+    size_t query_size,
+    const GeoSearchOptions *options,
+    size_t limit,
+    char *buffer,
+    size_t buffer_size
+) {
   if (limit > GEO_CLIENT_LIMIT_MAX) limit = GEO_CLIENT_LIMIT_MAX;
   GeoAddress addresses[GEO_CLIENT_LIMIT_MAX];
-  size_t count = geo_client_search(client, query, query_size, prefix_last, addresses, limit);
+  size_t count = geo_client_search_options(client, query, query_size, options, addresses, limit);
 
   JsonWriter writer = {.buffer = buffer, .capacity = buffer ? buffer_size : 0, .needed = 0};
   json_literal(&writer, "[");

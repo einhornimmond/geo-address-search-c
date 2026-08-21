@@ -4,6 +4,8 @@
 #include "foundation/error.h"
 
 #include <math.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <yyjson.h>
@@ -43,11 +45,188 @@ static const char *plain(yyjson_val *object, const char *key) {
   return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
 }
 
-/** The entry's own name out of its `name` object, German first. */
-static PhotonString place_name(yyjson_val *place) {
+/* =========================================================================
+ *  The languages a build reads
+ * ========================================================================= */
+
+/** ASCII lower case; a language tag is ASCII by definition. */
+static char lowered(char c) {
+  return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+/**
+ * @brief A language tag as one number — its length, then its letters.
+ *
+ *  Two tags are the same exactly when their numbers are.  An empty tag, or one
+ *  of seven bytes or more, has no number and yields 0.  That answer is used,
+ *  not merely guarded against: the tags a dump key carries reach here unchecked
+ *  through photon_languages_hold() and languages_hold_word(), where 0 equals no
+ *  stored number and the key is passed over.
+ */
+static uint64_t tag_word(const char *tag, size_t size) {
+  if (!size || size >= PHOTON_LANGUAGE_TAG_MAX) return 0;
+  uint64_t word = size;
+  for (size_t i = 0; i < size; ++i) { word |= (uint64_t)(unsigned char)tag[i] << (8 * (i + 1)); }
+  return word;
+}
+
+/**
+ * @brief Is @p key exactly @p want?
+ *
+ *  The first two bytes are compared here rather than handed to the C library,
+ *  because they settle it: `country` and `city:de` are both seven bytes long
+ *  and part at the second letter, and every other key of the address block
+ *  parts at the first.  What is left over goes to memcmp, which then runs only
+ *  for the key this really is.
+ */
+static bool key_is(const char *key, size_t key_size, const char *want, uint8_t want_size) {
+  if (key_size != want_size || key_size < 2) return false;
+  if (key[0] != want[0] || key[1] != want[1]) return false;
+  return key_size == 2 || memcmp(key + 2, want + 2, key_size - 2) == 0;
+}
+
+bool photon_languages_parse(const char *text, PhotonLanguages *out) {
+  memset(out, 0, sizeof(*out));
+  if (!text || !*text) return true;
+
+  bool whole = true;
+  const char *cursor = text;
+  while (*cursor) {
+    while (*cursor == ',' || *cursor == ' ') ++cursor;
+    const char *start = cursor;
+    while (*cursor && *cursor != ',' && *cursor != ' ') ++cursor;
+    size_t size = (size_t)(cursor - start);
+    if (!size) continue;
+
+    if (size == 3 && lowered(start[0]) == 'a' && lowered(start[1]) == 'l' &&
+        lowered(start[2]) == 'l') {
+      /* "all" is not a language beside others — it is the absence of a list */
+      memset(out, 0, sizeof(*out));
+      out->every = true;
+      return true;
+    }
+    if (size >= PHOTON_LANGUAGE_TAG_MAX) {
+      whole = false;
+      continue;
+    }
+    char tag[PHOTON_LANGUAGE_TAG_MAX] = {0};
+    for (size_t i = 0; i < size; ++i) tag[i] = lowered(start[i]);
+    if (photon_languages_hold(out, tag, size)) continue; /* named twice */
+    if (out->count >= PHOTON_LANGUAGE_MAX) {
+      whole = false;
+      continue;
+    }
+    memcpy(out->tag[out->count], tag, sizeof(tag));
+    out->tag_size[out->count] = (uint8_t)size;
+    out->tag_word[out->count] = tag_word(tag, size);
+    ++out->count;
+  }
+  if (out->count) {
+    snprintf(out->name_key, sizeof(out->name_key), "name:%s", out->tag[0]);
+    out->city_key_size =
+        (uint8_t)snprintf(out->city_key, sizeof(out->city_key), "city:%s", out->tag[0]);
+    out->street_key_size =
+        (uint8_t)snprintf(out->street_key, sizeof(out->street_key), "street:%s", out->tag[0]);
+  }
+  return whole;
+}
+
+/** The same question as photon_languages_hold(), the tag already a number.
+ *
+ *  Static, so that the address loop keeps it inline: it is asked once per
+ *  localized key of every entry that becomes a document, and a call frame
+ *  around three integer compares is most of what the question costs. */
+static bool languages_hold_word(const PhotonLanguages *languages, uint64_t word) {
+  if (!word) return false;
+  if (languages->every) return true;
+  for (uint8_t i = 0; i < languages->count; ++i) {
+    if (languages->tag_word[i] == word) return true;
+  }
+  return false;
+}
+
+bool photon_languages_hold(const PhotonLanguages *languages, const char *tag, size_t tag_size) {
+  if (!languages) return false;
+  return languages_hold_word(languages, tag_word(tag, tag_size));
+}
+
+int photon_languages_index(const PhotonLanguages *languages, const char *tag) {
+  if (!languages || !tag) return -1;
+  for (uint8_t i = 0; i < languages->count; ++i) {
+    if (strcmp(languages->tag[i], tag) == 0) return (int)i;
+  }
+  return -1;
+}
+
+/** Whether @p tag is the default reading — the one the document record keeps. */
+static bool tag_is_default(const PhotonLanguages *languages, const char *tag, size_t tag_size) {
+  if (!languages || !languages->count) return false;
+  return languages->tag_word[0] == tag_word(tag, tag_size);
+}
+
+/**
+ * @brief The variant for @p tag, made where it is not there yet.
+ *
+ *  A linear scan again, over a list that holds one entry per language the build
+ *  asked for.  Nothing cleverer would pay off at this length, and the list is
+ *  walked once per localized key rather than once per entry.
+ *
+ *  @return The variant, or NULL when the tag will not fit or the list is full.
+ */
+static PhotonVariant *variant_for(PhotonPlace *p, const char *tag, size_t tag_size) {
+  if (!tag_size || tag_size >= PHOTON_LANGUAGE_TAG_MAX) return NULL;
+  for (uint8_t i = 0; i < p->variant_count; ++i) {
+    if (strncmp(p->variants[i].tag, tag, tag_size) == 0 && p->variants[i].tag[tag_size] == '\0') {
+      return &p->variants[i];
+    }
+  }
+  if (p->variant_count >= PHOTON_PLACE_VARIANT_MAX) {
+    if (p->variant_dropped < UINT8_MAX) ++p->variant_dropped;
+    return NULL;
+  }
+  PhotonVariant *variant = &p->variants[p->variant_count++];
+  memset(variant, 0, sizeof(*variant));
+  for (size_t i = 0; i < tag_size; ++i) variant->tag[i] = lowered(tag[i]);
+  return variant;
+}
+
+/**
+ * @brief The entry's own name: the default reading into @c own_name, the rest beside it.
+ *
+ *  The `name` object holds one key per language the dump knows.  One of them is
+ *  what an answer shows unless the caller asks otherwise, and the others are
+ *  kept only where this build named them — a planet's worth of translations of
+ *  every village is what the variant list is small for.
+ */
+static void place_names(yyjson_val *place, const PhotonLanguages *languages, PhotonPlace *p) {
   yyjson_val *names = yyjson_obj_get(place, "name");
-  PhotonString empty = {NULL, 0};
-  return yyjson_is_obj(names) ? localized(names, "name:de", "name") : empty;
+  if (!yyjson_is_obj(names)) return;
+
+  if (languages && languages->count) {
+    p->own_name = localized(names, languages->name_key, "name");
+  } else {
+    p->own_name = string_of(yyjson_obj_get(names, "name"));
+  }
+
+  /* nothing beyond the default was asked for */
+  if (!languages || (!languages->every && languages->count < 2)) return;
+
+  yyjson_obj_iter iter;
+  yyjson_obj_iter_init(names, &iter);
+  yyjson_val *key;
+  while ((key = yyjson_obj_iter_next(&iter))) {
+    const char *key_text = yyjson_get_str(key);
+    size_t key_size = yyjson_get_len(key);
+    if (key_size <= 5 || memcmp(key_text, "name:", 5) != 0) continue;
+    const char *tag = key_text + 5;
+    size_t tag_size = key_size - 5;
+    if (tag_is_default(languages, tag, tag_size)) continue; /* already the default reading */
+    if (!photon_languages_hold(languages, tag, tag_size)) continue;
+    PhotonString text = string_of(yyjson_obj_iter_get_val(key));
+    if (!text.data) continue;
+    PhotonVariant *variant = variant_for(p, tag, tag_size);
+    if (variant) variant->name = text;
+  }
 }
 
 /**
@@ -176,8 +355,8 @@ typedef enum AddressRole {
   ADDRESS_ROLE_STREET,
   ADDRESS_ROLE_POSTCODE,
   ADDRESS_ROLE_HOUSE,
-  ADDRESS_ROLE_CITY_DE, /**< localized variant, preferred over the plain one */
-  ADDRESS_ROLE_STREET_DE
+  ADDRESS_ROLE_CITY_DEFAULT,  /**< `city:<default>` — outranks the plain reading. */
+  ADDRESS_ROLE_STREET_DEFAULT /**< `street:<default>`, likewise. */
 } AddressRole;
 
 /** Recognise the four keys an answer needs; everything else stays role-free. */
@@ -187,12 +366,8 @@ static AddressRole address_role(const char *key, size_t key_size) {
     return memcmp(key, "city", 4) == 0 ? ADDRESS_ROLE_CITY : ADDRESS_ROLE_NONE;
   case 6:
     return memcmp(key, "street", 6) == 0 ? ADDRESS_ROLE_STREET : ADDRESS_ROLE_NONE;
-  case 7:
-    return memcmp(key, "city:de", 7) == 0 ? ADDRESS_ROLE_CITY_DE : ADDRESS_ROLE_NONE;
   case 8:
     return memcmp(key, "postcode", 8) == 0 ? ADDRESS_ROLE_POSTCODE : ADDRESS_ROLE_NONE;
-  case 9:
-    return memcmp(key, "street:de", 9) == 0 ? ADDRESS_ROLE_STREET_DE : ADDRESS_ROLE_NONE;
   case 11:
     return memcmp(key, "housenumber", 11) == 0 ? ADDRESS_ROLE_HOUSE : ADDRESS_ROLE_NONE;
   default:
@@ -201,14 +376,29 @@ static AddressRole address_role(const char *key, size_t key_size) {
 }
 
 /**
- * @brief Is this the German reading of an address key — `city:de`, `state:de`, and their kin?
+ * @brief The role of a key, the default reading's two keys among them.
  *
- *  A suffix test, nothing more: the key must end in `:de` and carry something
- *  before it.  Longer tags such as `city:de-formal` are left to the general
- *  rule, which passes them over.
+ *  The dump writes `city`, `city:de`, `city:pt-BR` — the same field in as many
+ *  readings as it knows, and only one of those readings fills the answer.  That
+ *  one is recognised here by its whole name, against a key built once when the
+ *  build read its language list.  Every other localized key falls out as
+ *  @ref ADDRESS_ROLE_NONE and is looked at again further down, where the colon
+ *  is searched for — but only for an entry that becomes a document at all.
+ *  Four fifths of a planet dump are house numbers, which do not, and for those
+ *  this is the last anyone looks at the key.
  */
-static bool key_is_german(const char *key, size_t key_size) {
-  return key_size > 3 && memcmp(key + key_size - 3, ":de", 3) == 0;
+static AddressRole address_role_of(
+    const PhotonLanguages *languages, const char *key, size_t key_size
+) {
+  AddressRole role = address_role(key, key_size);
+  if (role != ADDRESS_ROLE_NONE || !languages || !languages->count) return role;
+  if (key_is(key, key_size, languages->city_key, languages->city_key_size)) {
+    return ADDRESS_ROLE_CITY_DEFAULT;
+  }
+  if (key_is(key, key_size, languages->street_key, languages->street_key_size)) {
+    return ADDRESS_ROLE_STREET_DEFAULT;
+  }
+  return ADDRESS_ROLE_NONE;
 }
 
 /** How extract_place() ended: taken, passed over, or a dump that cannot be read. */
@@ -234,8 +424,10 @@ typedef enum ResultType {
  *  @param[out] p      Zeroed first, then filled; untouched fields stay NULL.
  *  @return What became of it; see @ref ResultType.
  */
-static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
-  memset(p, 0, sizeof(*p));
+static ResultType extract_place(
+    yyjson_val *entry, const PhotonLanguages *languages, PhotonPlace *p
+) {
+  photon_place_reset(p);
 
   /* string_of() hands back the length beside the bytes, which is exactly what
      the exact match below needs and costs nothing extra to ask for. */
@@ -246,7 +438,7 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   if (PHOTON_PLACE_TYPE_UNKNOWN == p->typeEnum) { return RESULT_ERROR_UNKNOWN_TYPE; }
 
   p->country_code = plain(entry, "country_code");
-  p->own_name = place_name(entry);
+  place_names(entry, languages, p);
   p->postcode = string_of(yyjson_obj_get(entry, "postcode"));
 
   yyjson_val *importance = yyjson_obj_get(entry, "importance");
@@ -275,17 +467,21 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
       const char *key_text = yyjson_get_str(key);
       size_t key_size = yyjson_get_len(key);
 
-      switch (address_role(key_text, key_size)) {
+      AddressRole role = address_role_of(languages, key_text, key_size);
+      switch (role) {
       case ADDRESS_ROLE_CITY:
         if (!p->city.data) p->city = text;
         break;
-      case ADDRESS_ROLE_CITY_DE:
-        p->city = text;
+      case ADDRESS_ROLE_CITY_DEFAULT:
+        p->city = text; /* the reading an answer shows outranks the plain one */
         break;
       case ADDRESS_ROLE_STREET:
         if (!p->street.data) p->street = text;
         break;
-      case ADDRESS_ROLE_STREET_DE:
+      case ADDRESS_ROLE_STREET_DEFAULT:
+        /* A street keeps one reading only: it is the key a house finds its
+           street by, and two spellings of the same street would be two
+           streets. */
         p->street = text;
         break;
       case ADDRESS_ROLE_POSTCODE:
@@ -297,19 +493,41 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
       default:
         break;
       }
+      /* Everything below serves the term stream and the readings beside the
+         default one, and a house entry has neither — its parent text belongs
+         to its street's document.  So this is where a house number's key is
+         let go of, before anyone looks for a colon in it. */
+      if (!indexed) continue;
+
       /* Parent text enters the dictionary through the parent's own entry —
          "Brandenburg" is a state document of its own. Carrying every language
          variant of every ancestor on every child would multiply the term
-         stream thirtyfold and add not a single word. Two readings stay. The
-         unlocalized one, as a safety net for parents the dump never lists.
-         And the German one, because that is the form the answer shows: a
-         street in Prague comes back with "Prag" in its city field, and a query
-         repeating what it just read must reach the same street again — the
-         unlocalized "Praha" alone would leave it unfindable by the name it
-         displays. At home both readings are the same text and search_add()
-         keeps one of them; abroad it costs a single term per level. */
-      if (indexed && (key_is_german(key_text, key_size) || !memchr(key_text, ':', key_size))) {
-        search_add(p, text);
+         stream thirtyfold and add not a single word, so only the readings this
+         build named come along. The unlocalized one always does, as a safety
+         net for parents the dump never lists. And every language asked for
+         does, because those are the forms an answer shows: a street in Prague
+         comes back with "Prague" in its city field where the caller asked for
+         English, and a query repeating what it just read must reach the same
+         street again — the unlocalized "Praha" alone would leave it unfindable
+         by the name it displays. At home the readings are the same text and
+         search_add() keeps one of them; abroad each costs a single term per
+         level, which is the price of the languages the build asked for. */
+      const char *colon = memchr(key_text, ':', key_size);
+      if (!colon) {
+        search_add(p, text); /* the unlocalized reading always comes along */
+        continue;
+      }
+      const char *tag = colon + 1;
+      size_t tag_size = key_size - (size_t)(colon - key_text) - 1;
+      if (!languages || !languages_hold_word(languages, tag_word(tag, tag_size))) continue;
+      search_add(p, text);
+
+      /* A town in a language this build keeps is a reading of its own; the
+         default one is already in the field above and needs none. */
+      if (role == ADDRESS_ROLE_NONE &&
+          address_role(key_text, (size_t)(colon - key_text)) == ADDRESS_ROLE_CITY) {
+        PhotonVariant *variant = variant_for(p, tag, tag_size);
+        if (variant) variant->city = text;
       }
     }
   }
@@ -357,6 +575,12 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
   case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
   case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
     p->city = p->own_name;
+    /* And it fills that role in every reading it has one for.  A town is its
+       own town: asked in English, Praha must answer "Prague" in both fields,
+       not "Prague" under a city called "Prag". */
+    for (uint8_t i = 0; i < p->variant_count; ++i) {
+      if (!p->variants[i].city.data) p->variants[i].city = p->variants[i].name;
+    }
     break;
   default:
     break;
@@ -378,6 +602,10 @@ static ResultType extract_place(yyjson_val *entry, PhotonPlace *p) {
 /* =========================================================================
  *  Public API
  * ========================================================================= */
+void photon_place_reset(PhotonPlace *place) {
+  memset(place, 0, offsetof(PhotonPlace, search));
+}
+
 bool photon_place_has_point(const PhotonPlace *place) {
   return place->has_point;
 }
@@ -385,6 +613,7 @@ bool photon_place_has_point(const PhotonPlace *place) {
 int json_parse_line(
     const char *line,
     size_t len,
+    const PhotonLanguages *languages,
     PhotonPlaceCallback callback,
     void *user_data,
     JsonParseResult *result
@@ -446,7 +675,7 @@ int json_parse_line(
     if (!yyjson_is_obj(entry)) continue;
 
     PhotonPlace place;
-    ResultType extractResult = extract_place(entry, &place);
+    ResultType extractResult = extract_place(entry, languages, &place);
     if (extractResult == RESULT_ERROR_UNKNOWN_TYPE) {
       char *buf = (char *)calloc(1, len + 1);
       memcpy(buf, line, len);
@@ -521,6 +750,18 @@ char *photon_place_to_json(const PhotonPlace *place) {
     yyjson_mut_arr_add_strn(doc, search, place->search[i].data, place->search[i].size);
   }
   yyjson_mut_obj_add_val(doc, root, "search", search);
+
+  if (place->variant_count) {
+    yyjson_mut_val *variants = yyjson_mut_obj(doc);
+    for (uint8_t i = 0; i < place->variant_count; ++i) {
+      const PhotonVariant *variant = &place->variants[i];
+      yyjson_mut_val *reading = yyjson_mut_obj(doc);
+      add_string_field(doc, reading, "name", variant->name);
+      add_string_field(doc, reading, "city", variant->city);
+      yyjson_mut_obj_add_val(doc, variants, variant->tag, reading);
+    }
+    yyjson_mut_obj_add_val(doc, root, "variants", variants);
+  }
 
   size_t len = 0;
   const char *json = yyjson_mut_write(doc, 0, &len);

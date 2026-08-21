@@ -352,3 +352,170 @@ TEST(ClientGuards, AnEmptyQueryFindsNothing) {
 
   geo_client_close(client);
 }
+
+// ---------------------------------------------------------------------------
+//  Languages — the same places, spelled the way the caller asks for
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Two towns and a street, each with an English reading beside the German one. */
+std::vector<testsupport::MiniPlace> BilingualPlaces() {
+  std::vector<testsupport::MiniPlace> places;
+
+  testsupport::MiniPlace prague;
+  prague.name = "Prag";
+  prague.city = "Prag";
+  prague.type = PHOTON_PLACE_TYPE_CITY;
+  prague.lat_e7 = 500755000;
+  prague.lon_e7 = 144378000;
+  prague.importance = 60000;
+  prague.readings = {{"en", "Prague", "Prague"}};
+  places.push_back(prague);
+
+  testsupport::MiniPlace square;
+  square.name = "Vaclavske namesti";
+  square.city = "Prag";
+  square.type = PHOTON_PLACE_TYPE_STREET;
+  square.lat_e7 = 500810000;
+  square.lon_e7 = 144280000;
+  square.readings = {{"en", "Wenceslas Square", "Prague"}};
+  places.push_back(square);
+
+  /* a place no language writes differently — the ordinary case, and the one
+     that must not come back empty when a language is asked for */
+  testsupport::MiniPlace lane;
+  lane.name = "Krizovnicka";
+  lane.city = "Prag";
+  lane.type = PHOTON_PLACE_TYPE_STREET;
+  lane.lat_e7 = 500870000;
+  lane.lon_e7 = 144140000;
+  places.push_back(lane);
+
+  return places;
+}
+
+class ClientLanguageTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(BuildMiniIndex(path.c_str(), BilingualPlaces(), {"de", "en"}));
+    ASSERT_EQ(geo_client_open(&client, path.c_str()), GEO_OK);
+  }
+  void TearDown() override {
+    geo_client_close(client);
+  }
+
+  /** One search, answered in @p language; nullptr asks for the default. */
+  size_t Search(const std::string &q, const char *language, GeoAddress *out, size_t limit) {
+    GeoSearchOptions options{};
+    options.language = language;
+    return geo_client_search_options(client, q.c_str(), q.size(), &options, out, limit);
+  }
+
+  /** The one result that is a town — every place here carries the word "Prag". */
+  GeoAddress Town(const std::string &q, const char *language) {
+    GeoAddress found[8];
+    size_t count = Search(q, language, found, 8);
+    for (size_t i = 0; i < count; ++i) {
+      if (found[i].kind == GEO_PLACE_CITY) return found[i];
+    }
+    ADD_FAILURE() << "no town among " << count << " results";
+    return GeoAddress{};
+  }
+
+  TempPath path{"client_lang"};
+  GeoClient *client = nullptr;
+};
+
+} // namespace
+
+TEST_F(ClientLanguageTest, ReportsTheLanguagesItHolds) {
+  GeoClientInfo info{};
+  ASSERT_EQ(geo_client_info(client, &info), GEO_OK);
+  EXPECT_EQ(info.languages, 2u);
+
+  char tag[GEO_LANGUAGE_TAG_MAX] = {0};
+  ASSERT_EQ(geo_client_language(client, 0, tag, sizeof(tag)), GEO_OK);
+  EXPECT_STREQ(tag, "de") << "number 0 is the reading an answer shows by default";
+  ASSERT_EQ(geo_client_language(client, 1, tag, sizeof(tag)), GEO_OK);
+  EXPECT_STREQ(tag, "en");
+  EXPECT_EQ(geo_client_language(client, 2, tag, sizeof(tag)), GEO_ERROR_ARGUMENT);
+  EXPECT_EQ(geo_client_language(client, 0, tag, 1), GEO_ERROR_FORMAT) << "no room for the tag";
+  EXPECT_EQ(geo_client_language(nullptr, 0, tag, sizeof(tag)), GEO_ERROR_ARGUMENT);
+}
+
+TEST_F(ClientLanguageTest, WithoutALanguageTheDefaultReadingIsShown) {
+  GeoAddress town = Town("Prag", nullptr);
+  EXPECT_EQ(Name(town), "Prag");
+  EXPECT_EQ(City(town), "Prag");
+}
+
+TEST_F(ClientLanguageTest, TheAskedLanguageIsShownWhereThePlaceHasOne) {
+  GeoAddress town = Town("Prag", "en");
+  EXPECT_EQ(Name(town), "Prague");
+  EXPECT_EQ(City(town), "Prague");
+}
+
+TEST_F(ClientLanguageTest, APlaceWithoutAReadingKeepsTheDefaultOne) {
+  GeoAddress found[4];
+  ASSERT_EQ(Search("Krizovnicka", "en", found, 4), 1u);
+  EXPECT_EQ(Name(found[0]), "Krizovnicka") << "no English name, so the written one stands";
+  EXPECT_EQ(City(found[0]), "Prag") << "and its town has none on this record either";
+}
+
+TEST_F(ClientLanguageTest, ALanguageTheIndexDoesNotHoldIsNoError) {
+  GeoAddress plain[8], french[8];
+  size_t a = Search("Prag", nullptr, plain, 8);
+  size_t b = Search("Prag", "fr", french, 8);
+  ASSERT_EQ(a, b) << "the same places answer";
+  ASSERT_GT(a, 0u);
+  EXPECT_EQ(Name(Town("Prag", "fr")), "Prag") << "spelled the way the index spells them";
+}
+
+TEST_F(ClientLanguageTest, TheLanguageChangesTheSpellingNotTheMatching) {
+  // "Wenceslas" was written into the index as a searchable word of the square,
+  // and finds it whichever language the answer is asked in
+  GeoAddress german[4], english[4];
+  size_t a = Search("Wenceslas", nullptr, german, 4);
+  size_t b = Search("Wenceslas", "en", english, 4);
+  ASSERT_EQ(a, b);
+  ASSERT_EQ(a, 1u);
+  EXPECT_EQ(german[0].document, english[0].document) << "the same place, twice";
+  EXPECT_EQ(Name(german[0]), "Vaclavske namesti");
+  EXPECT_EQ(Name(english[0]), "Wenceslas Square");
+}
+
+TEST_F(ClientLanguageTest, TheJsonFormCarriesTheLanguageToo) {
+  GeoSearchOptions options{};
+  options.language = "en";
+  char buffer[2048];
+  size_t needed =
+      geo_client_search_json_options(client, "Prag", 4, &options, 8, buffer, sizeof(buffer));
+  ASSERT_LT(needed, sizeof(buffer));
+  const std::string json(buffer);
+  EXPECT_NE(json.find("\"name\":\"Prague\""), std::string::npos) << json;
+  EXPECT_NE(json.find("\"name\":\"Wenceslas Square\""), std::string::npos) << json;
+  EXPECT_EQ(json.find("\"name\":\"Vaclavske namesti\""), std::string::npos)
+      << "the German reading gave way where an English one stood";
+}
+
+TEST(ClientLanguageless, AnIndexOfOneReadingHoldsNoLanguageTable) {
+  TempPath path{"client_nolang"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), SamplePlaces()));
+  GeoClient *client = nullptr;
+  ASSERT_EQ(geo_client_open(&client, path.c_str()), GEO_OK);
+
+  GeoClientInfo info{};
+  ASSERT_EQ(geo_client_info(client, &info), GEO_OK);
+  EXPECT_EQ(info.languages, 0u);
+
+  char tag[GEO_LANGUAGE_TAG_MAX] = {0};
+  EXPECT_EQ(geo_client_language(client, 0, tag, sizeof(tag)), GEO_ERROR_ARGUMENT);
+
+  /* asking for one is still no error — the places answer as they always did */
+  GeoSearchOptions options{};
+  options.language = "en";
+  GeoAddress found[4];
+  EXPECT_GT(geo_client_search_options(client, "Berlin", 6, &options, found, 4), 0u);
+  geo_client_close(client);
+}

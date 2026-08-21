@@ -32,7 +32,9 @@ typedef enum GeoIndexSectionKind {
   GEO_INDEX_SECTION_POSTINGS = 9,        /**< One serialized bitmap per word. */
   GEO_INDEX_SECTION_IMPORTANCE = 10,     /**< uint16 per document, for ranking alone. */
   GEO_INDEX_SECTION_HOUSES = 11,         /**< @ref GeoHouse records, by street. */
-  GEO_INDEX_SECTION_HOUSE_OFFSETS = 12   /**< uint32, document_count + 1 of them. */
+  GEO_INDEX_SECTION_HOUSE_OFFSETS = 12,  /**< uint32, document_count + 1 of them. */
+  GEO_INDEX_SECTION_LANGUAGES = 13,      /**< @ref GeoIndexLanguage, one per language. */
+  GEO_INDEX_SECTION_VARIANTS = 14        /**< @ref GeoVariant, by language then document. */
 } GeoIndexSectionKind;
 
 /** @brief Sections the writer always lays down.
@@ -41,7 +43,7 @@ typedef enum GeoIndexSectionKind {
  *  and looks each section up by its kind, so a file gained a section since is still readable.
  *  What it refuses is a section it needs and does not find. */
 enum {
-  GEO_INDEX_SECTION_COUNT = 12 /**< Sections the writer always lays down. */
+  GEO_INDEX_SECTION_COUNT = 14 /**< Sections the writer always lays down. */
 };
 
 #ifdef __cplusplus

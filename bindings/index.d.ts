@@ -65,6 +65,14 @@ export interface GeoIndexInfo {
   spellings: number;
   postings: number;
   format: number;
+  /**
+   * The readings the index holds, as language tags — `["de", "en"]`. The
+   * first is what an answer shows when `search()` is given no `language`.
+   *
+   * Empty for an index built without `--languages`, which holds one reading
+   * and answers in it whatever is asked for.
+   */
+  languages: string[];
 }
 
 export interface SearchOptions {
@@ -78,6 +86,16 @@ export interface SearchOptions {
    * than the word itself.
    */
   prefix?: boolean;
+  /**
+   * Which reading the answer shows — `"en"`, `"fr"`. Left out, the index's
+   * own default is shown; `info().languages` says which readings there are.
+   *
+   * A tag the index does not hold is not an error and finds the same places:
+   * the language changes how a result is spelled, never which results there
+   * are. A place the language has no reading of keeps the default spelling,
+   * so a result is never blank for the asking.
+   */
+  language?: string;
 }
 
 /**

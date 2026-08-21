@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,11 @@ struct Parsed {
   int32_t lat_e7 = 0, lon_e7 = 0;
   int has_point = 0;
   uint8_t search_dropped = 0;
+  /** One entry per language the build asked for beside the default, by tag. */
+  struct Reading {
+    std::string name, city;
+  };
+  std::map<std::string, Reading> readings;
 };
 
 std::string Str(const PhotonString &s) {
@@ -50,8 +56,32 @@ int Capture(const PhotonPlace *place, void *user) {
   p.has_point = place->has_point;
   p.search_dropped = place->search_dropped;
   for (uint8_t i = 0; i < place->search_count; ++i) p.search.push_back(Str(place->search[i]));
+  for (uint8_t i = 0; i < place->variant_count; ++i) {
+    Parsed::Reading reading;
+    reading.name = Str(place->variants[i].name);
+    reading.city = Str(place->variants[i].city);
+    p.readings[place->variants[i].tag] = reading;
+  }
   out->push_back(p);
   return 0;
+}
+
+/** The languages every build kept before there was a choice — German alone. */
+const PhotonLanguages &German() {
+  static const PhotonLanguages languages = [] {
+    PhotonLanguages set{};
+    photon_languages_parse("de", &set);
+    return set;
+  }();
+  return languages;
+}
+
+/** Parse one line with a language list of the test's own choosing. */
+std::vector<Parsed> ParseIn(const std::string &line, const PhotonLanguages &languages) {
+  std::vector<Parsed> places;
+  JsonParseResult result{};
+  EXPECT_EQ(json_parse_line(line.c_str(), line.size(), &languages, Capture, &places, &result), 1);
+  return places;
 }
 
 /** Parse one line and hand back every entry it carried. */
@@ -59,7 +89,7 @@ std::vector<Parsed> Parse(const std::string &line, JsonParseResult *result = nul
   std::vector<Parsed> places;
   JsonParseResult own{};
   JsonParseResult *r = result ? result : &own;
-  EXPECT_EQ(json_parse_line(line.c_str(), line.size(), Capture, &places, r), 1);
+  EXPECT_EQ(json_parse_line(line.c_str(), line.size(), &German(), Capture, &places, r), 1);
   return places;
 }
 
@@ -173,6 +203,165 @@ TEST(JsonParseSearch, LeavesOtherLanguagesOfAnAddressKeyToTheirOwnEntry) {
   EXPECT_FALSE(Has(got[0].search, "Varsovie"));
 }
 
+// ---------------------------------------------------------------------------
+//  The languages a build reads
+// ---------------------------------------------------------------------------
+
+namespace {
+PhotonLanguages Languages(const char *list) {
+  PhotonLanguages set{};
+  EXPECT_TRUE(photon_languages_parse(list, &set));
+  return set;
+}
+std::vector<std::string> TagsOf(const PhotonLanguages &set) {
+  std::vector<std::string> tags;
+  for (uint8_t i = 0; i < set.count; ++i) tags.emplace_back(set.tag[i]);
+  return tags;
+}
+const Parsed::Reading *ReadingOf(const Parsed &place, const char *tag) {
+  auto found = place.readings.find(tag);
+  return found == place.readings.end() ? nullptr : &found->second;
+}
+} // namespace
+
+TEST(PhotonLanguages, ReadsAListAndLowercasesIt) {
+  EXPECT_EQ(TagsOf(Languages("de,EN, fr")), (std::vector<std::string>{"de", "en", "fr"}));
+}
+
+TEST(PhotonLanguages, KeepsTheOrderBecauseTheFirstIsTheDefault) {
+  EXPECT_EQ(TagsOf(Languages("en,de"))[0], "en");
+  EXPECT_EQ(TagsOf(Languages("de,en"))[0], "de");
+}
+
+TEST(PhotonLanguages, ATagNamedTwiceIsHeldOnce) {
+  EXPECT_EQ(TagsOf(Languages("de,en,de")), (std::vector<std::string>{"de", "en"}));
+}
+
+TEST(PhotonLanguages, EmptyPiecesArePassedOver) {
+  EXPECT_EQ(TagsOf(Languages("de,,  ,en")), (std::vector<std::string>{"de", "en"}));
+  PhotonLanguages none{};
+  EXPECT_TRUE(photon_languages_parse("", &none));
+  EXPECT_EQ(none.count, 0u);
+  EXPECT_TRUE(photon_languages_parse(nullptr, &none));
+  EXPECT_EQ(none.count, 0u);
+}
+
+TEST(PhotonLanguages, AllIsNoListAtAll) {
+  PhotonLanguages every = Languages("de,all,en");
+  EXPECT_TRUE(every.every);
+  EXPECT_EQ(every.count, 0u) << "all replaces the list rather than joining it";
+}
+
+TEST(PhotonLanguages, ATagTooLongIsRefusedAndTheRestSurvives) {
+  PhotonLanguages set{};
+  EXPECT_FALSE(photon_languages_parse("de,this-tag-is-far-too-long,en", &set));
+  EXPECT_EQ(TagsOf(set), (std::vector<std::string>{"de", "en"}));
+}
+
+TEST(PhotonLanguages, IndexIsWhereATagStands) {
+  PhotonLanguages set = Languages("de,en,fr");
+  EXPECT_EQ(photon_languages_index(&set, "de"), 0);
+  EXPECT_EQ(photon_languages_index(&set, "fr"), 2);
+  EXPECT_EQ(photon_languages_index(&set, "it"), -1);
+}
+
+TEST(JsonParseLanguages, TheFirstLanguageIsWhatTheAnswerShows) {
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"city","name":)"
+      R"({"name":"Praha","name:de":"Prag","name:en":"Prague"},"address":{}}]})";
+
+  std::vector<Parsed> german = ParseIn(line, Languages("de,en"));
+  ASSERT_EQ(german.size(), 1u);
+  EXPECT_EQ(german[0].name, "Prag");
+
+  std::vector<Parsed> english = ParseIn(line, Languages("en,de"));
+  ASSERT_EQ(english.size(), 1u);
+  EXPECT_EQ(english[0].name, "Prague");
+}
+
+TEST(JsonParseLanguages, EveryFurtherLanguageBecomesAReadingBesideIt) {
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"city","name":)"
+      R"({"name":"Praha","name:de":"Prag","name:en":"Prague","name:it":"Praga"},"address":{}}]})";
+  std::vector<Parsed> got = ParseIn(line, Languages("de,en"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].name, "Prag");
+
+  const Parsed::Reading *english = ReadingOf(got[0], "en");
+  ASSERT_NE(english, nullptr);
+  EXPECT_EQ(english->name, "Prague");
+  EXPECT_EQ(ReadingOf(got[0], "it"), nullptr) << "Italian was not asked for";
+  EXPECT_EQ(ReadingOf(got[0], "de"), nullptr) << "the default is in own_name, not beside it";
+}
+
+TEST(JsonParseLanguages, ATownIsItsOwnTownInEveryReading) {
+  // a city entry fills its city field from its own name, and so must a reading
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"city","name":)"
+      R"({"name":"Praha","name:de":"Prag","name:en":"Prague"},"address":{}}]})";
+  std::vector<Parsed> got = ParseIn(line, Languages("de,en"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].city, "Prag");
+  const Parsed::Reading *english = ReadingOf(got[0], "en");
+  ASSERT_NE(english, nullptr);
+  EXPECT_EQ(english->city, "Prague");
+}
+
+TEST(JsonParseLanguages, AnAncestorReadingIsTakenAsATermWhenItsLanguageWasAskedFor) {
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"street","name":{"name":"Marszalkowska"},)"
+      R"("address":{"city":"Warszawa","city:de":"Warschau","city:en":"Warsaw",)"
+      R"("city:fr":"Varsovie"}}]})";
+
+  std::vector<Parsed> german = ParseIn(line, Languages("de"));
+  ASSERT_EQ(german.size(), 1u);
+  EXPECT_TRUE(Has(german[0].search, "Warschau"));
+  EXPECT_FALSE(Has(german[0].search, "Warsaw")) << "English was not asked for";
+
+  std::vector<Parsed> both = ParseIn(line, Languages("de,en"));
+  ASSERT_EQ(both.size(), 1u);
+  EXPECT_TRUE(Has(both[0].search, "Warszawa")) << "the unlocalized reading always comes along";
+  EXPECT_TRUE(Has(both[0].search, "Warschau"));
+  EXPECT_TRUE(Has(both[0].search, "Warsaw"));
+  EXPECT_FALSE(Has(both[0].search, "Varsovie")) << "French was not asked for";
+
+  const Parsed::Reading *english = ReadingOf(both[0], "en");
+  ASSERT_NE(english, nullptr);
+  EXPECT_EQ(english->city, "Warsaw");
+  EXPECT_TRUE(english->name.empty()) << "the street has no English name of its own";
+}
+
+TEST(JsonParseLanguages, TheDefaultReadingStillOutranksThePlainOne) {
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"street","name":{"name":"Ulica"},)"
+      R"("address":{"city":"Warszawa","city:de":"Warschau","city:en":"Warsaw"}}]})";
+  std::vector<Parsed> got = ParseIn(line, Languages("en,de"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].city, "Warsaw") << "English leads the list, so English fills the field";
+}
+
+TEST(JsonParseLanguages, EveryTagIsTakenWhenAllWasAskedFor) {
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"city","name":)"
+      R"({"name":"Praha","name:de":"Prag","name:en":"Prague","name:it":"Praga"},"address":{}}]})";
+  std::vector<Parsed> got = ParseIn(line, Languages("all"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].name, "Praha") << "without a named default the plain reading stands";
+  EXPECT_NE(ReadingOf(got[0], "de"), nullptr);
+  EXPECT_NE(ReadingOf(got[0], "en"), nullptr);
+  EXPECT_NE(ReadingOf(got[0], "it"), nullptr);
+}
+
+TEST(JsonParseLanguages, ALongerTagIsNotTheLanguageItStartsWith) {
+  const std::string line =
+      R"({"type":"Place","content":[{"address_type":"street","name":{"name":"Ulica"},)"
+      R"("address":{"city":"Warszawa","city:de-formal":"Warschau"}}]})";
+  std::vector<Parsed> got = ParseIn(line, Languages("de"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].city, "Warszawa");
+  EXPECT_FALSE(Has(got[0].search, "Warschau"));
+}
+
 TEST(JsonParseSearch, ADuplicatedTextIsKeptOnce) {
   // city and city:de carry the same word at home, and it must not double
   std::vector<Parsed> got = Parse(Fixture()[0]);
@@ -281,7 +470,7 @@ TEST(JsonParseSelection, ARootThatIsNoObjectIsRefusedQuietly) {
   const std::string line = "[1,2,3]";
   JsonParseResult result{};
   std::vector<Parsed> places;
-  EXPECT_EQ(json_parse_line(line.c_str(), line.size(), Capture, &places, &result), 1);
+  EXPECT_EQ(json_parse_line(line.c_str(), line.size(), &German(), Capture, &places, &result), 1);
   EXPECT_EQ(result.is_valid, 0);
   EXPECT_TRUE(places.empty());
 }

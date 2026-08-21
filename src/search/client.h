@@ -56,6 +56,12 @@
 extern "C" {
 #endif
 
+/** Bytes a language tag takes, its terminator counted — `de`, `pt-BR`.
+ *
+ *  Named here so that a caller can size a buffer without reaching for the
+ *  index's own headers; client.c holds it to the file format's figure. */
+#define GEO_CLIENT_LANGUAGE_MAX 8
+
 /** An opened index. Create with geo_client_open(), release with geo_client_close(). */
 typedef struct GeoClient GeoClient;
 
@@ -106,6 +112,9 @@ typedef struct GeoClientInfo {
   uint64_t spellings; /**< Written forms in the display dictionary. */
   uint64_t postings;  /**< Word-to-place connections. */
   uint32_t format;    /**< Format version of the file. */
+  uint32_t languages; /**< Readings the index holds: 1 means the default alone, and 0 that
+                           the file carries no language table, in which case not even
+                           number 0 may be asked of geo_client_language(). */
 } GeoClientInfo;
 
 /**
@@ -140,6 +149,28 @@ void geo_client_close(GeoClient *client);
  *  @return GEO_OK, or GEO_ERROR_ARGUMENT.
  */
 GeoStatus geo_client_info(const GeoClient *client, GeoClientInfo *out);
+
+/**
+ * @brief The tag of the index's @p number-th language.
+ *
+ *  Walked from 0 up to @c GeoClientInfo::languages, this names every value
+ *  @c GeoSearchOptions::language may usefully take.  Number 0 is the default —
+ *  the reading an answer shows when nothing is asked for.  An index whose
+ *  @c GeoClientInfo::languages is 0 holds no language table and has no number 0
+ *  either: every number is then past the end, and the walk makes no step.
+ *
+ *  @param[in]  client  Opened client; must not be NULL.
+ *  @param[in]  number  Which language, counted from 0.
+ *  @param[out] out     Receives the tag, NUL-terminated; must not be NULL.
+ *  @param[in]  size    Capacity of @p out, at least 1; @ref GEO_CLIENT_LANGUAGE_MAX is
+ *                      always enough.
+ *  @return GEO_OK, GEO_ERROR_ARGUMENT when @p client or @p out is NULL, @p size is 0 or
+ *          @p number is past the end, or GEO_ERROR_FORMAT when the tag does not fit
+ *          @p out.
+ */
+GeoStatus geo_client_language(
+    const GeoClient *client, size_t number, char *out, size_t size
+);
 
 /**
  * @brief Search for a place, and for a house number within it.
@@ -196,6 +227,20 @@ typedef struct GeoSearchOptions {
   double longitude; /**< Degrees, −180 … 180. */
   /** Receives what the search had to touch, or NULL. */
   GeoQueryStats *stats;
+  /**
+   * @brief Which reading the answer shows — `"en"`, `"fr"`, NULL for the
+   *        index's own default.
+   *
+   *  Only what the index was built with can be asked for.  A tag it does not
+   *  hold is not an error and does not narrow the search: the results are the
+   *  same places, spelled the way the index spells them by default.  What the
+   *  index does hold is listed by geo_client_language().
+   *
+   *  It changes the spelling of an answer, never which places answer.  A query
+   *  is folded and matched the same way whatever language is asked for, so
+   *  *Prague* finds the city through its own entry as it always did.
+   */
+  const char *language;
 } GeoSearchOptions;
 
 /**
@@ -269,6 +314,34 @@ size_t geo_client_search_json(
     const char *query,
     size_t query_size,
     bool prefix_last,
+    size_t limit,
+    char *buffer,
+    size_t buffer_size
+);
+
+/**
+ * @brief The same JSON, with everything a search carries beyond its words.
+ *
+ *  What geo_client_search_options() is to geo_client_search(), this is to
+ *  geo_client_search_json(): the position, the counts and the language reach
+ *  the call that writes the text, so a caller across a language border does not
+ *  have to give any of them up to get one string back.
+ *
+ *  @param[in]  client       Opened client; must not be NULL.
+ *  @param[in]  query        Free text, UTF-8.
+ *  @param[in]  query_size   Byte length of @p query.
+ *  @param[in]  options      Prefix reading, position, counts and language; NULL
+ *                           reads as all-default.
+ *  @param[in]  limit        Most results to write; capped at 256.
+ *  @param[out] buffer       Destination; always NUL-terminated when it has room.
+ *  @param[in]  buffer_size  Capacity of @p buffer in bytes.
+ *  @return Bytes the whole answer needs without the NUL.
+ */
+size_t geo_client_search_json_options(
+    const GeoClient *client,
+    const char *query,
+    size_t query_size,
+    const GeoSearchOptions *options,
     size_t limit,
     char *buffer,
     size_t buffer_size
