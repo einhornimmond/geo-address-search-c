@@ -230,11 +230,10 @@ static napi_value binding_search(napi_env env, napi_callback_info info) {
     napi_valuetype kind = napi_undefined;
     napi_typeof(env, argv[4], &kind);
     if (kind == napi_string) {
-      size_t language_size = 0;
-      language = string_argument(env, argv[4], &language_size);
-      if (language && !language_size) {
-        free(language);
-        language = NULL;
+      language = string_argument(env, argv[4], NULL);
+      if (!language) {
+        free(query);
+        return fail(env, "out of memory");
       }
     }
   }

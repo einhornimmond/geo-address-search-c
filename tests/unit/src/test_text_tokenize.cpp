@@ -139,6 +139,12 @@ TEST_F(TextTokenizeTest, FoldsTheWholeLatinScript) {
   EXPECT_EQ(WholeWords(&tok, "Đà Nẵng"), (std::vector<std::string>{"da", "nang"})); // Vietnamese
   EXPECT_EQ(WholeWords(&tok, "Hồ"), (std::vector<std::string>{"ho"}));
   EXPECT_EQ(WholeWords(&tok, "Ɇ"), (std::vector<std::string>{"e"}));
+  // U+2C65 and U+2C66 are the lowercase of U+023A and U+023E: each pair has to
+  // fold to the same letter, though the two halves live in different blocks
+  EXPECT_EQ(WholeWords(&tok, "\u2C65"), (std::vector<std::string>{"a"}));
+  EXPECT_EQ(WholeWords(&tok, "\u2C65"), WholeWords(&tok, "\u023A"));
+  EXPECT_EQ(WholeWords(&tok, "\u2C66"), (std::vector<std::string>{"t"}));
+  EXPECT_EQ(WholeWords(&tok, "\u2C66"), WholeWords(&tok, "\u023E"));
 }
 
 TEST_F(TextTokenizeTest, TheTwoRomanianCommasMeet) {

@@ -343,10 +343,9 @@ hostmem_result geo_index_write(
   );
   if (result != HOSTMEM_SUCCESS) goto failed;
 
-  /* The languages and their readings go down last: a build that named one
-     language writes two empty sections here, and an older reader that never
-     heard of them would walk past two descriptors it does not know. */
-  /* A run is addressed by two uint32; a table beyond that would be written
+  /* The languages and their readings go down last, where a later format may
+     grow without moving anything in front of them.
+     A run is addressed by two uint32; a table beyond that would be written
      truncated and read as something else entirely. */
   if (documents->variant_count > UINT32_MAX || documents->language_count > GEO_LANGUAGE_MAX) {
     result = HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
@@ -604,8 +603,10 @@ hostmem_result geo_index_open(GeoIndex *index, const char *path) {
         header->variant_count * sizeof(GeoVariant), NULL
     );
     if (!languages || !variants) goto refused_dictionaries;
-    /* Every run must lie inside the table and every rank inside the dictionary;
-       both are checked here, once, rather than on every answer. */
+    /* Every run must lie inside the variant table; that is checked here, once,
+       rather than on every answer.  The ranks a variant carries are not looked
+       at — geo_dictionary_word() refuses one past the end when the answer asks
+       for it. */
     for (uint64_t l = 0; l < header->language_count; ++l) {
       uint64_t start = languages[l].start;
       uint64_t count = languages[l].count;

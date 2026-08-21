@@ -338,8 +338,11 @@ uint32_t doc_set_find_street(
  *  @param[in]  collector_count  Number of collectors; 0 yields an empty set, and 64 is
  *                               the most that may be joined at once.
  *  @param[in]  word_count       Words in the dictionary the postings refer to.
- *  @param[in]  language_count   Languages beside the default one; 0 leaves the
- *                               variant table empty and costs nothing.
+ *  @param[in]  language_count   The whole language list of the build, the default
+ *                               one at place 0 included; a reading numbered at or
+ *                               above it belongs to no language of this build and is
+ *                               passed over.  0 leaves the variant table empty and
+ *                               costs nothing.
  *  @retval HOSTMEM_SUCCESS            The set is joined and owns its arrays.
  *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
  *  @retval HOSTMEM_ERROR_INVALID_PARAM @p collector_count is above 64 — one per parser

@@ -112,7 +112,9 @@ typedef struct GeoClientInfo {
   uint64_t spellings; /**< Written forms in the display dictionary. */
   uint64_t postings;  /**< Word-to-place connections. */
   uint32_t format;    /**< Format version of the file. */
-  uint32_t languages; /**< Readings the index holds; 1 means the default alone. */
+  uint32_t languages; /**< Readings the index holds: 1 means the default alone, and 0 that
+                           the file carries no language table, in which case not even
+                           number 0 may be asked of geo_client_language(). */
 } GeoClientInfo;
 
 /**
@@ -151,16 +153,20 @@ GeoStatus geo_client_info(const GeoClient *client, GeoClientInfo *out);
 /**
  * @brief The tag of the index's @p number-th language.
  *
- *  Walked from 0 to @c GeoClientInfo::languages, this names every value
+ *  Walked from 0 up to @c GeoClientInfo::languages, this names every value
  *  @c GeoSearchOptions::language may usefully take.  Number 0 is the default —
- *  the reading an answer shows when nothing is asked for.
+ *  the reading an answer shows when nothing is asked for.  An index whose
+ *  @c GeoClientInfo::languages is 0 holds no language table and has no number 0
+ *  either: every number is then past the end, and the walk makes no step.
  *
  *  @param[in]  client  Opened client; must not be NULL.
  *  @param[in]  number  Which language, counted from 0.
- *  @param[out] out     Receives the tag, NUL-terminated.
- *  @param[in]  size    Capacity of @p out; @ref GEO_CLIENT_LANGUAGE_MAX is always enough.
- *  @return GEO_OK, GEO_ERROR_ARGUMENT for a NULL or a number past the end, or
- *          GEO_ERROR_FORMAT when the tag does not fit @p out.
+ *  @param[out] out     Receives the tag, NUL-terminated; must not be NULL.
+ *  @param[in]  size    Capacity of @p out, at least 1; @ref GEO_CLIENT_LANGUAGE_MAX is
+ *                      always enough.
+ *  @return GEO_OK, GEO_ERROR_ARGUMENT when @p client or @p out is NULL, @p size is 0 or
+ *          @p number is past the end, or GEO_ERROR_FORMAT when the tag does not fit
+ *          @p out.
  */
 GeoStatus geo_client_language(
     const GeoClient *client, size_t number, char *out, size_t size

@@ -322,6 +322,14 @@ static FoldKind fold_code(uint32_t code, int german, char *out, size_t *written,
     return FOLD_TEXT;
   }
 
+  /* --- Latin Extended-C holds the lowercase of two letters whose capitals live
+         in Extended-B: Ⱥ and Ⱦ fold to a and t there, and their small forms
+         must fold with them. --- */
+  if (code == 0x2C65 || code == 0x2C66) { /* ⱥ ⱦ */
+    out[(*written)++] = code == 0x2C65 ? 'a' : 't';
+    return FOLD_TEXT;
+  }
+
   /* --- Typographic ligatures: what a typesetter joined, a keyboard parts --- */
   if (code >= 0xFB00 && code <= 0xFB06) {
     static const char *const LIGATURES[] = {"ff", "fi", "fl", "ffi", "ffl", "st", "st"};

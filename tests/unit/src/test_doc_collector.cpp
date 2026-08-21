@@ -325,9 +325,12 @@ TEST(DocCollectorVariants, EveryLanguagesRunIsAscendingByDocument) {
   ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
   uint32_t number = 0;
   for (uint32_t i = 0; i < 5; ++i) {
-    GeoDocument d = Doc(10 + i);
+    /* The names descend, and the merge numbers documents by ascending name: the
+       document a reading hangs on therefore falls as the readings are collected.
+       Handed over in ascending order the run would come out sorted by itself and
+       the test would hold even if the merge never sorted at all. */
+    GeoDocument d = Doc(14 - i);
     ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
-    /* deliberately out of order, so the ordering is the merge's work and not the caller's */
     ASSERT_EQ(doc_collector_add_variant(&collector, 1, 100 + i, GEO_RANK_NONE), HOSTMEM_SUCCESS);
   }
 

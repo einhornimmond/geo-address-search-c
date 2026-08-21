@@ -57,9 +57,11 @@ static char lowered(char c) {
 /**
  * @brief A language tag as one number — its length, then its letters.
  *
- *  Two tags are the same exactly when their numbers are.  A tag longer than
- *  seven bytes has no number and yields 0, which matches nothing: the parser
- *  refuses such a tag on the way in, so nothing that reaches here has one.
+ *  Two tags are the same exactly when their numbers are.  An empty tag, or one
+ *  of seven bytes or more, has no number and yields 0.  That answer is used,
+ *  not merely guarded against: the tags a dump key carries reach here unchecked
+ *  through photon_languages_hold() and languages_hold_word(), where 0 equals no
+ *  stored number and the key is passed over.
  */
 static uint64_t tag_word(const char *tag, size_t size) {
   if (!size || size >= PHOTON_LANGUAGE_TAG_MAX) return 0;

@@ -180,8 +180,8 @@ hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *st
  *  Asked before a stale cache is removed, so the wait can be announced instead
  *  of merely endured: unlinking thirty gigabytes takes seconds, and a silent
  *  pause in front of a build that is otherwise all progress lines reads as a
- *  hang.  Reaches as wide as place_cache_discard() does, so what it counts is
- *  what will go.
+ *  hang.  Counts @ref PLACE_CACHE_THREADS_MAX files wide, the same range
+ *  place_cache_discard() always reaches, so what it counts is what will go.
  *
  *  @param[in] directory  Where a cache might lie; NULL yields 0.
  *  @return Bytes the files hold together; 0 when there is nothing to remove.

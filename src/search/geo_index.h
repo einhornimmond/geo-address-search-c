@@ -26,8 +26,10 @@
  *  [ variants        ] localized readings, by language then by document
  *  @endcode
  *
- *  The last two are empty in a build that asked for one language, which is why
- *  they sit at the end and cost such a build nothing but two descriptors.
+ *  A build that asked for one language writes that one language record and no
+ *  readings at all: the default reading lives in the document itself, so the
+ *  variants section stays empty.  That is why the two sit at the end and cost
+ *  such a build nothing but two descriptors and sixteen bytes.
  *
  *  Two dictionaries, because the two jobs disagree: a query types
  *  *muenchen* and an answer must read *München*.  Folded words are shared far
@@ -153,7 +155,8 @@ typedef struct GeoIndexHeader {
   uint64_t posting_count;       /**< Word-to-document connections. */
   uint64_t house_count;         /**< House numbers hanging on the streets. */
   uint64_t total_terms;         /**< Terms seen while building — reporting only. */
-  uint64_t language_count;      /**< Languages beside the default reading. */
+  uint64_t language_count;      /**< Languages of the build, the default one at place 0
+                                     included; also the records in the language section. */
   uint64_t variant_count;       /**< Localized readings held for them. */
 } GeoIndexHeader;
 
@@ -222,8 +225,9 @@ typedef struct GeoIndex {
  *                          NULL where there are none.
  *  @param[in] total_terms  Terms seen while building, kept for the report.
  *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
- *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB or the
- *          localized readings outgrow what a uint32 addresses,
+ *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB, the
+ *          localized readings outgrow what a uint32 addresses or @p documents
+ *          counts more than @ref GEO_LANGUAGE_MAX languages,
  *          HOSTMEM_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
  *          HOSTMEM_ERROR_ENCODE_FAILED when the file could not be written.
  *
