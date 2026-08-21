@@ -1,6 +1,6 @@
 # geo-address-search-c
 
-**Warning It is nearly entirly vibe-coded (written by AI), and especially the autocomplete feature is far from photon's prediction accuracy. **
+**Warning It is nearly entirly vibe-coded (written by AI), and especially the autocomplete feature is far from photon's prediction accuracy.**
 
 Reads a compressed [Photon](https://github.com/komoot/photon) dump, builds a search index
 for postal addresses from it, and writes it as a binary file that later runs are merely
