@@ -206,13 +206,37 @@ and the layer costs nothing; the first pass over a dump runs about a sixth faste
 without it. The price is a slower link, which is why `zig build` on its own keeps the
 plain path.
 
-Dependencies are fetched by the Zig build system:
-[zstd](https://github.com/facebook/zstd),
-[arnm](https://github.com/gradido/arnm) (bucket vector, arena allocator, JSON
-reader and writer, number conversion, timer) and
-[CRoaring](https://github.com/RoaringBitmap/CRoaring) (vendored).
+**There are no git submodules.** A clone is a clone: `git clone` and `zig build`, nothing
+in between.
+
+Two dependencies are fetched by the Zig build system, pinned by hash in `build.zig.zon`:
+[zstd](https://github.com/facebook/zstd) and
+[arnm](https://github.com/gradido/arnm) (bucket vector, arena allocator, JSON reader and
+writer, number conversion, timer). The third,
+[CRoaring](https://github.com/RoaringBitmap/CRoaring), is vendored as the two files its
+`amalgamation.sh` writes — `third_party/CRoaring/roaring.c` and `roaring.h`, 1.2 MB, with
+their provenance recorded in [the README beside them](third_party/CRoaring/README.md).
+
+That last one is why this package can be a dependency at all: `zig fetch` takes a
+repository tree and nothing under it, so a submodule arrives at a consumer as an empty
+directory and the build fails three layers down. `third_party` is named in `.paths` and
+travels with the package.
 
 Requirements: Zig ≥ 0.15.1, pthreads, Linux.
+
+### As a dependency
+
+```sh
+zig fetch --save git+https://github.com/gradido/geo-address-search-c
+```
+
+```zig
+const geoindex = b.dependency("geo_address_search_c", .{ .target = target, .optimize = optimize });
+exe.linkLibrary(geoindex.artifact("geoindex"));   // then #include <geoindex/client.h>
+```
+
+`geoindex` is the reading library — open, search, close. The builder is an executable of
+this package and not something a consumer links.
 
 ## Embedding
 
@@ -255,8 +279,8 @@ NUL-terminated.
 The library links against arnm: `geo_index.h` names `arnm_result` in its headers and
 `client.c` writes its JSON numbers with arnm's converter rather than carrying a second
 copy of one. Five files of our own are compiled — `client.c`, `geo_cell.c`, `geo_index.c`,
-`prefix_tree.c` and `text_tokenize.c` — and beside them `roaring.c`, vendored from CRoaring
-and built with its own flags.
+`prefix_tree.c` and `text_tokenize.c` — and beside them `roaring.c`, the CRoaring
+amalgamation vendored under `third_party/`.
 
 ### From other languages
 
@@ -346,7 +370,7 @@ entries.
 ```
 
 The postings are Roaring bitmaps ([CRoaring](https://github.com/RoaringBitmap/CRoaring),
-vendored): a word standing on millions of places then costs a bit per place instead of
+vendored as two files): a word standing on millions of places then costs a bit per place instead of
 four bytes, and asking whether one of them is *this* place is a bit test instead of a
 walk through gigabytes. The *frozen* format is the memory image itself — nothing is
 decoded when the file opens, a bitmap is viewed where it lies.
@@ -372,7 +396,7 @@ specification, plus a `@whisper` line where one fits.
 
 ## Releases
 
-Version 1.2.0. What each release changed, and what it asks of a build that had the one
+Version 1.2.1. What each release changed, and what it asks of a build that had the one
 before it, is in [CHANGELOG.md](CHANGELOG.md). The number lives in `build.zig.zon` and,
 a second time, in `Doxyfile`.
 
@@ -382,4 +406,6 @@ where it does.
 
 ## License
 
-See the license files in `third_party/` for the vendored dependencies.
+CRoaring is vendored under `third_party/CRoaring/` and carries its own `LICENSE` there,
+dual Apache-2.0 / MIT. zstd and arnm are fetched rather than vendored and carry their
+licenses in their own trees.
