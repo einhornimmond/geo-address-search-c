@@ -65,7 +65,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <roaring/roaring.h>
+#include <roaring.h>
 
 #include "arnm/result.h"
 #include "search/doc_collector.h"

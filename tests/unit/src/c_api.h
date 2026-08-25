@@ -21,7 +21,7 @@
    asks for <atomic>, whose templates cannot stand inside a linkage block.  So
    they are taken first, in the open; by the time the project's own headers ask
    for them again, their include guards make it a no-op. */
-#include <roaring/roaring.h>
+#include <roaring.h>
 
 #include "arnm/memory.h"
 #include "arnm/result.h"

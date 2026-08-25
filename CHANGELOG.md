@@ -14,6 +14,54 @@ build is affected by it, not because a program that links the library is.
 Entries before 1.2.0 were reconstructed from the git history after the fact, so they
 summarise what the commits show rather than what was noted at the time.
 
+1.2.0 is tagged but cannot be fetched as a Zig package; 1.2.1 is the first that can.
+
+## 1.2.1 -- 2026-08-25
+
+1.2.0 could not be fetched. `zig fetch` takes a repository tree and nothing under it, so the
+four git submodules reached a consumer as four empty directories and the build failed three
+layers down on a header that was not there — whatever `build.zig` said about it. Nothing an
+index or a query does changes here; what changes is whether a project that depends on this
+one gets something it can build.
+
+### Changed
+
+- **There are no git submodules.** All four are gone and `.gitmodules` with them, so a clone
+  is `git clone` and `zig build` with nothing in between. `third_party` went from 314 MB to
+  1.3 MB.
+  - **CRoaring is the two files its `amalgamation.sh` writes** — `roaring.c` and `roaring.h`,
+    byte-identical to what the pinned checkout produced — beside the `LICENSE` and a README
+    recording version 4.7.2, upstream commit `2e8395f1` and the three commands that move it
+    to a newer release. The whole repository was carried for those two files. Upstream's
+    build files, tests, benchmarks, fuzzers, the C++ wrapper and the split headers under
+    `include/` are all absent, which is why `<roaring/roaring.h>` is now `<roaring.h>` —
+    an include of `search/geo_index.h`, which is not a header this package installs.
+  - **zstd left.** It had been a Zig dependency in `build.zig.zon` all along; the submodule
+    beside it was never named by `build.zig`.
+  - **stb and tiny-json left**, used by nothing. stb still had two include paths in
+    `build.zig` and tiny-json did not even have that.
+- **`third_party` is named in `.paths`,** so it travels with the package. It was not there
+  before, so even without submodules the fetched tree would have arrived without CRoaring.
+- **`CROARING_COMPILER_SUPPORTS_AVX512` is set on every unit that reads `roaring.h`,** not
+  only on the one that compiles `roaring.c`. The amalgamated header carries CRoaring's
+  internals and picks its own default where nobody names one, so a unit reading it under a
+  different answer than the library was built with would disagree with it about what is
+  inside a bitmap — harmless so far, and the kind of disagreement that surfaces later as a
+  bitmap that makes no sense. `addRoaring()` and `addRoaringHeader()` in `build.zig` are the
+  one place that decides it now.
+
+### Notes
+
+- **A consumer has to fetch this version anew.** `.paths` decides what a package contains and
+  therefore what it hashes to, so the hash of 1.2.1 is not the hash of 1.2.0 — which could
+  not have been used in any case.
+- Verified by extracting the tracked tree into a directory with no `.git`, building it there
+  with `-Dtests=true` and running the suite, then building a separate consumer project
+  against it through `b.dependency("geo_address_search_c", …).artifact("geoindex")` and
+  running what came out.
+- The library's own behaviour is untouched: `./test_all.sh --clean` passes the same 328 tests
+  in all four optimisation modes, and a built index answers the same queries.
+
 ## 1.2.0 -- 2026-08-25
 
 The JSON half of the program moved onto [arnm](https://github.com/gradido/arnm), which now

@@ -44,6 +44,36 @@ const unit_tests = [_][]const u8{
     "test_text_tokenize",
 };
 
+/// Give @p compile the CRoaring amalgamation: the one header on its include path and the
+/// one source compiled into it.
+///
+/// @p disable_avx512 goes on the module rather than on the source, because `roaring.h`
+/// reads it too — it is the amalgamation of every CRoaring header, internals included, and
+/// it picks its own default where nobody names one. A unit that read the header under a
+/// different answer than the one `roaring.c` was built with would disagree with it about
+/// what is inside a bitmap.
+fn addRoaring(
+    compile: *std.Build.Step.Compile,
+    b: *std.Build,
+    disable_avx512: bool,
+    flags: []const []const u8,
+) void {
+    addRoaringHeader(compile, b, disable_avx512);
+    compile.addCSourceFiles(.{
+        .root = b.path("third_party/CRoaring"),
+        .files = &.{"roaring.c"},
+        .flags = flags,
+    });
+}
+
+/// The header alone, for a unit that links the compiled source from somewhere else.
+fn addRoaringHeader(compile: *std.Build.Step.Compile, b: *std.Build, disable_avx512: bool) void {
+    if (disable_avx512) {
+        compile.root_module.addCMacro("CROARING_COMPILER_SUPPORTS_AVX512", "0");
+    }
+    compile.addIncludePath(b.path("third_party/CRoaring"));
+}
+
 pub fn build(b: *std.Build) !void {
     // A bare `zig build` would compile for "native" and reach into /usr/include,
     // which needs kernel headers this project does not otherwise depend on.
@@ -82,13 +112,6 @@ pub fn build(b: *std.Build) !void {
     const arnm = b.dependency("arnm", .{ .target = target, .optimize = optimize });
     arnm.artifact("arnm").want_lto = lto;
 
-    // CRoaring is compiled by both artifacts, with the same flags
-    var roaring_flags: std.ArrayList([]const u8) = .empty;
-    try roaring_flags.appendSlice(b.allocator, c_flags);
-    if (disable_avx512) {
-        try roaring_flags.append(b.allocator, "-DCROARING_COMPILER_SUPPORTS_AVX512=0");
-    }
-
     // =====================================================================
     //  Client library: open and search
     // =====================================================================
@@ -112,12 +135,7 @@ pub fn build(b: *std.Build) !void {
     lib.linkLibrary(arnm.artifact("arnm"));
     lib.addIncludePath(b.path("src"));
     lib.addIncludePath(arnm.path("include"));
-    lib.addIncludePath(b.path("third_party/CRoaring/include"));
-    lib.addCSourceFiles(.{
-        .root = b.path("third_party/CRoaring"),
-        .files = &.{"roaring.c"},
-        .flags = roaring_flags.items,
-    });
+    addRoaring(lib, b, disable_avx512, c_flags);
     lib.addCSourceFiles(.{
         .root = b.path("src"),
         .files = &client_sources,
@@ -161,12 +179,7 @@ pub fn build(b: *std.Build) !void {
     addon.addIncludePath(b.path("src"));
     addon.linkLibrary(arnm.artifact("arnm"));
     addon.addIncludePath(arnm.path("include"));
-    addon.addIncludePath(b.path("third_party/CRoaring/include"));
-    addon.addCSourceFiles(.{
-        .root = b.path("third_party/CRoaring"),
-        .files = &.{"roaring.c"},
-        .flags = roaring_flags.items,
-    });
+    addRoaring(addon, b, disable_avx512, c_flags);
     addon.addCSourceFiles(.{
         .root = b.path("src"),
         .files = &client_sources,
@@ -215,13 +228,7 @@ pub fn build(b: *std.Build) !void {
     core.linkLibrary(arnm.artifact("arnm"));
     core.addIncludePath(b.path("src"));
     core.addIncludePath(arnm.path("include"));
-    core.addIncludePath(b.path("third_party/stb"));
-    core.addIncludePath(b.path("third_party/CRoaring/include"));
-    core.addCSourceFiles(.{
-        .root = b.path("third_party/CRoaring"),
-        .files = &.{"roaring.c"},
-        .flags = roaring_flags.items,
-    });
+    addRoaring(core, b, disable_avx512, c_flags);
     // main.c stays out: it carries an entry point, and the tests bring their
     // own through gtest_main.
     try addDirSources(core, b, "src", c_flags, &.{"main.c"});
@@ -247,8 +254,7 @@ pub fn build(b: *std.Build) !void {
     exe.linkLibrary(zstd.artifact("zstd"));
     exe.addIncludePath(b.path("src"));
     exe.addIncludePath(arnm.path("include"));
-    exe.addIncludePath(b.path("third_party/stb"));
-    exe.addIncludePath(b.path("third_party/CRoaring/include"));
+    addRoaringHeader(exe, b, disable_avx512);
     exe.addCSourceFiles(.{
         .root = b.path("src"),
         .files = &.{"main.c"},
@@ -299,7 +305,7 @@ pub fn build(b: *std.Build) !void {
             t.addIncludePath(b.path("src"));
             t.addIncludePath(b.path("tests/unit/src"));
             t.addIncludePath(arnm.path("include"));
-            t.addIncludePath(b.path("third_party/CRoaring/include"));
+            addRoaringHeader(t, b, disable_avx512);
             // No -cflags here on purpose: Zig appends the resolved target triple
             // to that group, and the glibc-versioned form it produces is one
             // clang++ refuses to parse. The language comes from the extension.
