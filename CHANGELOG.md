@@ -14,7 +14,48 @@ build is affected by it, not because a program that links the library is.
 Entries before 1.2.0 were reconstructed from the git history after the fact, so they
 summarise what the commits show rather than what was noted at the time.
 
-1.2.0 is tagged but cannot be fetched as a Zig package; 1.2.1 is the first that can.
+1.2.0 is tagged but cannot be fetched as a Zig package; 1.2.1 is the first that can, and
+1.2.2 the first that builds once fetched.
+
+## 1.2.2 -- 2026-08-25
+
+`build.zig` looked for `src/` in the working directory rather than in its own, which is the
+same directory for a build of this repository and a different one for every build that
+depends on it. Nothing an index or a query does changes here.
+
+### Fixed
+
+- **A build run as a dependency finds its own sources.** `addDirSources` walked `src/`
+  through `std.fs.cwd()` to collect its file names, and handed them to `addCSourceFiles`
+  with `b.path("src")` as their root. `zig build` never changes directory, so for a package
+  resolved as a dependency the two halves came from different projects: the names from the
+  *consumer's* `src/`, the root from ours. The one word that fixes it is
+  `b.build_root.handle`, which is how `addRoaring()` and every `b.path()` beside it already
+  resolve.
+  - A consumer with no `src/` of its own got `error.FileNotFound` from a directory in the
+    wrong project, at the moment the package was resolved — before a single file of this one
+    was compiled, whatever it had asked the package for.
+  - A consumer *with* a `src/` got a `core` built from a file list that was neither
+    project's: a name the consumer had and we do not failed as `FileNotFound` under our
+    `src/`, and a file of ours the consumer had no name for was left out of the library
+    without a word.
+  - Neither reached anyone linking the `geoindex` client, which names its five sources
+    explicitly and never calls `addDirSources`, and which is what leaves `core` out of the
+    graph entirely. The builder is `core` plus `main.c`, so it got the full weight of it.
+  - Both together are why 1.2.1 was verified as fetchable and still was not: the consumer it
+    was tried against had a `src/` and linked the client, which is the one combination that
+    says nothing.
+
+### Notes
+
+- The version is the only thing a consumer of 1.2.1 has to change; `.paths`, the file
+  format, `client.h` and every artifact this builds are untouched.
+- Verified by extracting the tracked tree into a directory with no `.git`, building it
+  there, and then resolving it as a `.path` dependency from three consumer projects: one
+  with no `src/` and one with, both linking `geoindex`, and a third with a `src/` holding a
+  file that is not C at all, linking the builder. All three build and run. With the old line
+  restored, the first panics, the second builds for the wrong reason, and the third fails
+  naming `src/intruder.c` under *this* package's `src/`, where nothing of the sort exists.
 
 ## 1.2.1 -- 2026-08-25
 

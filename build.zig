@@ -351,7 +351,13 @@ fn addDirSources(
     flags: []const []const u8,
     skip: []const []const u8,
 ) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
+    // The package's own directory, not the working directory.  `zig build`
+    // never changes directory, so for a build run as a *dependency* the two are
+    // different, and reading the names here through `std.fs.cwd()` while the
+    // root below stays `b.path(root)` takes the two halves of the file list
+    // from two different projects: the consumer's names under our directory.
+    // A consumer without the directory at all does not even get that far.
+    var dir = try b.build_root.handle.openDir(root, .{ .iterate = true });
     defer dir.close();
 
     var walker = try dir.walk(b.allocator);
