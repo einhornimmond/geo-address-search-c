@@ -39,11 +39,12 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include "arnm/result.h"
 #include "arnm/bucket_vector.h"
+#include "arnm/result.h"
 
 /** Marks a display field the entry did not carry. */
 #define GEO_RANK_NONE UINT32_MAX
@@ -103,21 +104,45 @@ typedef struct GeoVariantRecord {
 } GeoVariantRecord;
 
 /* A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY (8191) buckets, so the
- * exponent alone decides how much one thread can gather: 2^log2 × 8191 elements.  The
- * figures below are chosen against the planet dump — 34.7 M documents, some 139 M word
- * postings — so that a single-threaded build still fits, not merely a four-threaded one. */
+ * exponent alone decides how much *one thread* can gather: 2^log2 × 8191 elements, and 15
+ * is the largest exponent arnm takes.  268 402 688 is therefore the ceiling of any of
+ * these vectors, whatever is written below.
+ *
+ * What a planet dump asks for, measured on the 2026 master dump with 32 languages:
+ * 64.1 M segments, 1.88 G word postings before the merge — 29.4 per segment, because the
+ * dump repeats the whole address chain on every entry and every language multiplies it.
+ * Divided by the parser threads, and the postings are what runs out first: six threads
+ * ask 314 M of @ref GEO_WORD_VEC_BUCKET_LOG2 and are refused, eight ask 235 M and fit.
+ *
+ * So all four sit at the ceiling now.  Only the bucket size differs, and a partly filled
+ * last bucket per thread is all it costs — under a megabyte against a build that holds
+ * gigabytes.  There is nothing left to raise here: a dump that outgrows this needs more
+ * threads, or a bucket vector that counts its buckets in more than a uint16.
+ * @see doc_collector_limit(), which names the vector that refused. */
 
-/** Documents of one thread — 8192 per bucket, 192 KiB; ceiling 67 M records. */
-#define GEO_DOCUMENT_VEC_BUCKET_LOG2 13
+/** Documents of one thread — 32768 per bucket, 768 KiB; ceiling 268 M records. */
+#define GEO_DOCUMENT_VEC_BUCKET_LOG2 15
 
-/** Localized readings of one thread — 8192 per bucket, 128 KiB; ceiling 67 M readings. */
-#define GEO_VARIANT_VEC_BUCKET_LOG2 13
+/** Localized readings of one thread — 32768 per bucket, 512 KiB; ceiling 268 M readings. */
+#define GEO_VARIANT_VEC_BUCKET_LOG2 15
 
 /** Word ranks of one thread — 32768 per bucket, 128 KiB; ceiling 268 M postings. */
 #define GEO_WORD_VEC_BUCKET_LOG2 15
 
-/** Where each document's words begin — 8192 per bucket, 32 KiB; ceiling 67 M documents. */
-#define GEO_START_VEC_BUCKET_LOG2 13
+/** Where each document's words begin — 32768 per bucket, 128 KiB; ceiling 268 M documents. */
+#define GEO_START_VEC_BUCKET_LOG2 15
+
+/** Elements one of these vectors can ever hold.
+ *
+ *  Not quite the bucket cap times the bucket size: the index array grows a fixed number
+ *  of slots at a time and stops at the last step that still fits under the cap, so the
+ *  buckets a vector really reaches are the cap rounded down to that step — 8184 of them
+ *  rather than 8191, and 268 173 312 elements rather than 268 402 688.  Measured against
+ *  a real collector, which refuses at exactly this number. */
+#define GEO_VEC_CEILING                                                                            \
+  ((((size_t)ARNM_BVEC_MAX_INDEX_CAPACITY / ARNM_BVEC_DEFAULT_INDEX_GROW_STEP_SIZE) *              \
+    ARNM_BVEC_DEFAULT_INDEX_GROW_STEP_SIZE)                                                        \
+   << 15)
 
 /** Documents of one thread. */
 ARNM_BVEC_DEFINE(geo_document_vec, GeoDocument)
@@ -173,6 +198,19 @@ typedef struct GeoStreetKey {
  *  halves what a connection costs while it is being gathered, and it is by far
  *  the largest thing in memory when the threads are joined.
  */
+/**
+ * @brief The vector that ran out of buckets, and what it held when it did.
+ *
+ *  A refusal comes back as @c ARNM_ERROR_ARITHMETIC_OVERFLOW, which on its own says
+ *  only that some counter would not stretch.  This says which vector it was and how
+ *  far it got — the difference between a number to look up and a decision to make.
+ */
+typedef struct CollectorLimit {
+  const char *vector; /**< Name of the vector, or NULL while none has refused. */
+  size_t held;        /**< Elements it held at the refusal. */
+  size_t ceiling;     /**< Elements it can ever hold. */
+} CollectorLimit;
+
 typedef struct DocCollector {
   arnm_bvec documents;            /**< One record per place this thread met. */
   arnm_bvec variants;             /**< Localized readings, pointing back at those records. */
@@ -182,7 +220,21 @@ typedef struct DocCollector {
   uint64_t dropped_doubles;       /**< Repetitions of a word within one document. */
   uint32_t seen[POSTING_RUN_MAX]; /**< Words of the open document so far. */
   size_t seen_count;              /**< How many of @c seen are filled. */
+  CollectorLimit limit;           /**< The first vector to run out, if one did. */
 } DocCollector;
+
+/**
+ * @brief Which vector ran out of buckets, if one did.
+ *
+ *  Only the first is kept: what fills after it is a consequence, and the first one is
+ *  the one to size the build by.
+ *
+ *  @param[in]  collector  Collector to ask; NULL answers false.
+ *  @param[out] out        Receives the vector, what it held and what it holds; may be NULL.
+ *  @return true when a vector refused — which is exactly when a collect call answered
+ *          @c ARNM_ERROR_ARITHMETIC_OVERFLOW.
+ */
+bool doc_collector_limit(const DocCollector *collector, CollectorLimit *out);
 
 /**
  * @brief Prepare an empty collector.
@@ -263,17 +315,17 @@ size_t doc_collector_posting_count(const DocCollector *collector);
  *  empty range, which costs one number and keeps the lookup a single index.
  */
 typedef struct DocSet {
-  GeoDocument *documents;    /**< Every document of every thread, renumbered into one range. */
-  size_t document_count;     /**< Entries in @c documents. */
-  size_t segment_count;      /**< Records before segments were merged. */
-  uint32_t *postings;        /**< Document numbers, grouped by the word that names them. */
-  size_t posting_count;      /**< Entries in @c postings. */
-  uint32_t *posting_offsets; /**< Where each word's group begins; @c word_count + 1 of them. */
-  size_t word_count;         /**< Words the offsets cover. */
-  GeoStreetKey *streets;     /**< Street keys, ascending, for the houses to find. */
-  size_t street_count;       /**< Entries in @c streets. */
-  GeoVariant *variants;      /**< Localized readings, ascending by language then document. */
-  size_t variant_count;      /**< Entries in @c variants. */
+  GeoDocument *documents;     /**< Every document of every thread, renumbered into one range. */
+  size_t document_count;      /**< Entries in @c documents. */
+  size_t segment_count;       /**< Records before segments were merged. */
+  uint32_t *postings;         /**< Document numbers, grouped by the word that names them. */
+  size_t posting_count;       /**< Entries in @c postings. */
+  uint32_t *posting_offsets;  /**< Where each word's group begins; @c word_count + 1 of them. */
+  size_t word_count;          /**< Words the offsets cover. */
+  GeoStreetKey *streets;      /**< Street keys, ascending, for the houses to find. */
+  size_t street_count;        /**< Entries in @c streets. */
+  GeoVariant *variants;       /**< Localized readings, ascending by language then document. */
+  size_t variant_count;       /**< Entries in @c variants. */
   uint32_t *language_offsets; /**< Where each language's run begins; @c language_count + 1. */
   size_t language_count;      /**< Languages the offsets cover. */
 } DocSet;

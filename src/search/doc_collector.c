@@ -12,11 +12,37 @@
  *  Per-thread collecting
  * ========================================================================= */
 
+/**
+ * @brief Keep the name of the vector that ran out of buckets, and pass @p result on.
+ *
+ *  Only @c ARNM_ERROR_ARITHMETIC_OVERFLOW is a ceiling; everything else that can come
+ *  back from a push is the allocator, and that says what it is on its own.  The first
+ *  refusal is the one kept — a vector that fills after another has already filled says
+ *  nothing about how the build should be sized.
+ */
+static arnm_result note_limit(
+    DocCollector *collector, arnm_result result, const char *vector, const arnm_bvec *vec
+) {
+  if (ARNM_ERROR_ARITHMETIC_OVERFLOW == result && !collector->limit.vector) {
+    collector->limit.vector = vector;
+    collector->limit.held = arnm_bvec_size(vec);
+    collector->limit.ceiling = GEO_VEC_CEILING;
+  }
+  return result;
+}
+
+bool doc_collector_limit(const DocCollector *collector, CollectorLimit *out) {
+  if (!collector || !collector->limit.vector) return false;
+  if (out) *out = collector->limit;
+  return true;
+}
+
 arnm_result doc_collector_init(DocCollector *collector) {
   if (!collector) return ARNM_ERROR_NULL_POINTER;
   collector->dropped_words = 0;
   collector->dropped_doubles = 0;
   collector->seen_count = 0;
+  collector->limit = (CollectorLimit){NULL, 0, 0};
   arnm_result result =
       geo_document_vec_init(&collector->documents, GEO_DOCUMENT_VEC_BUCKET_LOG2, 0, NULL);
   if (result != ARNM_SUCCESS) return result;
@@ -43,10 +69,16 @@ arnm_result doc_collector_add_document(
   size_t number = geo_document_vec_size(&collector->documents);
 
   /* the words of this document begin where the words so far end */
-  arnm_result result =
-      geo_start_vec_push(&collector->starts, (uint32_t)geo_word_vec_size(&collector->words));
+  arnm_result result = note_limit(
+      collector,
+      geo_start_vec_push(&collector->starts, (uint32_t)geo_word_vec_size(&collector->words)),
+      "geo_start_vec", &collector->starts
+  );
   if (result != ARNM_SUCCESS) return result;
-  result = geo_document_vec_push_ptr(&collector->documents, document);
+  result = note_limit(
+      collector, geo_document_vec_push_ptr(&collector->documents, document), "geo_document_vec",
+      &collector->documents
+  );
   if (result != ARNM_SUCCESS) return result;
 
   collector->seen_count = 0; /* a fresh document has heard nothing yet */
@@ -68,7 +100,10 @@ arnm_result doc_collector_add_variant(
       .city_rank = city_rank,
       .language = language,
   };
-  return geo_variant_vec_push_ptr(&collector->variants, &reading);
+  return note_limit(
+      collector, geo_variant_vec_push_ptr(&collector->variants, &reading), "geo_variant_vec",
+      &collector->variants
+  );
 }
 
 arnm_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
@@ -83,7 +118,9 @@ arnm_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
   }
   if (collector->seen_count < POSTING_RUN_MAX) collector->seen[collector->seen_count++] = word;
 
-  return geo_word_vec_push(&collector->words, word);
+  return note_limit(
+      collector, geo_word_vec_push(&collector->words, word), "geo_word_vec", &collector->words
+  );
 }
 
 size_t doc_collector_document_count(const DocCollector *collector) {

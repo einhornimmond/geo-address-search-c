@@ -14,7 +14,7 @@ photon_dump.jsonl.zst  ──►  geo_address_search_c  ──►  index.gdx  �
 ## What it does
 
 1. **Decompresses and reads** the zstd-compressed dump as a stream.
-2. **Parses** every JSON line with [yyjson](https://github.com/ibireme/yyjson) and splits
+2. **Parses** every JSON line with [arnm](https://github.com/gradido/arnm)'s JSON reader and splits
    each entry in two: the fields an answer shows (street, house number, postal code,
    town, coordinate, `importance`), and the role-free text a query may match.
 3. **Folds and splits** that text: lower case, diacritics over the whole Latin script
@@ -69,6 +69,31 @@ geo_address_search_c planet.gdx
 geo_address_search_c planet.gdx "Berlin, Superstr. 8"
 geo_address_search_c planet.gdx "15328 Bleyen" 5
 ```
+
+### Parser threads and what one of them can hold
+
+The third argument is the parser thread count, 1 to 10, and on a planet dump it is not only
+a speed knob. Each thread gathers its own postings into one bucket vector, and a bucket
+vector addresses **268 173 312** entries — arnm counts its buckets in a `uint16`, so no
+setting raises that. The postings of a build are roughly the word occurrences the first
+pass reports, and they are divided by the thread count.
+
+The 2026 planet dump with 32 languages counts 1.87 G word occurrences, so it needs **at
+least 8 threads**; four or six are refused. The refusal comes right after the first pass,
+with the figure and the number of threads to use, rather than from a thread halfway
+through the second:
+
+```
+This dump needs more parser threads than 6.
+
+The first pass counted 1871283249 word occurrences, and every one of them becomes a
+posting in the second. ...
+Build again with at least 8 as the third argument.
+```
+
+Languages are the other half of that arithmetic: each one carries the whole address chain
+of every entry into the term stream again. Fewer languages, fewer postings, fewer threads
+needed.
 
 ### Languages
 
@@ -174,11 +199,18 @@ target Zig compiles for and produced artifacts that abort with "illegal instruct
 foreign machines. To compile for your own machine use `-Dcpu=native`; for shipped modules
 the baseline target stays. CRoaring picks its SIMD paths at runtime regardless.
 
+Every release build links with **LTO**, the debug build does not. The JSON reader the
+parser sits on is a thin layer over the parser inside arnm — one call per key, one per
+value — and across a library boundary those calls stay calls. With LTO they are inlined
+and the layer costs nothing; the first pass over a dump runs about a sixth faster than
+without it. The price is a slower link, which is why `zig build` on its own keeps the
+plain path.
+
 Dependencies are fetched by the Zig build system:
 [zstd](https://github.com/facebook/zstd),
-[arnm](https://github.com/gradido/arnm) (bucket vector, arena allocator,
-number conversion, timer), [yyjson](https://github.com/ibireme/yyjson) and
-[CRoaring](https://github.com/RoaringBitmap/CRoaring) (both vendored).
+[arnm](https://github.com/gradido/arnm) (bucket vector, arena allocator, JSON
+reader and writer, number conversion, timer) and
+[CRoaring](https://github.com/RoaringBitmap/CRoaring) (vendored).
 
 Requirements: Zig ≥ 0.15.1, pthreads, Linux.
 
@@ -262,7 +294,7 @@ Details in [bindings/bun/README.md](bindings/bun/README.md) and
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
 │  main thread │────►│  ParseQueue  │────►│ parser threads │
-│  zstd stream │     │  (bounded)   │     │ yyjson + fold  │
+│  zstd stream │     │  (bounded)   │     │  parse + fold  │
 └──────────────┘     └──────────────┘     └────────┬───────┘
                                                    │ each thread sorts its own
                                           ┌────────▼────────┐

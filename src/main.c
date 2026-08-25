@@ -688,6 +688,108 @@ static uint64_t file_bytes(void *user_data) {
 }
 
 /**
+ * @brief End the build on a collector that ran out of buckets, saying which one.
+ *
+ *  A per-thread vector holds @ref GEO_VEC_CEILING elements and no more — the bucket
+ *  index inside arnm is a uint16, so no exponent buys another one.  What divides the
+ *  work is the parser thread count, and the figure needed to choose it is exactly the
+ *  two numbers below: what the vector held, against what it holds.
+ *
+ *  @param what      The pass that was running, as it reads in the message.
+ *  @param thread    Which thread refused.
+ *  @param threads   How many were running.
+ *  @param limit     What house_collector_limit() or doc_collector_limit() answered.
+ *  @param result    The code the collector came back with.
+ */
+_Noreturn static void fatal_collector(
+    const char *what,
+    unsigned thread,
+    unsigned threads,
+    const CollectorLimit *limit,
+    arnm_result result
+) {
+  if (!limit->vector) {
+    fatal(
+        ERROR_MEMORY, "Parser thread %u failed to collect %s (arnm_result %d).", thread, what,
+        (int)result
+    );
+  }
+  /* One thread short of the ceiling means every thread is; the share each would carry
+     with one more thread is what says how many more are needed. */
+  const unsigned needed = (unsigned)((limit->held * threads + limit->ceiling - 1) / limit->ceiling);
+  fatal(
+      ERROR_MEMORY,
+      "Parser thread %u ran out of room for %s: %s holds %zu entries per thread and\n"
+      "this dump gave it more. That ceiling is fixed — a bucket vector addresses %zu\n"
+      "elements and no exponent buys another one.\n"
+      "\n"
+      "What divides the work is the thread count. You gave %u; this dump needs at\n"
+      "least %u. Pass a larger number as the third argument and build again — the\n"
+      "place cache is written per thread count, so it is filled afresh.",
+      thread, what, limit->vector, limit->ceiling, limit->ceiling, threads,
+      needed > threads ? needed : threads + 1
+  );
+}
+
+/** Parser threads a build may be given; the collectors are sized for this many. */
+#define PARSER_THREADS_MAX 10
+
+/**
+ * @brief Refuse a thread count the second pass could not hold, before it runs.
+ *
+ *  Every word the first pass saw becomes a posting in the second, and the postings of
+ *  one thread go into one bucket vector — @ref GEO_VEC_CEILING of them at the most.
+ *
+ *  The count is an upper bound on what the second pass produces: it tokenizes the same
+ *  texts and only drops repetitions inside a single document, so it can go down from
+ *  here and never up.  An eighth of the ceiling is left unclaimed on top of that,
+ *  because the threads take their work batch by batch and the busiest ends up with more
+ *  than the mean.  Being a thread too careful here costs a thread; being one too few
+ *  costs the whole second pass.
+ *
+ *  @param postings Word occurrences the first pass counted.
+ *  @param threads  Parser threads this build was given.
+ */
+static void refuse_too_few_threads(size_t postings, unsigned threads) {
+  if (!threads) return;
+  const size_t share = GEO_VEC_CEILING - GEO_VEC_CEILING / 8; /* room for the busiest thread */
+  const size_t per_thread = (postings + threads - 1) / threads;
+  if (per_thread <= share) return;
+
+  const size_t needed = (postings + share - 1) / share;
+  if (needed > PARSER_THREADS_MAX) {
+    fatal(
+        ERROR_MEMORY,
+        "This dump is past what this build can hold.\n"
+        "\n"
+        "The first pass counted %zu word occurrences. They become postings in the\n"
+        "second pass, where each thread keeps its own in one bucket vector of %zu\n"
+        "entries — so even %d threads, the most this program takes, would need about\n"
+        "%zu each.\n"
+        "\n"
+        "Fewer languages is the one lever from here: each one carries the whole address\n"
+        "chain of every entry into the term stream again, and dropping the ones you do\n"
+        "not search in takes the postings down with them.",
+        postings, (size_t)GEO_VEC_CEILING, PARSER_THREADS_MAX,
+        (postings + PARSER_THREADS_MAX - 1) / PARSER_THREADS_MAX
+    );
+  }
+  fatal(
+      ERROR_MEMORY,
+      "This dump needs more parser threads than %u.\n"
+      "\n"
+      "The first pass counted %zu word occurrences, and every one of them becomes a\n"
+      "posting in the second. The postings of one thread live in one bucket vector,\n"
+      "which holds %zu and no more — %u threads would each be given about %zu.\n"
+      "\n"
+      "Build again with at least %zu as the third argument. The place cache is written\n"
+      "per thread count, so it is filled afresh; everything else about the build is\n"
+      "unchanged.",
+      threads, postings, (size_t)GEO_VEC_CEILING, threads, per_thread, needed
+  );
+}
+
+/**
  * @brief Walk a compressed dump and leave a finished index behind.
  *
  *  The long way round: decompress, parse, fold, sort, merge, write.  Every
@@ -788,7 +890,7 @@ static int build_index(
     fatal(ERROR_MEMORY, "Failed to allocate streaming buffers.");
   }
 
-  pthread_t parser_threads[10];
+  pthread_t parser_threads[PARSER_THREADS_MAX];
   ParserThreadArgs parser_args[10] = {0};
   BufferPool buffer_pool;
 
@@ -948,6 +1050,14 @@ static int build_index(
       NAME_PREFIX_DEPTH, words.prefixes.levels, treeBytesBuffer
   );
 
+  /* --- can the second pass hold what the first one just counted? ---
+     Every word the first pass saw becomes a posting in the second, and the
+     postings of one thread live in one bucket vector, which holds
+     GEO_VEC_CEILING of them and not one more.  The figure is known here and the
+     second pass costs minutes, so this is where it is worth asking rather than
+     finding out from a thread that has already run half of them. */
+  refuse_too_few_threads(words.total, parser_thread_count);
+
   /* the runs have handed their words to the merged sets */
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     name_run_free(&parser_args[i].word_run);
@@ -984,14 +1094,13 @@ static int build_index(
     );
   }
 
-  DocCollector *doc_collectors[10];
+  DocCollector *doc_collectors[PARSER_THREADS_MAX];
   uint64_t unknown_words = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     if (parser_args[i].document_result != ARNM_SUCCESS) {
-      fatal(
-          ERROR_MEMORY, "Parser thread %u failed to collect documents (arnm_result %d).", i,
-          (int)parser_args[i].document_result
-      );
+      CollectorLimit limit = {NULL, 0, 0};
+      doc_collector_limit(&parser_args[i].documents, &limit);
+      fatal_collector("documents", i, parser_thread_count, &limit, parser_args[i].document_result);
     }
     doc_collectors[i] = &parser_args[i].documents;
     unknown_words += parser_args[i].documents.dropped_words;
@@ -1049,13 +1158,12 @@ static int build_index(
     }
   }
 
-  HouseCollector *house_collectors[10];
+  HouseCollector *house_collectors[PARSER_THREADS_MAX];
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     if (parser_args[i].house_result != ARNM_SUCCESS) {
-      fatal(
-          ERROR_MEMORY, "Parser thread %u failed to collect houses (arnm_result %d).", i,
-          (int)parser_args[i].house_result
-      );
+      CollectorLimit limit = {NULL, 0, 0};
+      house_collector_limit(&parser_args[i].houses, &limit);
+      fatal_collector("houses", i, parser_thread_count, &limit, parser_args[i].house_result);
     }
     house_collectors[i] = &parser_args[i].houses;
   }
@@ -1583,9 +1691,9 @@ int main(int argc, char *argv[]) {
   }
   unsigned parser_thread_count = 4;
   if (second_is_count) {
-    parser_thread_count = parse_count(argv[2], 1, 10, "parser_threads");
+    parser_thread_count = parse_count(argv[2], 1, PARSER_THREADS_MAX, "parser_threads");
   } else if (argc == 4) {
-    parser_thread_count = parse_count(argv[3], 1, 10, "parser_threads");
+    parser_thread_count = parse_count(argv[3], 1, PARSER_THREADS_MAX, "parser_threads");
   }
 
   arnm_mono_timer_init();

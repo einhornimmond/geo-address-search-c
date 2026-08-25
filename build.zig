@@ -11,7 +11,7 @@ const c_flags = &.{
 };
 
 /// What the client needs to read an index file — and nothing else.
-/// The builder (main, parser, collectors) stays out, as do yyjson and zstd.
+/// The builder (main, parser, collectors) stays out, as does zstd.
 ///
 /// Every source under src/ names its includes from src/ downwards
 /// ("search/geo_index.h", "foundation/error.h"), so every artifact that
@@ -64,8 +64,23 @@ pub fn build(b: *std.Build) !void {
         "Directory holding node_api.h (default: bindings/node/node_modules/node-api-headers/include)",
     ) orelse "bindings/node/node_modules/node-api-headers/include";
 
+    // Link-time optimisation, everywhere but in a debug build.
+    //
+    // arnm's JSON reader is a thin layer over the parser behind it — one call per key,
+    // one per value — and the calls are what it costs, not the work inside them.  Across
+    // a library boundary the compiler has to make each one a real call and forget
+    // everything it knew about the caller's locals; with LTO it inlines them and the
+    // layer disappears.  Measured on a 74 MB dump, the first pass runs a sixth faster
+    // with this on than without it.
+    //
+    // arnm's own artifact has to carry bitcode for that to reach across, which is why the
+    // dependency is told as well.  Debug keeps the plain path: LTO triples the link and
+    // there is nothing to gain from it while stepping through code.
+    const lto = optimize != .Debug;
+
     const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
     const arnm = b.dependency("arnm", .{ .target = target, .optimize = optimize });
+    arnm.artifact("arnm").want_lto = lto;
 
     // CRoaring is compiled by both artifacts, with the same flags
     var roaring_flags: std.ArrayList([]const u8) = .empty;
@@ -87,6 +102,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    lib.want_lto = lto;
     lib.linkLibC();
     lib.root_module.addCMacro("_GNU_SOURCE", "1");
 
@@ -133,6 +149,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    addon.want_lto = lto;
     addon.linkLibC();
     addon.root_module.addCMacro("_GNU_SOURCE", "1");
     addon.root_module.addCMacro("NAPI_VERSION", "8");
@@ -173,7 +190,7 @@ pub fn build(b: *std.Build) !void {
     // =====================================================================
     //
     // The builder and the tests want the same objects — every unit of src/,
-    // yyjson and CRoaring beside them.  Compiled per artifact that is the whole
+    // with CRoaring beside them.  Compiled per artifact that is the whole
     // of src/ plus a hundred thousand lines of amalgamated bitmap code, twice.
     // Gathered here it is built once and linked twice, which is most of what a
     // cold `-Dtests=true` used to spend its time on.
@@ -191,20 +208,15 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    core.want_lto = lto;
     core.linkLibC();
     core.root_module.addCMacro("_GNU_SOURCE", "1");
     core.linkLibrary(zstd.artifact("zstd"));
     core.linkLibrary(arnm.artifact("arnm"));
     core.addIncludePath(b.path("src"));
     core.addIncludePath(arnm.path("include"));
-    core.addIncludePath(b.path("third_party/yyjson/src"));
     core.addIncludePath(b.path("third_party/stb"));
     core.addIncludePath(b.path("third_party/CRoaring/include"));
-    core.addCSourceFiles(.{
-        .root = b.path("third_party/yyjson/src"),
-        .files = &.{"yyjson.c"},
-        .flags = c_flags,
-    });
     core.addCSourceFiles(.{
         .root = b.path("third_party/CRoaring"),
         .files = &.{"roaring.c"},
@@ -225,6 +237,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     }) });
 
+    exe.want_lto = lto;
     exe.linkLibC();
     exe.linkSystemLibrary("pthread");
     exe.root_module.addCMacro("_GNU_SOURCE", "1");
@@ -234,7 +247,6 @@ pub fn build(b: *std.Build) !void {
     exe.linkLibrary(zstd.artifact("zstd"));
     exe.addIncludePath(b.path("src"));
     exe.addIncludePath(arnm.path("include"));
-    exe.addIncludePath(b.path("third_party/yyjson/src"));
     exe.addIncludePath(b.path("third_party/stb"));
     exe.addIncludePath(b.path("third_party/CRoaring/include"));
     exe.addCSourceFiles(.{
@@ -287,7 +299,6 @@ pub fn build(b: *std.Build) !void {
             t.addIncludePath(b.path("src"));
             t.addIncludePath(b.path("tests/unit/src"));
             t.addIncludePath(arnm.path("include"));
-            t.addIncludePath(b.path("third_party/yyjson/src"));
             t.addIncludePath(b.path("third_party/CRoaring/include"));
             // No -cflags here on purpose: Zig appends the resolved target triple
             // to that group, and the glibc-versioned form it produces is one

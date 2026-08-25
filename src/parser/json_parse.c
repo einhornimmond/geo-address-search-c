@@ -8,41 +8,31 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <yyjson.h>
+#include "arnm/arena.h"
+#include "arnm/json_reader.h"
+#include "arnm/json_writer.h"
+#include "arnm/memory_block.h"
 
 /* =========================================================================
  *  Field helpers
  * ========================================================================= */
 
 /** Borrow a string value with its length; a non-string yields the empty borrow. */
-static PhotonString string_of(yyjson_val *value) {
+static PhotonString string_of(const arnm_json_value *value) {
   PhotonString result = {NULL, 0};
-  if (yyjson_is_str(value)) {
-    result.data = yyjson_get_str(value);
-    result.size = yyjson_get_len(value);
+  const char *data = NULL;
+  uint32_t length = 0;
+  if (ARNM_SUCCESS == arnm_json_read_string(value, &data, &length)) {
+    result.data = data;
+    result.size = length;
   }
   return result;
 }
 
-/**
- * @brief Prefer the German reading of a field, fall back to the neutral one.
- *
- *  The dump carries a variant per language, and this build answers in German
- *  where the data offers it.  A @p fallback_key of NULL means there is nothing
- *  to fall back to and the German reading is the only one wanted.
- */
-static PhotonString localized(
-    yyjson_val *object, const char *german_key, const char *fallback_key
-) {
-  yyjson_val *value = yyjson_obj_get(object, german_key);
-  if (fallback_key && !yyjson_is_str(value)) value = yyjson_obj_get(object, fallback_key);
-  return string_of(value);
-}
-
-/** A string field as a bare pointer, for the few values whose length is not needed. */
-static const char *plain(yyjson_val *object, const char *key) {
-  yyjson_val *value = yyjson_obj_get(object, key);
-  return yyjson_is_str(value) ? yyjson_get_str(value) : NULL;
+/** The member @p key names, or NULL where the object does not carry one. */
+static arnm_json_value *member(const arnm_json_value *object, const char *key) {
+  arnm_json_value *value = NULL;
+  return ARNM_SUCCESS == arnm_json_object_get(object, key, &value) ? value : NULL;
 }
 
 /* =========================================================================
@@ -193,46 +183,58 @@ static PhotonVariant *variant_for(PhotonPlace *p, const char *tag, size_t tag_si
 /**
  * @brief The entry's own name: the default reading into @c own_name, the rest beside it.
  *
- *  The `name` object holds one key per language the dump knows.  One of them is
- *  what an answer shows unless the caller asks otherwise, and the others are
- *  kept only where this build named them — a planet's worth of translations of
- *  every village is what the variant list is small for.
+ *  The `name` object holds one key per language the dump knows, and one walk over
+ *  it settles all of them.  Both readings that can fill @c own_name are picked up
+ *  as they go by — the localized one this build answers in, and the unlocalized
+ *  one behind it — and which of the two wins is decided once the walk is over,
+ *  because a JSON object promises no order.  Everything else is kept only where
+ *  this build named the language: a planet's worth of translations of every
+ *  village is what the variant list is small for.
  */
-static void place_names(yyjson_val *place, const PhotonLanguages *languages, PhotonPlace *p) {
-  yyjson_val *names = yyjson_obj_get(place, "name");
-  if (!yyjson_is_obj(names)) return;
+static void place_names(
+    const arnm_json_value *names, const PhotonLanguages *languages, PhotonPlace *p
+) {
+  arnm_json_object_iter iter;
+  if (ARNM_SUCCESS != arnm_json_object_iter_init(names, &iter)) return;
 
-  if (languages && languages->count) {
-    p->own_name = localized(names, languages->name_key, "name");
-  } else {
-    p->own_name = string_of(yyjson_obj_get(names, "name"));
-  }
+  /* nothing beyond the default reading was asked for */
+  const bool wants_variants = languages && (languages->every || languages->count >= 2);
 
-  /* nothing beyond the default was asked for */
-  if (!languages || (!languages->every && languages->count < 2)) return;
+  PhotonString plain_reading = {NULL, 0};   /**< the unlocalized `name`. */
+  PhotonString default_reading = {NULL, 0}; /**< `name:<default>`, where the dump has one. */
 
-  yyjson_obj_iter iter;
-  yyjson_obj_iter_init(names, &iter);
-  yyjson_val *key;
-  while ((key = yyjson_obj_iter_next(&iter))) {
-    const char *key_text = yyjson_get_str(key);
-    size_t key_size = yyjson_get_len(key);
-    if (key_size <= 5 || memcmp(key_text, "name:", 5) != 0) continue;
-    const char *tag = key_text + 5;
+  const char *key = NULL;
+  uint32_t key_size = 0;
+  arnm_json_value *value = NULL;
+  for (; arnm_json_object_iter_next(&iter, &key, &key_size, &value);) {
+    if (key_size == 4 && memcmp(key, "name", 4) == 0) {
+      plain_reading = string_of(value);
+      continue;
+    }
+    if (key_size <= 5 || memcmp(key, "name:", 5) != 0) continue;
+    const char *tag = key + 5;
     size_t tag_size = key_size - 5;
-    if (tag_is_default(languages, tag, tag_size)) continue; /* already the default reading */
+    if (tag_is_default(languages, tag, tag_size)) {
+      default_reading = string_of(value);
+      continue;
+    }
+    if (!wants_variants) continue;
     if (!photon_languages_hold(languages, tag, tag_size)) continue;
-    PhotonString text = string_of(yyjson_obj_iter_get_val(key));
+    PhotonString text = string_of(value);
     if (!text.data) continue;
     PhotonVariant *variant = variant_for(p, tag, tag_size);
     if (variant) variant->name = text;
   }
+
+  /* the localized reading is what an answer shows; the plain one carries the
+     entries the dump never translated */
+  p->own_name = default_reading.data ? default_reading : plain_reading;
 }
 
 /**
  * @brief Fold the `address_type` string into a number — the whole string, or nothing.
  *
- *  The length comes in because it is already there: yyjson keeps it beside every
+ *  The length comes in because it is already there: the parser keeps it beside every
  *  string value, so it costs no strlen to ask.  Having it, the dispatch is a
  *  switch on the length and one comparison — the nine values this build knows
  *  are spread over five lengths, and within a length the first byte tells them
@@ -325,24 +327,21 @@ static void search_add(PhotonPlace *p, PhotonString text) {
 }
 
 /** Take every string value of an object — keys are irrelevant, the text is not. */
-static void search_add_object(PhotonPlace *p, yyjson_val *object) {
-  if (!yyjson_is_obj(object)) return;
-  yyjson_obj_iter iter;
-  yyjson_obj_iter_init(object, &iter);
-  yyjson_val *key;
-  while ((key = yyjson_obj_iter_next(&iter))) {
-    search_add(p, string_of(yyjson_obj_iter_get_val(key)));
+static void search_add_object(PhotonPlace *p, const arnm_json_value *object) {
+  arnm_json_object_iter iter;
+  if (ARNM_SUCCESS != arnm_json_object_iter_init(object, &iter)) return;
+  arnm_json_value *value = NULL;
+  for (; arnm_json_object_iter_next(&iter, NULL, NULL, &value);) {
+    search_add(p, string_of(value));
   }
 }
 
 /** Take every string of an array — the `other` list of alternate names. */
-static void search_add_array(PhotonPlace *p, yyjson_val *array) {
-  if (!yyjson_is_arr(array)) return;
-  size_t index, max;
-  yyjson_val *item;
-  yyjson_arr_foreach(array, index, max, item) {
-    search_add(p, string_of(item));
-  }
+static void search_add_array(PhotonPlace *p, const arnm_json_value *array) {
+  arnm_json_array_iter iter;
+  if (ARNM_SUCCESS != arnm_json_array_iter_init(array, &iter)) return;
+  arnm_json_value *item = NULL;
+  for (; arnm_json_array_iter_next(&iter, &item);) { search_add(p, string_of(item)); }
 }
 
 /* =========================================================================
@@ -401,6 +400,88 @@ static AddressRole address_role_of(
   return ADDRESS_ROLE_NONE;
 }
 
+/* =========================================================================
+ *  The keys an entry itself carries
+ * ========================================================================= */
+
+/** The members of one content entry this build reads; everything else is passed over. */
+typedef enum EntryField {
+  ENTRY_FIELD_NONE,
+  ENTRY_FIELD_NAME,
+  ENTRY_FIELD_STREET,
+  ENTRY_FIELD_ADDRESS,
+  ENTRY_FIELD_POSTCODE,
+  ENTRY_FIELD_CENTROID,
+  ENTRY_FIELD_IMPORTANCE,
+  ENTRY_FIELD_HOUSENUMBER,
+  ENTRY_FIELD_ADDRESS_TYPE,
+  ENTRY_FIELD_COUNTRY_CODE
+} EntryField;
+
+/**
+ * @brief Recognise a key of the entry itself — the same shape as address_role().
+ *
+ *  An entry carries a handful of keys this build reads and a handful it does
+ *  not (`osm_id`, `osm_key`, `extent`, …).  Asking the object for each of the
+ *  first kind by name would walk it once per question; the walk below asks
+ *  every key what it is instead, and a key answers in a switch on its length
+ *  and at most one memcmp.  Nine questions become one pass.
+ */
+static EntryField entry_field(const char *key, size_t key_size) {
+  switch (key_size) {
+  case 4:
+    return memcmp(key, "name", 4) == 0 ? ENTRY_FIELD_NAME : ENTRY_FIELD_NONE;
+  case 6:
+    return memcmp(key, "street", 6) == 0 ? ENTRY_FIELD_STREET : ENTRY_FIELD_NONE;
+  case 7:
+    return memcmp(key, "address", 7) == 0 ? ENTRY_FIELD_ADDRESS : ENTRY_FIELD_NONE;
+  case 8:
+    switch (key[0]) {
+    case 'p':
+      return memcmp(key, "postcode", 8) == 0 ? ENTRY_FIELD_POSTCODE : ENTRY_FIELD_NONE;
+    case 'c':
+      return memcmp(key, "centroid", 8) == 0 ? ENTRY_FIELD_CENTROID : ENTRY_FIELD_NONE;
+    default:
+      return ENTRY_FIELD_NONE;
+    }
+  case 10:
+    return memcmp(key, "importance", 10) == 0 ? ENTRY_FIELD_IMPORTANCE : ENTRY_FIELD_NONE;
+  case 11:
+    return memcmp(key, "housenumber", 11) == 0 ? ENTRY_FIELD_HOUSENUMBER : ENTRY_FIELD_NONE;
+  case 12:
+    switch (key[0]) {
+    case 'a':
+      return memcmp(key, "address_type", 12) == 0 ? ENTRY_FIELD_ADDRESS_TYPE : ENTRY_FIELD_NONE;
+    case 'c':
+      return memcmp(key, "country_code", 12) == 0 ? ENTRY_FIELD_COUNTRY_CODE : ENTRY_FIELD_NONE;
+    default:
+      return ENTRY_FIELD_NONE;
+    }
+  default:
+    return ENTRY_FIELD_NONE;
+  }
+}
+
+/**
+ * @brief One coordinate of a centroid, however the dump chose to write it.
+ *
+ *  JSON draws no line between an integer and a fraction, and a serializer is
+ *  free to write a whole degree without one — `13` where `13.0` was meant.
+ *  Both are the same number and both are read as one; only a value that is no
+ *  number at all answers 0.
+ *
+ *  This mattered: the parser used to take the fractional form alone, so an
+ *  entry sitting on a whole degree was silently moved to the equator or the
+ *  prime meridian.  Nothing in a dump announces which form it uses, and the
+ *  entries this hit are the ones nobody would think to check.
+ */
+static double coordinate_at(const arnm_json_value *centroid, uint32_t index) {
+  arnm_json_value *element = NULL;
+  if (ARNM_SUCCESS != arnm_json_array_get(centroid, index, &element)) return 0.0;
+  double degrees = 0.0;
+  return ARNM_SUCCESS == arnm_json_read_double(element, &degrees) ? degrees : 0.0;
+}
+
 /** How extract_place() ended: taken, passed over, or a dump that cannot be read. */
 typedef enum ResultType {
   RESULT_SUCCESS,            /**< The entry is filled in and worth indexing. */
@@ -417,57 +498,108 @@ typedef enum ResultType {
  * @brief Read one content entry into @p p — answer fields by role, the rest as text.
  *
  *  Every string is borrowed from the document, so @p p is only as alive as the
- *  parse around it.  The entry is walked once: a key that names an answer field
- *  is filed by its role, and everything else joins the role-free search list.
+ *  parse around it.  The entry is walked once: a scalar the answer needs is
+ *  filed as it goes by, and the three containers below it — `name`, `address`,
+ *  `centroid` — are only remembered, because what to do with them depends on
+ *  fields the walk may not have reached yet.  A JSON object promises no order,
+ *  so nothing may be decided before the last key has been seen.
  *
  *  @param[in]  entry  One object out of the `content` array.
  *  @param[out] p      Zeroed first, then filled; untouched fields stay NULL.
  *  @return What became of it; see @ref ResultType.
  */
 static ResultType extract_place(
-    yyjson_val *entry, const PhotonLanguages *languages, PhotonPlace *p
+    const arnm_json_value *entry, const PhotonLanguages *languages, PhotonPlace *p
 ) {
   photon_place_reset(p);
 
-  /* string_of() hands back the length beside the bytes, which is exactly what
-     the exact match below needs and costs nothing extra to ask for. */
-  const PhotonString address_type = string_of(yyjson_obj_get(entry, "address_type"));
+  PhotonString address_type = {NULL, 0};
+  PhotonString entry_street = {NULL, 0};
+  const arnm_json_value *names = NULL;
+  const arnm_json_value *address = NULL;
+  const arnm_json_value *centroid = NULL;
+
+  /* --- one pass over the entry's own keys --- */
+  arnm_json_object_iter entry_iter;
+  if (ARNM_SUCCESS != arnm_json_object_iter_init(entry, &entry_iter)) {
+    return RESULT_ERROR_MISSING_TYPE;
+  }
+  const char *key = NULL;
+  uint32_t key_size = 0;
+  arnm_json_value *value = NULL;
+  for (; arnm_json_object_iter_next(&entry_iter, &key, &key_size, &value);) {
+    switch (entry_field(key, key_size)) {
+    case ENTRY_FIELD_ADDRESS_TYPE:
+      /* string_of() hands back the length beside the bytes, which is exactly what
+         the exact match below needs and costs nothing extra to ask for. */
+      address_type = string_of(value);
+      break;
+    case ENTRY_FIELD_COUNTRY_CODE:
+      p->country_code = string_of(value).data;
+      break;
+    case ENTRY_FIELD_POSTCODE:
+      p->postcode = string_of(value);
+      break;
+    case ENTRY_FIELD_HOUSENUMBER:
+      p->house = string_of(value);
+      break;
+    case ENTRY_FIELD_IMPORTANCE: {
+      double importance = 0.0;
+      if (ARNM_SUCCESS == arnm_json_read_double(value, &importance)) p->importance = importance;
+      break;
+    }
+    case ENTRY_FIELD_STREET:
+      /* the address block outranks this one, and it has not been read yet */
+      entry_street = string_of(value);
+      break;
+    case ENTRY_FIELD_NAME:
+      names = value;
+      break;
+    case ENTRY_FIELD_ADDRESS:
+      address = value;
+      break;
+    case ENTRY_FIELD_CENTROID:
+      centroid = value;
+      break;
+    case ENTRY_FIELD_NONE:
+      break;
+    }
+  }
+
   p->type = address_type.data;
   if (!p->type) { return RESULT_ERROR_MISSING_TYPE; }
   p->typeEnum = detectTypeEnum(address_type.data, address_type.size);
   if (PHOTON_PLACE_TYPE_UNKNOWN == p->typeEnum) { return RESULT_ERROR_UNKNOWN_TYPE; }
 
-  p->country_code = plain(entry, "country_code");
-  place_names(entry, languages, p);
-  p->postcode = string_of(yyjson_obj_get(entry, "postcode"));
-
-  yyjson_val *importance = yyjson_obj_get(entry, "importance");
-  if (yyjson_is_num(importance)) { p->importance = yyjson_get_num(importance); }
+  if (names) place_names(names, languages, p);
 
   /* houses are payload of their street — their repeated parent text belongs
      to the street's document, not into the term stream a fifth time.  The
      number itself is read before this decision, because it decides it. */
-  p->house = string_of(yyjson_obj_get(entry, "housenumber"));
   const int indexed = p->typeEnum != PHOTON_PLACE_TYPE_HOUSE && !p->house.data;
 
   /* --- one pass over the address block: roles for the answer, text for the index --- */
-  yyjson_val *address = yyjson_obj_get(entry, "address");
-  if (yyjson_is_obj(address)) {
-    yyjson_obj_iter iter;
-    yyjson_obj_iter_init(address, &iter);
-    yyjson_val *key;
-    while ((key = yyjson_obj_iter_next(&iter))) {
-      yyjson_val *value = yyjson_obj_iter_get_val(key);
-      if (yyjson_is_arr(value)) { /* "other": alternate names, no role */
-        if (indexed) search_add_array(p, value);
+  arnm_json_object_iter address_iter;
+  if (address && ARNM_SUCCESS == arnm_json_object_iter_init(address, &address_iter)) {
+    for (; arnm_json_object_iter_next(&address_iter, &key, &key_size, &value);) {
+      /* The key decides before the value is looked at.  A house entry keeps
+         nothing but the four answer fields — its parent text belongs to its
+         street's document — so a key with no role is let go here, and for two
+         of every three entries of a planet dump that is the whole of the work
+         this loop does. */
+      const AddressRole role = address_role_of(languages, key, key_size);
+      if (ADDRESS_ROLE_NONE == role && !indexed) continue;
+
+      PhotonString text = string_of(value);
+      if (!text.data) {
+        /* the one member that is no text of its own: "other", a list of
+           alternate names, which carries no role and enters the index whole */
+        if (indexed && ARNM_JSON_TYPE_ARRAY == arnm_json_value_type(value)) {
+          search_add_array(p, value);
+        }
         continue;
       }
-      PhotonString text = string_of(value);
-      if (!text.data) continue;
-      const char *key_text = yyjson_get_str(key);
-      size_t key_size = yyjson_get_len(key);
 
-      AddressRole role = address_role_of(languages, key_text, key_size);
       switch (role) {
       case ADDRESS_ROLE_CITY:
         if (!p->city.data) p->city = text;
@@ -512,20 +644,20 @@ static ResultType extract_place(
          by the name it displays. At home the readings are the same text and
          search_add() keeps one of them; abroad each costs a single term per
          level, which is the price of the languages the build asked for. */
-      const char *colon = memchr(key_text, ':', key_size);
+      const char *colon = memchr(key, ':', key_size);
       if (!colon) {
         search_add(p, text); /* the unlocalized reading always comes along */
         continue;
       }
       const char *tag = colon + 1;
-      size_t tag_size = key_size - (size_t)(colon - key_text) - 1;
+      size_t tag_size = key_size - (size_t)(colon - key) - 1;
       if (!languages || !languages_hold_word(languages, tag_word(tag, tag_size))) continue;
       search_add(p, text);
 
       /* A town in a language this build keeps is a reading of its own; the
          default one is already in the field above and needs none. */
       if (role == ADDRESS_ROLE_NONE &&
-          address_role(key_text, (size_t)(colon - key_text)) == ADDRESS_ROLE_CITY) {
+          address_role(key, (size_t)(colon - key)) == ADDRESS_ROLE_CITY) {
         PhotonVariant *variant = variant_for(p, tag, tag_size);
         if (variant) variant->city = text;
       }
@@ -533,7 +665,7 @@ static ResultType extract_place(
   }
 
   if (indexed) {
-    search_add_object(p, yyjson_obj_get(entry, "name"));
+    if (names) search_add_object(p, names);
     /* many entries carry their postcode beside the address block, not inside
        it — and a postcode is one of the strongest filters a query can bring */
     search_add(p, p->postcode);
@@ -549,10 +681,9 @@ static ResultType extract_place(
     }
   }
 
-  /* --- some fields sit beside the address block, not inside it: the postal
-         code does, and so does the house number --- */
-  if (!p->house.data) p->house = string_of(yyjson_obj_get(entry, "housenumber"));
-  if (!p->street.data) p->street = string_of(yyjson_obj_get(entry, "street"));
+  /* --- some fields sit beside the address block, not inside it: the street
+         does, and the address block's reading of it comes first --- */
+  if (!p->street.data) p->street = entry_street;
 
   /* A house number makes an address, whatever the hierarchy calls the entry —
      the dump files a holiday camp with a number under "other" and a shipwreck
@@ -587,13 +718,10 @@ static ResultType extract_place(
   }
 
   /* --- centroid --- */
-  yyjson_val *centroid = yyjson_obj_get(entry, "centroid");
-  if (yyjson_is_arr(centroid) && yyjson_arr_size(centroid) == 2) {
-    double lon = yyjson_get_real(yyjson_arr_get(centroid, 0));
-    double lat = yyjson_get_real(yyjson_arr_get(centroid, 1));
+  if (centroid && arnm_json_array_size(centroid) == 2) {
     p->has_point = 1;
-    p->lon_e7 = (int32_t)round(lon * 1.0e7);
-    p->lat_e7 = (int32_t)round(lat * 1.0e7);
+    p->lon_e7 = (int32_t)round(coordinate_at(centroid, 0) * 1.0e7);
+    p->lat_e7 = (int32_t)round(coordinate_at(centroid, 1) * 1.0e7);
   }
 
   return RESULT_SUCCESS;
@@ -610,6 +738,60 @@ bool photon_place_has_point(const PhotonPlace *place) {
   return place->has_point;
 }
 
+/* =========================================================================
+ *  The ground one line is parsed on
+ * ========================================================================= */
+
+/** The arena every document of this thread is built in; grown, never shared. */
+static __thread arnm parse_arena;
+/** Bytes @c parse_arena holds, or 0 while it holds none. */
+static __thread uint32_t parse_arena_capacity = 0;
+/** The reader of this thread, bound to @c parse_arena for as long as it lives. */
+static __thread arnm_json_reader parse_reader;
+/** Whether @c parse_reader has seen arnm_json_reader_init(). */
+static __thread bool parse_reader_ready = false;
+
+/**
+ * @brief Arena bytes a line of @p length is likely to need, before a retry has to think.
+ *
+ *  A JSON text holds at most one value per two bytes, a value costs sixteen
+ *  bytes in the tree, the tree is built by growing a buffer by half again, and
+ *  the strings are unescaped into a copy of the text beside it.  Thirteen times
+ *  the line plus a margin covers all of that for every document, which is why
+ *  the arena is sized from the longest line seen rather than per line: it grows
+ *  a handful of times at the start of a dump and then never again.
+ *
+ *  It only has to be right often enough to make growing rare.  A parse that
+ *  finds the arena short refuses instead of overrunning it, and json_parse_line()
+ *  then widens the ground and reads the line again.
+ */
+static uint32_t parse_arena_size_for(size_t length) {
+  const size_t wanted = length * 13u + 512u;
+  return wanted > (size_t)ARNM_MAX_ALLOC_SIZE ? ARNM_MAX_ALLOC_SIZE : (uint32_t)wanted;
+}
+
+/** Take the arena back and claim @p capacity bytes instead; the reader keeps its address. */
+static void parse_arena_reserve(uint32_t capacity) {
+  if (ARNM_SUCCESS != arnm_reinit_arena(&parse_arena, capacity)) {
+    fatal(ERROR_MEMORY, "Failed to reserve %u bytes for JSON parsing.", capacity);
+  }
+  parse_arena_capacity = capacity;
+}
+
+/**
+ * @brief Let the document go and put the arena back where it started.
+ *
+ *  The release hands the document's blocks back and the reset settles what order
+ *  they came in — an arena only takes its tail, so a block freed before the one
+ *  above it would stay reserved until something moved the index home.  Together
+ *  they leave the next line the whole arena, which is why it never has to grow
+ *  for anything but a longer line.
+ */
+static void parse_arena_release(void) {
+  (void)arnm_json_reader_release(&parse_reader);
+  arnm_reset(&parse_arena);
+}
+
 int json_parse_line(
     const char *line,
     size_t len,
@@ -619,96 +801,91 @@ int json_parse_line(
     JsonParseResult *result
 ) {
   memset(result, 0, sizeof(*result));
+  if (len > ARNM_JSON_READER_MAX_INPUT_SIZE) {
+    fatal(ERROR_JSON, "A JSON line of %zu bytes is longer than this build can read.", len);
+  }
 
-  /* --- thread-local yyjson buffer --- */
-  size_t buf_size = yyjson_read_max_memory_usage(len, 0);
-  static __thread uint8_t *alc_buf = NULL;
-  static __thread size_t alc_buf_size = 0;
-
-  if (alc_buf_size < buf_size) {
-    free(alc_buf);
-    alc_buf = malloc(buf_size);
-    if (!alc_buf) {
-      fatal(ERROR_MEMORY, "Failed to allocate %zu bytes for JSON parsing.", buf_size);
+  /* --- this thread's arena and reader, grown to the longest line so far --- */
+  const uint32_t wanted = parse_arena_size_for(len);
+  if (wanted > parse_arena_capacity) parse_arena_reserve(wanted);
+  if (!parse_reader_ready) {
+    if (ARNM_SUCCESS !=
+        arnm_json_reader_init(&parse_reader, &parse_arena, ARNM_JSON_READ_DEFAULT)) {
+      fatal(ERROR_MEMORY, "Failed to prepare the JSON reader.");
     }
-    alc_buf_size = buf_size;
+    parse_reader_ready = true;
   }
 
-  yyjson_alc alc;
-  yyjson_alc_pool_init(&alc, alc_buf, alc_buf_size);
-
-  yyjson_read_err err;
-  yyjson_doc *doc = yyjson_read_opts((char *)line, len, 0, &alc, &err);
-  if (!doc) {
+  arnm_result parsed = arnm_json_reader_parse(&parse_reader, line, (uint32_t)len);
+  while (ARNM_ERROR_OUT_OF_MEMORY == parsed) {
+    /* the estimate was short for this line — widen the ground and read it again */
+    (void)arnm_json_reader_release(&parse_reader);
+    if (parse_arena_capacity >= ARNM_MAX_ALLOC_SIZE) {
+      fatal(ERROR_MEMORY, "A JSON line of %zu bytes outgrew the parser's arena.", len);
+    }
+    uint32_t grown = parse_arena_capacity > ARNM_MAX_ALLOC_SIZE / 2 ? ARNM_MAX_ALLOC_SIZE
+                                                                    : parse_arena_capacity * 2u;
+    parse_arena_reserve(grown);
+    parsed = arnm_json_reader_parse(&parse_reader, line, (uint32_t)len);
+  }
+  if (ARNM_SUCCESS != parsed) {
     fatal(
-        ERROR_JSON, "Failed to parse JSON (%s), error at pos: %zu, length %zu, error: %d", err.msg,
-        err.pos, len, err.code
+        ERROR_JSON, "Failed to parse JSON (%s), error at pos: %u, length %zu, error: %d",
+        arnm_json_reader_error_message(&parse_reader),
+        arnm_json_reader_error_position(&parse_reader), len, (int)parsed
     );
-    return 0;
   }
 
-  yyjson_val *root = yyjson_doc_get_root(doc);
-  if (!yyjson_is_obj(root)) {
-    yyjson_doc_free(doc);
+  const arnm_json_value *root = arnm_json_reader_root(&parse_reader);
+  if (ARNM_JSON_TYPE_OBJECT != arnm_json_value_type(root)) {
+    parse_arena_release();
     return 1; /* success, but not a valid object */
   }
 
   result->is_valid = 1;
 
-  yyjson_val *type = yyjson_obj_get(root, "type");
-  if (!yyjson_is_str(type) || strcmp(yyjson_get_str(type), "Place") != 0) {
-    yyjson_doc_free(doc);
+  const PhotonString type = string_of(member(root, "type"));
+  if (type.size != 5 || memcmp(type.data, "Place", 5) != 0) {
+    parse_arena_release();
     return 1;
   }
 
   result->is_place = 1;
 
-  yyjson_val *content = yyjson_obj_get(root, "content");
-  if (!yyjson_is_arr(content)) {
-    yyjson_doc_free(doc);
+  arnm_json_array_iter content_iter;
+  if (ARNM_SUCCESS != arnm_json_array_iter_init(member(root, "content"), &content_iter)) {
+    parse_arena_release();
     return 1;
   }
 
-  size_t index, max;
-  yyjson_val *entry;
-  yyjson_arr_foreach(content, index, max, entry) {
-    if (!yyjson_is_obj(entry)) continue;
+  arnm_json_value *entry = NULL;
+  for (; arnm_json_array_iter_next(&content_iter, &entry);) {
+    if (ARNM_JSON_TYPE_OBJECT != arnm_json_value_type(entry)) continue;
 
     PhotonPlace place;
     ResultType extractResult = extract_place(entry, languages, &place);
     if (extractResult == RESULT_ERROR_UNKNOWN_TYPE) {
-      char *buf = (char *)calloc(1, len + 1);
-      memcpy(buf, line, len);
-      fatal(ERROR_JSON, "unknown type: %s", buf);
+      fatal(ERROR_JSON, "unknown type: %.*s", (int)len, line);
     } else if (extractResult == RESULT_ERROR_MISSING_TYPE) {
-      char *buf = (char *)calloc(1, len + 1);
-      memcpy(buf, line, len);
-      fatal(ERROR_JSON, "missing type: %s", buf);
+      fatal(ERROR_JSON, "missing type: %.*s", (int)len, line);
     } else if (extractResult == RESULT_SKIP) {
     } else if (extractResult == RESULT_SUCCESS) {
-      if (callback(&place, user_data)) {
-        char *buf = (char *)calloc(1, len + 1);
-        memcpy(buf, line, len);
-        printf("callback error with: %s\n\n", buf);
-        free(buf);
-      }
+      if (callback(&place, user_data)) { printf("callback error with: %.*s\n\n", (int)len, line); }
       ++result->entry_count;
     }
   }
 
-  yyjson_doc_free(doc);
+  parse_arena_release();
   return 1;
 }
 
 /* =========================================================================
- *  Debug serialisation — PhotonPlace → JSON string (via yyjson mutable API)
+ *  Debug serialisation — PhotonPlace → JSON string
  * ========================================================================= */
 
 /** Add a field only when the entry carried it, so absent stays absent in the output. */
-static void add_string_field(
-    yyjson_mut_doc *doc, yyjson_mut_val *root, const char *key, PhotonString text
-) {
-  if (text.data) yyjson_mut_obj_add_strn(doc, root, key, text.data, text.size);
+static void add_string_field(arnm_json_writer *writer, const char *key, PhotonString text) {
+  if (text.data) arnm_json_writer_add_string_length(writer, key, text.data, (uint32_t)text.size);
 }
 
 char *photon_place_to_json(const PhotonPlace *place) {
@@ -718,64 +895,63 @@ char *photon_place_to_json(const PhotonPlace *place) {
     return buf;
   }
 
-  yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
-  if (!doc) {
+  /* The host allocator throughout: this is a debugger's call, not a hot path,
+     and a writer of its own owes the parser's arena nothing. */
+  arnm_json_writer writer;
+  if (ARNM_SUCCESS != arnm_json_writer_init(&writer, NULL, ARNM_JSON_WRITE_DEFAULT)) {
     snprintf(buf, sizeof(buf), "{\"error\":\"failed to create JSON document\"}");
     return buf;
   }
 
-  yyjson_mut_val *root = yyjson_mut_obj(doc);
-  if (!root) {
-    yyjson_mut_doc_free(doc);
-    snprintf(buf, sizeof(buf), "{\"error\":\"failed to create JSON object\"}");
-    return buf;
+  if (place->type) arnm_json_writer_add_string(&writer, "type", place->type);
+  add_string_field(&writer, "name", place->own_name);
+  add_string_field(&writer, "street", place->street);
+  add_string_field(&writer, "house", place->house);
+  add_string_field(&writer, "postcode", place->postcode);
+  add_string_field(&writer, "city", place->city);
+  if (place->country_code) {
+    arnm_json_writer_add_string(&writer, "country_code", place->country_code);
   }
-  yyjson_mut_doc_set_root(doc, root);
 
-  if (place->type) yyjson_mut_obj_add_str(doc, root, "type", place->type);
-  add_string_field(doc, root, "name", place->own_name);
-  add_string_field(doc, root, "street", place->street);
-  add_string_field(doc, root, "house", place->house);
-  add_string_field(doc, root, "postcode", place->postcode);
-  add_string_field(doc, root, "city", place->city);
-  if (place->country_code) yyjson_mut_obj_add_str(doc, root, "country_code", place->country_code);
+  arnm_json_writer_add_double(&writer, "importance", place->importance);
+  arnm_json_writer_add_int64(&writer, "lon_e7", place->lon_e7);
+  arnm_json_writer_add_int64(&writer, "lat_e7", place->lat_e7);
+  arnm_json_writer_add_bool(&writer, "has_point", place->has_point != 0);
 
-  yyjson_mut_obj_add_real(doc, root, "importance", place->importance);
-  yyjson_mut_obj_add_int(doc, root, "lon_e7", place->lon_e7);
-  yyjson_mut_obj_add_int(doc, root, "lat_e7", place->lat_e7);
-  yyjson_mut_obj_add_bool(doc, root, "has_point", place->has_point);
-
-  yyjson_mut_val *search = yyjson_mut_arr(doc);
+  arnm_json_writer_open_array(&writer, "search");
   for (uint8_t i = 0; i < place->search_count; ++i) {
-    yyjson_mut_arr_add_strn(doc, search, place->search[i].data, place->search[i].size);
-  }
-  yyjson_mut_obj_add_val(doc, root, "search", search);
-
-  if (place->variant_count) {
-    yyjson_mut_val *variants = yyjson_mut_obj(doc);
-    for (uint8_t i = 0; i < place->variant_count; ++i) {
-      const PhotonVariant *variant = &place->variants[i];
-      yyjson_mut_val *reading = yyjson_mut_obj(doc);
-      add_string_field(doc, reading, "name", variant->name);
-      add_string_field(doc, reading, "city", variant->city);
-      yyjson_mut_obj_add_val(doc, variants, variant->tag, reading);
-    }
-    yyjson_mut_obj_add_val(doc, root, "variants", variants);
-  }
-
-  size_t len = 0;
-  const char *json = yyjson_mut_write(doc, 0, &len);
-  if (json && len < sizeof(buf)) {
-    memcpy(buf, json, len);
-    buf[len] = '\0';
-  } else {
-    snprintf(
-        buf, sizeof(buf), "{\"error\":\"serialization failed\", \"len\":\"%zu\"}, json: %s", len,
-        json
+    arnm_json_writer_add_string_length(
+        &writer, NULL, place->search[i].data, (uint32_t)place->search[i].size
     );
   }
-  free((void *)json);
-  yyjson_mut_doc_free(doc);
+  arnm_json_writer_close(&writer);
+
+  if (place->variant_count) {
+    arnm_json_writer_open_object(&writer, "variants");
+    for (uint8_t i = 0; i < place->variant_count; ++i) {
+      const PhotonVariant *variant = &place->variants[i];
+      arnm_json_writer_open_object(&writer, variant->tag);
+      add_string_field(&writer, "name", variant->name);
+      add_string_field(&writer, "city", variant->city);
+      arnm_json_writer_close(&writer);
+    }
+    arnm_json_writer_close(&writer);
+  }
+
+  arnm_memory_block text = {NULL, 0};
+  uint32_t length = 0;
+  const arnm_result written = arnm_json_writer_write(&writer, NULL, &text, &length);
+  if (ARNM_SUCCESS == written && length < sizeof(buf)) {
+    memcpy(buf, text.data, length);
+    buf[length] = '\0';
+  } else {
+    snprintf(
+        buf, sizeof(buf), "{\"error\":\"serialization failed\", \"len\":\"%u\", \"result\":%d}",
+        length, (int)written
+    );
+  }
+  (void)arnm_memory_block_free(&text, NULL);
+  (void)arnm_json_writer_release(&writer);
 
   return buf;
 }

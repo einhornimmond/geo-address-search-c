@@ -208,10 +208,22 @@ TEST(HouseCollectorMerge, JoinsWhatSeveralThreadsGathered) {
 TEST(HouseCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
   EXPECT_NE(house_collector_init(nullptr), ARNM_SUCCESS);
   EXPECT_EQ(house_collector_count(nullptr), 0u);
+  EXPECT_FALSE(house_collector_limit(nullptr, nullptr));
   house_collector_free(nullptr);
   house_set_free(nullptr);
 
   HouseSet set{};
   EXPECT_NE(house_collector_merge(nullptr, nullptr, 0, 0), ARNM_SUCCESS);
   house_set_free(&set);
+}
+
+TEST(HouseCollectorLimit, ACollectorThatFitsReportsNoLimit) {
+  HouseCollector collector{};
+  ASSERT_EQ(house_collector_init(&collector), ARNM_SUCCESS);
+  GeoDocument street{};
+  for (uint32_t i = 0; i < 1000; ++i) {
+    ASSERT_EQ(house_collector_add(&collector, 0, &street, i, 0, 0, 1), ARNM_SUCCESS);
+  }
+  EXPECT_FALSE(house_collector_limit(&collector, nullptr));
+  house_collector_free(&collector);
 }
