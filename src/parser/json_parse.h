@@ -9,10 +9,9 @@
 
 /** @defgroup json_parse JSON parser
  *  @ingroup parser
- *  @brief Parse Photon JSONL lines — the single translation unit that
- *         knows yyjson.  Extracts one @ref PhotonPlace per Place content
- *         entry: a few fields for the answer, everything else as
- *         role-free search strings.
+ *  @brief Parse Photon JSONL lines through arnm's JSON reader.  Extracts one
+ *         @ref PhotonPlace per Place content entry: a few fields for the
+ *         answer, everything else as role-free search strings.
  *
  *  The dump denormalises the whole address chain into every entry, and it
  *  does so imperfectly — a state may be missing, a city name may sit in the
@@ -219,9 +218,11 @@ typedef struct {
 /**
  * @brief Parse one JSONL line and invoke @p callback for each Place entry.
  *
- *  Owns all yyjson interaction — the only translation unit that includes
- *  `<yyjson.h>`.  The yyjson scratch buffer is thread-local and grows to
- *  the longest line seen.
+ *  The reader and the arena it parses into are thread-local, and the arena
+ *  grows to the longest line seen.  Each line is read once: the keys of an
+ *  entry, of its `name` object and of its `address` block are walked in one
+ *  pass each and dispatched by what they are, rather than asked for by name
+ *  one at a time.
  *
  *  Strings in @ref PhotonPlace point into the parsed JSON document and are
  *  valid only during the callback — copy them if you need them to outlive

@@ -42,9 +42,11 @@ typedef struct HouseEntry {
 
 /** Elements per bucket of a house vector, as a power of two — 32768 per bucket, 512 KiB.
  *
- *  A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY buckets, so the exponent
- *  is what decides the ceiling: 32768 × 8191 ≈ 268 M houses per thread.  The planet carries
- *  249 M of them in total, which one thread alone would only just hold. */
+ *  15 is the largest exponent arnm takes, so this is the ceiling and not a choice:
+ *  32768 × 8191 = 268 402 688 houses per thread.  The 2026 planet dump carries
+ *  248 552 976 of them, which one thread alone would hold with 7 % to spare and two
+ *  threads hold twice over.  A dump that outgrows it needs more parser threads.
+ *  @see house_collector_limit(), which says so rather than leaving a bare error code. */
 #define HOUSE_VEC_BUCKET_LOG2 15
 
 ARNM_BVEC_DEFINE(house_vec, HouseEntry)
@@ -60,7 +62,18 @@ typedef struct HouseCollector {
   uint64_t recovered_city;     /**< Found only after dropping the code from the key. */
   uint64_t recovered_postcode; /**< Found only by name and town, any code. */
   uint64_t recovered_nearest;  /**< Found only by standing closest. */
+  CollectorLimit limit;        /**< Set when @c houses ran out of buckets. */
 } HouseCollector;
+
+/**
+ * @brief Whether @c houses ran out of buckets, and what it held when it did.
+ *
+ *  @param[in]  collector  Collector to ask; NULL answers false.
+ *  @param[out] out        Receives the figures; may be NULL.
+ *  @return true exactly when house_collector_add() answered
+ *          @c ARNM_ERROR_ARITHMETIC_OVERFLOW.
+ */
+bool house_collector_limit(const HouseCollector *collector, CollectorLimit *out);
 
 /**
  * @brief Prepare an empty collector.

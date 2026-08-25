@@ -19,7 +19,14 @@ arnm_result house_collector_init(HouseCollector *collector) {
   collector->recovered_city = 0;
   collector->recovered_postcode = 0;
   collector->recovered_nearest = 0;
+  collector->limit = (CollectorLimit){NULL, 0, 0};
   return house_vec_init(&collector->houses, HOUSE_VEC_BUCKET_LOG2, 0, NULL);
+}
+
+bool house_collector_limit(const HouseCollector *collector, CollectorLimit *out) {
+  if (!collector || !collector->limit.vector) return false;
+  if (out) *out = collector->limit;
+  return true;
 }
 
 void house_collector_free(HouseCollector *collector) {
@@ -48,7 +55,13 @@ arnm_result house_collector_add(
     entry.house.lat_e7 = street->lat_e7;
     entry.house.lon_e7 = street->lon_e7;
   }
-  return house_vec_push(&collector->houses, entry);
+  const arnm_result result = house_vec_push(&collector->houses, entry);
+  if (ARNM_ERROR_ARITHMETIC_OVERFLOW == result && !collector->limit.vector) {
+    collector->limit.vector = "house_vec";
+    collector->limit.held = house_vec_size(&collector->houses);
+    collector->limit.ceiling = GEO_VEC_CEILING;
+  }
+  return result;
 }
 
 size_t house_collector_count(const HouseCollector *collector) {

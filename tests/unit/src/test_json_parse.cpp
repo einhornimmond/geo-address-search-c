@@ -100,6 +100,13 @@ bool Has(const std::vector<std::string> &all, const std::string &one) {
   return false;
 }
 
+/** One entry at @p centroid, written exactly as the test spells it. */
+std::string LineWithCentroid(const std::string &centroid) {
+  return R"({"type":"Place","content":[{"address_type":"street",)"
+         R"("name":{"name":"Seeweg"},"centroid":)" +
+         centroid + R"(}]})";
+}
+
 /** The fixture lines, in the order tests/data/places.jsonl lists them. */
 const std::vector<std::string> &Fixture() {
   static const std::vector<std::string> lines = testsupport::ReadFixtureLines("places.jsonl");
@@ -137,6 +144,46 @@ TEST(JsonParseRoles, ReadsTheCentroidAsFixedPoint) {
   EXPECT_TRUE(got[0].has_point);
   EXPECT_EQ(got[0].lat_e7, 481374000);
   EXPECT_EQ(got[0].lon_e7, 115755000);
+}
+
+TEST(JsonParseRoles, AWholeDegreeIsReadAsADegree) {
+  // JSON draws no line between 13 and 13.0, and a serializer may drop the
+  // fraction of a coordinate that has none.  Both forms name the same place.
+  std::vector<Parsed> got = Parse(LineWithCentroid("[13,48]"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_TRUE(got[0].has_point);
+  EXPECT_EQ(got[0].lon_e7, 130000000);
+  EXPECT_EQ(got[0].lat_e7, 480000000);
+}
+
+TEST(JsonParseRoles, AWholeDegreeAndAFractionMixInOneCentroid) {
+  std::vector<Parsed> got = Parse(LineWithCentroid("[13,48.1374]"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].lon_e7, 130000000);
+  EXPECT_EQ(got[0].lat_e7, 481374000);
+}
+
+TEST(JsonParseRoles, AWholeDegreeKeepsItsSign) {
+  // west of Greenwich and south of the equator, both written without a fraction
+  std::vector<Parsed> got = Parse(LineWithCentroid("[-58,-34]"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].lon_e7, -580000000);
+  EXPECT_EQ(got[0].lat_e7, -340000000);
+}
+
+TEST(JsonParseRoles, ZeroIsAPlaceLikeAnyOther) {
+  std::vector<Parsed> got = Parse(LineWithCentroid("[0,0]"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_TRUE(got[0].has_point) << "the null island is a coordinate, not an absent one";
+  EXPECT_EQ(got[0].lon_e7, 0);
+  EXPECT_EQ(got[0].lat_e7, 0);
+}
+
+TEST(JsonParseRoles, ACoordinateThatIsNoNumberStaysAtZero) {
+  std::vector<Parsed> got = Parse(LineWithCentroid(R"(["13","48"])"));
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].lon_e7, 0);
+  EXPECT_EQ(got[0].lat_e7, 0);
 }
 
 TEST(JsonParseRoles, ACityEntryBecomesItsOwnCity) {

@@ -239,8 +239,43 @@ TEST(DocCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
   EXPECT_NE(doc_collector_init(nullptr), ARNM_SUCCESS);
   EXPECT_EQ(doc_collector_document_count(nullptr), 0u);
   EXPECT_EQ(doc_collector_posting_count(nullptr), 0u);
+  EXPECT_FALSE(doc_collector_limit(nullptr, nullptr));
   doc_collector_free(nullptr);
   doc_set_free(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+//  The ceiling a per-thread vector carries
+// ---------------------------------------------------------------------------
+
+TEST(DocCollectorLimit, ACollectorThatFitsReportsNoLimit) {
+  DocCollector collector{};
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
+  GeoDocument document{};
+  uint32_t number = 0;
+  ASSERT_EQ(doc_collector_add_document(&collector, &document, &number), ARNM_SUCCESS);
+  for (uint32_t word = 0; word < 1000; ++word) {
+    ASSERT_EQ(doc_collector_add_posting(&collector, word), ARNM_SUCCESS);
+  }
+  CollectorLimit limit{};
+  limit.vector = "poisoned";
+  EXPECT_FALSE(doc_collector_limit(&collector, &limit));
+  EXPECT_STREQ(limit.vector, "poisoned") << "a collector that fits writes nothing";
+  doc_collector_free(&collector);
+}
+
+TEST(DocCollectorLimit, TheCeilingIsWhatABucketVectorReallyReaches) {
+  // The index array grows in fixed steps and stops at the last one under the cap,
+  // so the reachable bucket count is the cap rounded down to that step. A ceiling
+  // that named the cap itself would promise room no vector ever has.
+  EXPECT_EQ(GEO_VEC_CEILING % (size_t{1} << GEO_WORD_VEC_BUCKET_LOG2), 0u);
+  EXPECT_LE(GEO_VEC_CEILING, (size_t)ARNM_BVEC_MAX_INDEX_CAPACITY << GEO_WORD_VEC_BUCKET_LOG2);
+  EXPECT_GT(GEO_VEC_CEILING, 0u);
+
+  // and every vector of a collector is sized for exactly that many
+  EXPECT_EQ(GEO_DOCUMENT_VEC_BUCKET_LOG2, GEO_WORD_VEC_BUCKET_LOG2);
+  EXPECT_EQ(GEO_VARIANT_VEC_BUCKET_LOG2, GEO_WORD_VEC_BUCKET_LOG2);
+  EXPECT_EQ(GEO_START_VEC_BUCKET_LOG2, GEO_WORD_VEC_BUCKET_LOG2);
 }
 
 TEST(DocCollectorGuards, APostingBeforeAnyDocumentIsRefused) {
