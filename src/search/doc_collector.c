@@ -8,27 +8,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-HOSTMEM_BVEC_DEFINE(geo_document_vec, GeoDocument, 9, )
-HOSTMEM_BVEC_DEFINE(geo_variant_vec, GeoVariantRecord, 10, )
-HOSTMEM_BVEC_DEFINE(geo_word_vec, uint32_t, 12, )
-HOSTMEM_BVEC_DEFINE(geo_start_vec, uint32_t, 12, )
-
 /* =========================================================================
  *  Per-thread collecting
  * ========================================================================= */
 
-hostmem_result doc_collector_init(DocCollector *collector) {
-  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result doc_collector_init(DocCollector *collector) {
+  if (!collector) return ARNM_ERROR_NULL_POINTER;
   collector->dropped_words = 0;
   collector->dropped_doubles = 0;
   collector->seen_count = 0;
-  hostmem_result result = geo_document_vec_init(&collector->documents, NULL);
-  if (result != HOSTMEM_SUCCESS) return result;
-  result = geo_variant_vec_init(&collector->variants, NULL);
-  if (result != HOSTMEM_SUCCESS) return result;
-  result = geo_word_vec_init(&collector->words, NULL);
-  if (result != HOSTMEM_SUCCESS) return result;
-  return geo_start_vec_init(&collector->starts, NULL);
+  arnm_result result =
+      geo_document_vec_init(&collector->documents, GEO_DOCUMENT_VEC_BUCKET_LOG2, 0, NULL);
+  if (result != ARNM_SUCCESS) return result;
+  result = geo_variant_vec_init(&collector->variants, GEO_VARIANT_VEC_BUCKET_LOG2, 0, NULL);
+  if (result != ARNM_SUCCESS) return result;
+  result = geo_word_vec_init(&collector->words, GEO_WORD_VEC_BUCKET_LOG2, 0, NULL);
+  if (result != ARNM_SUCCESS) return result;
+  return geo_start_vec_init(&collector->starts, GEO_START_VEC_BUCKET_LOG2, 0, NULL);
 }
 
 void doc_collector_free(DocCollector *collector) {
@@ -40,31 +36,31 @@ void doc_collector_free(DocCollector *collector) {
   collector->dropped_words = 0;
 }
 
-hostmem_result doc_collector_add_document(
+arnm_result doc_collector_add_document(
     DocCollector *collector, const GeoDocument *document, uint32_t *out_number
 ) {
-  if (!collector || !document || !out_number) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!collector || !document || !out_number) return ARNM_ERROR_NULL_POINTER;
   size_t number = geo_document_vec_size(&collector->documents);
 
   /* the words of this document begin where the words so far end */
-  hostmem_result result =
+  arnm_result result =
       geo_start_vec_push(&collector->starts, (uint32_t)geo_word_vec_size(&collector->words));
-  if (result != HOSTMEM_SUCCESS) return result;
+  if (result != ARNM_SUCCESS) return result;
   result = geo_document_vec_push_ptr(&collector->documents, document);
-  if (result != HOSTMEM_SUCCESS) return result;
+  if (result != ARNM_SUCCESS) return result;
 
   collector->seen_count = 0; /* a fresh document has heard nothing yet */
   *out_number = (uint32_t)number;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
-hostmem_result doc_collector_add_variant(
+arnm_result doc_collector_add_variant(
     DocCollector *collector, uint32_t language, uint32_t name_rank, uint32_t city_rank
 ) {
-  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
-  if (name_rank == GEO_RANK_NONE && city_rank == GEO_RANK_NONE) return HOSTMEM_SUCCESS;
+  if (!collector) return ARNM_ERROR_NULL_POINTER;
+  if (name_rank == GEO_RANK_NONE && city_rank == GEO_RANK_NONE) return ARNM_SUCCESS;
   size_t documents = geo_document_vec_size(&collector->documents);
-  if (!documents) return HOSTMEM_SUCCESS; /* nothing is open to hang it on */
+  if (!documents) return ARNM_SUCCESS; /* nothing is open to hang it on */
 
   GeoVariantRecord reading = {
       .record = (uint32_t)(documents - 1),
@@ -75,14 +71,14 @@ hostmem_result doc_collector_add_variant(
   return geo_variant_vec_push_ptr(&collector->variants, &reading);
 }
 
-hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
-  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result doc_collector_add_posting(DocCollector *collector, uint32_t word) {
+  if (!collector) return ARNM_ERROR_NULL_POINTER;
 
   /* --- the same word, still the same document: it has already been noted --- */
   for (size_t s = 0; s < collector->seen_count; ++s) {
     if (collector->seen[s] == word) {
       ++collector->dropped_doubles;
-      return HOSTMEM_SUCCESS;
+      return ARNM_SUCCESS;
     }
   }
   if (collector->seen_count < POSTING_RUN_MAX) collector->seen[collector->seen_count++] = word;
@@ -187,7 +183,7 @@ static int compare_variant_slot(const void *left, const void *right) {
 
 /** Where one record's words lie, and in which thread's vector. */
 typedef struct WordRange {
-  const geo_word_vec *words;
+  const arnm_bvec *words;
   uint32_t start;
   uint32_t count;
 } WordRange;
@@ -211,39 +207,39 @@ static WordRange word_range_of(
   return range;
 }
 
-hostmem_result doc_collector_merge(
+arnm_result doc_collector_merge(
     DocSet *out,
     DocCollector *const *collectors,
     size_t collector_count,
     size_t word_count,
     size_t language_count
 ) {
-  if (!out) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!out) return ARNM_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
-  if (collector_count && !collectors) return HOSTMEM_ERROR_NULL_POINTER;
+  if (collector_count && !collectors) return ARNM_ERROR_NULL_POINTER;
   out->word_count = word_count;
 
   size_t record_count = 0;
   for (size_t c = 0; c < collector_count; ++c) {
-    if (!collectors[c]) return HOSTMEM_ERROR_NULL_POINTER;
+    if (!collectors[c]) return ARNM_ERROR_NULL_POINTER;
     record_count += doc_collector_document_count(collectors[c]);
   }
-  if (record_count > UINT32_MAX) return HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
-  if (collector_count > 64) return HOSTMEM_ERROR_INVALID_PARAM;
+  if (record_count > UINT32_MAX) return ARNM_ERROR_ARITHMETIC_OVERFLOW;
+  if (collector_count > 64) return ARNM_ERROR_INVALID_PARAM;
   out->segment_count = record_count;
   if (!record_count) {
     out->posting_offsets = calloc(word_count + 1, sizeof(uint32_t));
-    if (!out->posting_offsets) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    if (!out->posting_offsets) return ARNM_ERROR_OUT_OF_MEMORY;
     if (language_count) {
       out->language_offsets = calloc(language_count + 1, sizeof(uint32_t));
       if (!out->language_offsets) {
         free(out->posting_offsets);
         memset(out, 0, sizeof(*out));
-        return HOSTMEM_ERROR_OUT_OF_MEMORY;
+        return ARNM_ERROR_OUT_OF_MEMORY;
       }
       out->language_count = language_count;
     }
-    return HOSTMEM_SUCCESS;
+    return ARNM_SUCCESS;
   }
 
   /* --- the records move into one array, thread after thread --- */
@@ -264,8 +260,8 @@ hostmem_result doc_collector_merge(
   size_t written = 0;
   for (size_t c = 0; c < collector_count; ++c) {
     base[c] = (uint32_t)written;
-    geo_document_vec *vec = &collectors[c]->documents;
-    for (size_t b = 0, buckets = geo_document_vec_bucket_count(vec); b < buckets; ++b) {
+    arnm_bvec *vec = &collectors[c]->documents;
+    for (uint16_t b = 0, buckets = geo_document_vec_bucket_count(vec); b < buckets; ++b) {
       size_t count = geo_document_vec_bucket_size(vec, b);
       memcpy(records + written, geo_document_vec_bucket_data(vec, b), count * sizeof(*records));
       written += count;
@@ -423,7 +419,7 @@ hostmem_result doc_collector_merge(
       if (!slots) { goto out_of_memory; }
       size_t taken = 0;
       for (size_t c = 0; c < collector_count; ++c) {
-        geo_variant_vec *vec = &collectors[c]->variants;
+        arnm_bvec *vec = &collectors[c]->variants;
         for (size_t v = 0, held = geo_variant_vec_size(vec); v < held; ++v) {
           const GeoVariantRecord *reading = geo_variant_vec_get(vec, v);
           if (reading->language >= language_count) continue; /* not a language of this build */
@@ -555,7 +551,7 @@ hostmem_result doc_collector_merge(
   out->variant_count = variant_count;
   out->language_offsets = language_offsets;
   out->language_count = language_count;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 
 out_of_memory:
   free(records);
@@ -571,7 +567,7 @@ out_of_memory:
   free(out->postings);
   free(out->posting_offsets);
   memset(out, 0, sizeof(*out));
-  return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  return ARNM_ERROR_OUT_OF_MEMORY;
 }
 
 /**

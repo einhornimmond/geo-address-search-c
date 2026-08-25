@@ -23,12 +23,12 @@
    for them again, their include guards make it a no-op. */
 #include <roaring/roaring.h>
 
-#include "hostmem/memory.h"
-#include "hostmem/result.h"
-#include "hostmem/bucket_vector.h"
-#include "hostmem/converter.h"
-#include "hostmem/mono_timer.h"
-#include "hostmem/multi_arena.h"
+#include "arnm/memory.h"
+#include "arnm/result.h"
+#include "arnm/bucket_vector.h"
+#include "arnm/converter.h"
+#include "arnm/mono_timer.h"
+#include "arnm/multi_arena.h"
 
 #ifdef __cplusplus
 #ifndef _Noreturn

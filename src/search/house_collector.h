@@ -30,8 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "hostmem/result.h"
-#include "hostmem/bucket_vector.h"
+#include "arnm/result.h"
+#include "arnm/bucket_vector.h"
 #include "search/doc_collector.h"
 
 /** A house as it is gathered, still knowing which street it named. */
@@ -40,12 +40,18 @@ typedef struct HouseEntry {
   GeoHouse house;    /**< Number and position relative to that street. */
 } HouseEntry;
 
-/** Houses of one thread — 2048 per bucket, 24 KiB. */
-HOSTMEM_BVEC_DECLARE(house_vec, HouseEntry, 11, extern)
+/** Elements per bucket of a house vector, as a power of two — 32768 per bucket, 512 KiB.
+ *
+ *  A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY buckets, so the exponent
+ *  is what decides the ceiling: 32768 × 8191 ≈ 268 M houses per thread.  The planet carries
+ *  249 M of them in total, which one thread alone would only just hold. */
+#define HOUSE_VEC_BUCKET_LOG2 15
+
+ARNM_BVEC_DEFINE(house_vec, HouseEntry)
 
 /** One thread's harvest of the third pass. */
 typedef struct HouseCollector {
-  house_vec houses;            /**< What this thread gathered, in the order it met them. */
+  arnm_bvec houses;            /**< What this thread gathered, in the order it met them. */
   uint64_t homeless;           /**< Houses whose street the index never learned. */
   uint64_t pointless;          /**< Houses that brought no coordinate and took their street's. */
   uint64_t without_number;     /**< Entries carrying no house number at all. */
@@ -65,10 +71,10 @@ typedef struct HouseCollector {
  *  collector is a no-op.
  *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER when @p collector is
+ *  @return ARNM_SUCCESS, or ARNM_ERROR_NULL_POINTER when @p collector is
  *          NULL — the only way this can fail.
  */
-hostmem_result house_collector_init(HouseCollector *collector);
+arnm_result house_collector_init(HouseCollector *collector);
 
 /** @brief Release the vector. Safe to call with NULL. */
 void house_collector_free(HouseCollector *collector);
@@ -86,9 +92,9 @@ void house_collector_free(HouseCollector *collector);
  *  @param[in]     lat_e7       The house's own latitude, or 0 when it has none.
  *  @param[in]     lon_e7       Its longitude.
  *  @param[in]     has_point    Whether the house brought a coordinate at all.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, or ARNM_ERROR_OUT_OF_MEMORY.
  */
-hostmem_result house_collector_add(
+arnm_result house_collector_add(
     HouseCollector *collector,
     uint32_t document,
     const GeoDocument *street,
@@ -134,16 +140,16 @@ typedef struct HouseSet {
  *  @param[in]  collectors       Array of @p collector_count collector pointers.
  *  @param[in]  collector_count  Number of collectors.
  *  @param[in]  document_count   Documents the offsets must cover.
- *  @retval HOSTMEM_SUCCESS            The houses are joined and ordered by street.
- *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
- *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
- *                                     houses between them, which the offsets could not
- *                                     index.
- *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The offsets or the arrays could not be taken.
+ *  @retval ARNM_SUCCESS            The houses are joined and ordered by street.
+ *  @retval ARNM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
+ *  @retval ARNM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
+ *                                  houses between them, which the offsets could not
+ *                                  index.
+ *  @retval ARNM_ERROR_OUT_OF_MEMORY The offsets or the arrays could not be taken.
  *
  *  @whisper The numbers line up along their street, and the street knows where they start
  */
-hostmem_result house_collector_merge(
+arnm_result house_collector_merge(
     HouseSet *out, HouseCollector *const *collectors, size_t collector_count, size_t document_count
 );
 

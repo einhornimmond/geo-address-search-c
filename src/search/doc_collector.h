@@ -42,8 +42,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "hostmem/result.h"
-#include "hostmem/bucket_vector.h"
+#include "arnm/result.h"
+#include "arnm/bucket_vector.h"
 
 /** Marks a display field the entry did not carry. */
 #define GEO_RANK_NONE UINT32_MAX
@@ -102,17 +102,34 @@ typedef struct GeoVariantRecord {
   uint32_t language;  /**< Index into the build's language list. */
 } GeoVariantRecord;
 
-/** Documents of one thread — 512 per bucket, 12 KiB of contiguous records. */
-HOSTMEM_BVEC_DECLARE(geo_document_vec, GeoDocument, 9, extern)
+/* A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY (8191) buckets, so the
+ * exponent alone decides how much one thread can gather: 2^log2 × 8191 elements.  The
+ * figures below are chosen against the planet dump — 34.7 M documents, some 139 M word
+ * postings — so that a single-threaded build still fits, not merely a four-threaded one. */
 
-/** Localized readings of one thread — 1024 per bucket, 16 KiB. */
-HOSTMEM_BVEC_DECLARE(geo_variant_vec, GeoVariantRecord, 10, extern)
+/** Documents of one thread — 8192 per bucket, 192 KiB; ceiling 67 M records. */
+#define GEO_DOCUMENT_VEC_BUCKET_LOG2 13
 
-/** Word ranks of one thread — 4096 per bucket, 16 KiB. */
-HOSTMEM_BVEC_DECLARE(geo_word_vec, uint32_t, 12, extern)
+/** Localized readings of one thread — 8192 per bucket, 128 KiB; ceiling 67 M readings. */
+#define GEO_VARIANT_VEC_BUCKET_LOG2 13
+
+/** Word ranks of one thread — 32768 per bucket, 128 KiB; ceiling 268 M postings. */
+#define GEO_WORD_VEC_BUCKET_LOG2 15
+
+/** Where each document's words begin — 8192 per bucket, 32 KiB; ceiling 67 M documents. */
+#define GEO_START_VEC_BUCKET_LOG2 13
+
+/** Documents of one thread. */
+ARNM_BVEC_DEFINE(geo_document_vec, GeoDocument)
+
+/** Localized readings of one thread. */
+ARNM_BVEC_DEFINE(geo_variant_vec, GeoVariantRecord)
+
+/** Word ranks of one thread. */
+ARNM_BVEC_DEFINE(geo_word_vec, uint32_t)
 
 /** Where each document's words begin — one entry per document. */
-HOSTMEM_BVEC_DECLARE(geo_start_vec, uint32_t, 12, extern)
+ARNM_BVEC_DEFINE(geo_start_vec, uint32_t)
 
 /** Words of one document compared against each other before anything is stored. */
 #define POSTING_RUN_MAX 64
@@ -157,10 +174,10 @@ typedef struct GeoStreetKey {
  *  the largest thing in memory when the threads are joined.
  */
 typedef struct DocCollector {
-  geo_document_vec documents;     /**< One record per place this thread met. */
-  geo_variant_vec variants;       /**< Localized readings, pointing back at those records. */
-  geo_word_vec words;             /**< Word ranks, grouped by document. */
-  geo_start_vec starts;           /**< First word of each document. */
+  arnm_bvec documents;            /**< One record per place this thread met. */
+  arnm_bvec variants;             /**< Localized readings, pointing back at those records. */
+  arnm_bvec words;                /**< Word ranks, grouped by document. */
+  arnm_bvec starts;               /**< First word of each document. */
   uint64_t dropped_words;         /**< Tokens the dictionary did not know — 0 in a sound build. */
   uint64_t dropped_doubles;       /**< Repetitions of a word within one document. */
   uint32_t seen[POSTING_RUN_MAX]; /**< Words of the open document so far. */
@@ -176,10 +193,10 @@ typedef struct DocCollector {
  *  collector is a no-op.
  *
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
- *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER when @p collector is
+ *  @return ARNM_SUCCESS, or ARNM_ERROR_NULL_POINTER when @p collector is
  *          NULL — the only way this can fail.
  */
-hostmem_result doc_collector_init(DocCollector *collector);
+arnm_result doc_collector_init(DocCollector *collector);
 
 /** @brief Release the vectors. Safe to call with NULL. */
 void doc_collector_free(DocCollector *collector);
@@ -193,9 +210,9 @@ void doc_collector_free(DocCollector *collector);
  *  @param[in,out] collector  Collector receiving the document.
  *  @param[in]     document   Record to store; copied.
  *  @param[out]    out_number Receives the thread-local document number.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, or ARNM_ERROR_OUT_OF_MEMORY.
  */
-hostmem_result doc_collector_add_document(
+arnm_result doc_collector_add_document(
     DocCollector *collector, const GeoDocument *document, uint32_t *out_number
 );
 
@@ -210,9 +227,9 @@ hostmem_result doc_collector_add_document(
  *
  *  @param[in,out] collector  Collector receiving the word.
  *  @param[in]     word       Rank in the word dictionary.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, or ARNM_ERROR_OUT_OF_MEMORY.
  */
-hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word);
+arnm_result doc_collector_add_posting(DocCollector *collector, uint32_t word);
 
 /**
  * @brief Note how @p language writes the document opened last.
@@ -225,9 +242,9 @@ hostmem_result doc_collector_add_posting(DocCollector *collector, uint32_t word)
  *  @param[in]     language   Index into the build's language list.
  *  @param[in]     name_rank  Display rank of the name, or GEO_RANK_NONE.
  *  @param[in]     city_rank  Display rank of the town, or GEO_RANK_NONE.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, or HOSTMEM_ERROR_OUT_OF_MEMORY.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, or ARNM_ERROR_OUT_OF_MEMORY.
  */
-hostmem_result doc_collector_add_variant(
+arnm_result doc_collector_add_variant(
     DocCollector *collector, uint32_t language, uint32_t name_rank, uint32_t city_rank
 );
 
@@ -343,18 +360,18 @@ uint32_t doc_set_find_street(
  *                               above it belongs to no language of this build and is
  *                               passed over.  0 leaves the variant table empty and
  *                               costs nothing.
- *  @retval HOSTMEM_SUCCESS            The set is joined and owns its arrays.
- *  @retval HOSTMEM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
- *  @retval HOSTMEM_ERROR_INVALID_PARAM @p collector_count is above 64 — one per parser
- *                                     thread, and there are never that many.
- *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
- *                                     documents between them, which no document number
- *                                     could address.
- *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The arrays could not be taken.
+ *  @retval ARNM_SUCCESS            The set is joined and owns its arrays.
+ *  @retval ARNM_ERROR_NULL_POINTER @p out is NULL, or a collector pointer is.
+ *  @retval ARNM_ERROR_INVALID_PARAM @p collector_count is above 64 — one per parser
+ *                                  thread, and there are never that many.
+ *  @retval ARNM_ERROR_ARITHMETIC_OVERFLOW The collectors hold more than UINT32_MAX
+ *                                  documents between them, which no document number
+ *                                  could address.
+ *  @retval ARNM_ERROR_OUT_OF_MEMORY The arrays could not be taken.
  *
  *  @whisper Many voices name the same places, and the names are gathered under one roof
  */
-hostmem_result doc_collector_merge(
+arnm_result doc_collector_merge(
     DocSet *out,
     DocCollector *const *collectors,
     size_t collector_count,

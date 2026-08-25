@@ -66,7 +66,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "hostmem/result.h"
+#include "arnm/result.h"
 #include "parser/json_parse.h"
 
 /** Eight bytes opening every cache file. */
@@ -169,10 +169,10 @@ bool place_cache_is_current(const char *directory, const PlaceCacheStamp *want);
  *
  *  @param[in] directory  Where the files lie.
  *  @param[in] stamp      Stamp from place_cache_stamp_of().
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY or
- *          HOSTMEM_ERROR_ENCODE_FAILED.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, ARNM_ERROR_OUT_OF_MEMORY or
+ *          ARNM_ERROR_ENCODE_FAILED.
  */
-hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
+arnm_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp);
 
 /**
  * @brief How many bytes of a cache lie under @p directory.
@@ -263,10 +263,10 @@ const char *place_cache_room_reason(PlaceCacheRoom room);
  *  @param[out] writer     Receives the open pair; zeroed on failure.
  *  @param[in]  directory  Where the files are laid down.
  *  @param[in]  thread     Thread number, part of the file name.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY, or
- *          HOSTMEM_ERROR_ENCODE_FAILED when a file could not be opened.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, ARNM_ERROR_OUT_OF_MEMORY, or
+ *          ARNM_ERROR_ENCODE_FAILED when a file could not be opened.
  */
-hostmem_result place_cache_writer_open(
+arnm_result place_cache_writer_open(
     PlaceCacheWriter *writer, const char *directory, unsigned thread
 );
 
@@ -278,13 +278,13 @@ hostmem_result place_cache_writer_open(
  *
  *  @param[in,out] writer  Open writer.
  *  @param[in]     place   Entry as the parser handed it over.
- *  @retval HOSTMEM_SUCCESS            Written, or passed over as described above.
- *  @retval HOSTMEM_ERROR_NULL_POINTER @p writer or @p place is NULL.
- *  @retval HOSTMEM_ERROR_OUT_OF_MEMORY The record outgrew the writer's buffer and it
- *                                     could not be grown; nothing was written.
- *  @retval HOSTMEM_ERROR_ENCODE_FAILED The write to the file did not go through.
+ *  @retval ARNM_SUCCESS            Written, or passed over as described above.
+ *  @retval ARNM_ERROR_NULL_POINTER @p writer or @p place is NULL.
+ *  @retval ARNM_ERROR_OUT_OF_MEMORY The record outgrew the writer's buffer and it
+ *                                  could not be grown; nothing was written.
+ *  @retval ARNM_ERROR_ENCODE_FAILED The write to the file did not go through.
  */
-hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
+arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
 
 /** @brief Flush and close both files, leaving them on disk. Safe with NULL. */
 void place_cache_writer_close(PlaceCacheWriter *writer);
@@ -301,11 +301,11 @@ void place_cache_writer_remove(PlaceCacheWriter *writer);
  *  @param[in]  directory  Where the files were laid down.
  *  @param[in]  thread     Thread number the file was written under.
  *  @param[in]  kind       Which half to read.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER, HOSTMEM_ERROR_OUT_OF_MEMORY,
- *          HOSTMEM_ERROR_DECODE_FAILED when the file cannot be opened, or
- *          HOSTMEM_ERROR_INVALID_PARAM when it was not written by this build.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, ARNM_ERROR_OUT_OF_MEMORY,
+ *          ARNM_ERROR_DECODE_FAILED when the file cannot be opened, or
+ *          ARNM_ERROR_INVALID_PARAM when it was not written by this build.
  */
-hostmem_result place_cache_reader_open(
+arnm_result place_cache_reader_open(
     PlaceCacheReader *reader, const char *directory, unsigned thread, PlaceCacheKind kind
 );
 

@@ -5,14 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-HOSTMEM_BVEC_DEFINE(house_vec, HouseEntry, 11, )
-
 /* =========================================================================
  *  Per-thread collecting
  * ========================================================================= */
 
-hostmem_result house_collector_init(HouseCollector *collector) {
-  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result house_collector_init(HouseCollector *collector) {
+  if (!collector) return ARNM_ERROR_NULL_POINTER;
   collector->homeless = 0;
   collector->pointless = 0;
   collector->without_number = 0;
@@ -21,7 +19,7 @@ hostmem_result house_collector_init(HouseCollector *collector) {
   collector->recovered_city = 0;
   collector->recovered_postcode = 0;
   collector->recovered_nearest = 0;
-  return house_vec_init(&collector->houses, NULL);
+  return house_vec_init(&collector->houses, HOUSE_VEC_BUCKET_LOG2, 0, NULL);
 }
 
 void house_collector_free(HouseCollector *collector) {
@@ -29,7 +27,7 @@ void house_collector_free(HouseCollector *collector) {
   house_vec_free(&collector->houses);
 }
 
-hostmem_result house_collector_add(
+arnm_result house_collector_add(
     HouseCollector *collector,
     uint32_t document,
     const GeoDocument *street,
@@ -38,7 +36,7 @@ hostmem_result house_collector_add(
     int32_t lon_e7,
     int has_point
 ) {
-  if (!collector || !street) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!collector || !street) return ARNM_ERROR_NULL_POINTER;
 
   HouseEntry entry = {
       .document = document,
@@ -68,17 +66,17 @@ static int compare_house(const void *lhs, const void *rhs) {
   return a < b ? -1 : (a > b ? 1 : 0);
 }
 
-hostmem_result house_collector_merge(
+arnm_result house_collector_merge(
     HouseSet *out, HouseCollector *const *collectors, size_t collector_count, size_t document_count
 ) {
-  if (!out) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!out) return ARNM_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
-  if (collector_count && !collectors) return HOSTMEM_ERROR_NULL_POINTER;
+  if (collector_count && !collectors) return ARNM_ERROR_NULL_POINTER;
   out->document_count = document_count;
 
   size_t house_count = 0;
   for (size_t c = 0; c < collector_count; ++c) {
-    if (!collectors[c]) return HOSTMEM_ERROR_NULL_POINTER;
+    if (!collectors[c]) return ARNM_ERROR_NULL_POINTER;
     house_count += house_collector_count(collectors[c]);
     out->homeless += collectors[c]->homeless;
     out->pointless += collectors[c]->pointless;
@@ -91,19 +89,19 @@ hostmem_result house_collector_merge(
   }
 
   uint32_t *offsets = calloc(document_count + 1, sizeof(*offsets));
-  if (!offsets) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (!offsets) return ARNM_ERROR_OUT_OF_MEMORY;
   if (!house_count) {
     out->offsets = offsets;
-    return HOSTMEM_SUCCESS;
+    return ARNM_SUCCESS;
   }
   if (house_count > UINT32_MAX) {
     free(offsets);
-    return HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
+    return ARNM_ERROR_ARITHMETIC_OVERFLOW;
   }
 
   /* --- how many houses stand on each street --- */
   for (size_t c = 0; c < collector_count; ++c) {
-    const house_vec *vec = &collectors[c]->houses;
+    const arnm_bvec *vec = &collectors[c]->houses;
     size_t total = house_vec_size(vec);
     for (size_t i = 0; i < total; ++i) {
       uint32_t document = house_vec_get(vec, i)->document;
@@ -125,12 +123,12 @@ hostmem_result house_collector_merge(
     free(houses);
     free(cursor);
     free(offsets);
-    return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    return ARNM_ERROR_OUT_OF_MEMORY;
   }
   memcpy(cursor, offsets, document_count * sizeof(*cursor));
 
   for (size_t c = 0; c < collector_count; ++c) {
-    house_vec *vec = &collectors[c]->houses;
+    arnm_bvec *vec = &collectors[c]->houses;
     size_t total = house_vec_size(vec);
     for (size_t i = 0; i < total; ++i) {
       const HouseEntry *entry = house_vec_get(vec, i);
@@ -151,7 +149,7 @@ hostmem_result house_collector_merge(
   out->houses = houses;
   out->house_count = running;
   out->offsets = offsets;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 void house_set_free(HouseSet *set) {

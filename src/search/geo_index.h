@@ -67,7 +67,7 @@
 
 #include <roaring/roaring.h>
 
-#include "hostmem/result.h"
+#include "arnm/result.h"
 #include "search/doc_collector.h"
 #include "search/house_collector.h"
 #include "search/name_collector.h"
@@ -224,16 +224,16 @@ typedef struct GeoIndex {
  *  @param[in] language_tags One tag per language @p documents counted; may be
  *                          NULL where there are none.
  *  @param[in] total_terms  Terms seen while building, kept for the report.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
- *          HOSTMEM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB, the
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER on a NULL argument,
+ *          ARNM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB, the
  *          localized readings outgrow what a uint32 addresses or @p documents
  *          counts more than @ref GEO_LANGUAGE_MAX languages,
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
- *          HOSTMEM_ERROR_ENCODE_FAILED when the file could not be written.
+ *          ARNM_ERROR_OUT_OF_MEMORY when an offset table did not fit, or
+ *          ARNM_ERROR_ENCODE_FAILED when the file could not be written.
  *
  *  @whisper The work of minutes lies down in the order it will be read
  */
-hostmem_result geo_index_write(
+arnm_result geo_index_write(
     const char *path,
     const NameSet *words,
     const NameSet *display,
@@ -252,12 +252,12 @@ hostmem_result geo_index_write(
  *
  *  @param[out] index  Receives the opened index; zeroed on failure.
  *  @param[in]  path   File written by geo_index_write().
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
- *          HOSTMEM_ERROR_DECODE_FAILED when the file cannot be opened or mapped,
- *          HOSTMEM_ERROR_INVALID_PARAM when the header does not fit this build, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when a tree could not be rebuilt.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER on a NULL argument,
+ *          ARNM_ERROR_DECODE_FAILED when the file cannot be opened or mapped,
+ *          ARNM_ERROR_INVALID_PARAM when the header does not fit this build, or
+ *          ARNM_ERROR_OUT_OF_MEMORY when a tree could not be rebuilt.
  */
-hostmem_result geo_index_open(GeoIndex *index, const char *path);
+arnm_result geo_index_open(GeoIndex *index, const char *path);
 
 /**
  * @brief Release the mapping and the trees.

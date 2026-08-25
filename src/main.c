@@ -27,7 +27,7 @@
 #include "search/name_collector.h"
 #include "search/text_tokenize.h"
 
-#include "hostmem/multi_arena.h"
+#include "arnm/multi_arena.h"
 
 #include <inttypes.h>
 #include <pthread.h>
@@ -44,9 +44,9 @@
 static_assert(PHOTON_LANGUAGE_TAG_MAX == GEO_LANGUAGE_TAG_MAX, "language tag width drifted");
 static_assert(PHOTON_LANGUAGE_MAX <= GEO_LANGUAGE_MAX, "more languages than a file may hold");
 
-#include "hostmem/converter.h"
-#include "hostmem/duration.h"
-#include "hostmem/mono_timer.h"
+#include "arnm/converter.h"
+#include "arnm/duration.h"
+#include "arnm/mono_timer.h"
 
 /** Buffers in the pool: what the queue can hold, plus the few in flight around it. */
 enum { BUFFER_POOL_CAPACITY = PARSE_QUEUE_CAPACITY + 4 };
@@ -125,23 +125,23 @@ typedef struct ParserThreadArgs {
   unsigned thread;                  /**< This thread's number, and its cache file's. */
   const char *cache_directory;      /**< Where the cache lies, or NULL. */
   PlaceCacheWriter *cache_write;    /**< Set while the first pass fills the cache. */
-  hostmem_result cache_result;      /**< First failure of the cache, either way. */
+  arnm_result cache_result;         /**< First failure of the cache, either way. */
   _Atomic uint64_t cache_bytes;     /**< Cache bytes this thread has read, for the progress. */
   _Atomic bool cache_finished;      /**< Set when this thread has read its last record. */
-  hostmem_multi_arena *names;       /**< Private arena chain — a chain is not thread-safe. */
+  arnm *names;                      /**< Private arena chain — a chain is not thread-safe. */
   NameCollector words;              /**< Folded search words of this thread. */
   NameCollector display;            /**< The same places as they are written. */
   TextTokenizer tokenizer;          /**< Folding scratch space, one per thread. */
   NameRun word_run;                 /**< Words, sorted once the queue ran dry. */
   NameRun display_run;              /**< Spellings, likewise. */
-  hostmem_result finish_result;     /**< Outcome of the thread's own sorting pass. */
+  arnm_result finish_result;        /**< Outcome of the thread's own sorting pass. */
   const NameSet *word_set;          /**< Second pass: where a word finds its rank. */
   const NameSet *display_set;       /**< Second pass: where a spelling finds its rank. */
   DocCollector documents;           /**< Second pass: what this thread found. */
-  hostmem_result document_result;   /**< First failure while collecting documents. */
+  arnm_result document_result;      /**< First failure while collecting documents. */
   const DocSet *doc_set;            /**< Third pass: where a street became a document. */
   HouseCollector houses;            /**< Third pass: the numbers this thread met. */
-  hostmem_result house_result;      /**< First failure while collecting houses. */
+  arnm_result house_result;         /**< First failure while collecting houses. */
   JsonStats stats;
 } ParserThreadArgs;
 
@@ -194,9 +194,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
     size_t tokens = text_tokenize(&args->tokenizer, place->search[i].data, place->search[i].size);
     for (size_t t = 0; t < tokens; ++t) {
       const TextToken *token = &args->tokenizer.tokens[t];
-      hostmem_result result = name_collector_add(&args->words, token->data, token->size);
-      if (result != HOSTMEM_SUCCESS) {
-        fatal(ERROR_MEMORY, "Failed to keep search term (hostmem_result %d).", (int)result);
+      arnm_result result = name_collector_add(&args->words, token->data, token->size);
+      if (result != ARNM_SUCCESS) {
+        fatal(ERROR_MEMORY, "Failed to keep search term (arnm_result %d).", (int)result);
       }
     }
   }
@@ -205,9 +205,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
   char cell[GEO_CELL_TOKEN_SIZE];
   size_t cell_size = place_cell_token(cell, place);
   if (cell_size) {
-    hostmem_result result = name_collector_add(&args->words, cell, cell_size);
-    if (result != HOSTMEM_SUCCESS) {
-      fatal(ERROR_MEMORY, "Failed to keep cell word (hostmem_result %d).", (int)result);
+    arnm_result result = name_collector_add(&args->words, cell, cell_size);
+    if (result != ARNM_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep cell word (arnm_result %d).", (int)result);
     }
   }
 
@@ -227,9 +227,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
   size_t first = place_becomes_document(place) ? 0 : 1;
   size_t count = place->house.data ? sizeof(written) / sizeof(written[0]) : 3;
   for (size_t i = first; i < count; ++i) {
-    hostmem_result result = name_collector_add(&args->display, written[i].data, written[i].size);
-    if (result != HOSTMEM_SUCCESS) {
-      fatal(ERROR_MEMORY, "Failed to keep display text (hostmem_result %d).", (int)result);
+    arnm_result result = name_collector_add(&args->display, written[i].data, written[i].size);
+    if (result != ARNM_SUCCESS) {
+      fatal(ERROR_MEMORY, "Failed to keep display text (arnm_result %d).", (int)result);
     }
   }
 
@@ -240,10 +240,9 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
     for (uint8_t v = 0; v < place->variant_count; ++v) {
       const PhotonString reading[] = {place->variants[v].name, place->variants[v].city};
       for (size_t i = 0; i < sizeof(reading) / sizeof(reading[0]); ++i) {
-        hostmem_result result =
-            name_collector_add(&args->display, reading[i].data, reading[i].size);
-        if (result != HOSTMEM_SUCCESS) {
-          fatal(ERROR_MEMORY, "Failed to keep localized text (hostmem_result %d).", (int)result);
+        arnm_result result = name_collector_add(&args->display, reading[i].data, reading[i].size);
+        if (result != ARNM_SUCCESS) {
+          fatal(ERROR_MEMORY, "Failed to keep localized text (arnm_result %d).", (int)result);
         }
       }
     }
@@ -281,13 +280,11 @@ static void collect_house(ParserThreadArgs *args, const PhotonPlace *place) {
   if (relaxed == 2) ++args->houses.recovered_postcode;
   if (relaxed == 3) ++args->houses.recovered_nearest;
 
-  hostmem_result result = house_collector_add(
+  arnm_result result = house_collector_add(
       &args->houses, document, &args->doc_set->documents[document], number, place->lat_e7,
       place->lon_e7, place->has_point
   );
-  if (result != HOSTMEM_SUCCESS && args->house_result == HOSTMEM_SUCCESS) {
-    args->house_result = result;
-  }
+  if (result != ARNM_SUCCESS && args->house_result == ARNM_SUCCESS) { args->house_result = result; }
 }
 
 /** Second pass: the entry becomes a document, and its words point at it. */
@@ -308,9 +305,9 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   };
 
   uint32_t number = 0;
-  hostmem_result result = doc_collector_add_document(&args->documents, &document, &number);
-  if (result != HOSTMEM_SUCCESS) {
-    if (args->document_result == HOSTMEM_SUCCESS) args->document_result = result;
+  arnm_result result = doc_collector_add_document(&args->documents, &document, &number);
+  if (result != ARNM_SUCCESS) {
+    if (args->document_result == ARNM_SUCCESS) args->document_result = result;
     return;
   }
 
@@ -326,7 +323,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
         display_rank(args->display_set, place->variants[v].name),
         display_rank(args->display_set, place->variants[v].city)
     );
-    if (result != HOSTMEM_SUCCESS && args->document_result == HOSTMEM_SUCCESS) {
+    if (result != ARNM_SUCCESS && args->document_result == ARNM_SUCCESS) {
       args->document_result = result;
       return;
     }
@@ -342,7 +339,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
         continue;
       }
       result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
-      if (result != HOSTMEM_SUCCESS && args->document_result == HOSTMEM_SUCCESS) {
+      if (result != ARNM_SUCCESS && args->document_result == ARNM_SUCCESS) {
         args->document_result = result;
         return;
       }
@@ -356,7 +353,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
     size_t rank = 0;
     if (name_set_rank(args->word_set, cell, cell_size, &rank)) {
       result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
-      if (result != HOSTMEM_SUCCESS && args->document_result == HOSTMEM_SUCCESS) {
+      if (result != ARNM_SUCCESS && args->document_result == ARNM_SUCCESS) {
         args->document_result = result;
       }
     } else {
@@ -376,8 +373,8 @@ static int process_place_callback(const PhotonPlace *place, void *user_data) {
        the only one that can write the cache down.  What it writes is what the
        two passes behind it will read instead of unpacking the file again. */
     if (args->cache_write) {
-      hostmem_result result = place_cache_write(args->cache_write, place);
-      if (result != HOSTMEM_SUCCESS && args->cache_result == HOSTMEM_SUCCESS) {
+      arnm_result result = place_cache_write(args->cache_write, place);
+      if (result != ARNM_SUCCESS && args->cache_result == ARNM_SUCCESS) {
         args->cache_result = result;
       }
     }
@@ -439,10 +436,10 @@ static void replay_cache(ParserThreadArgs *args) {
   uint64_t behind = 0; /* the files before this one, so the progress only rises */
   for (size_t k = 0; k < count; ++k) {
     PlaceCacheReader reader;
-    hostmem_result result =
+    arnm_result result =
         place_cache_reader_open(&reader, args->cache_directory, args->thread, kinds[k]);
-    if (result != HOSTMEM_SUCCESS) {
-      if (args->cache_result == HOSTMEM_SUCCESS) args->cache_result = result;
+    if (result != ARNM_SUCCESS) {
+      if (args->cache_result == ARNM_SUCCESS) args->cache_result = result;
       args->cache_finished = true;
       return;
     }
@@ -458,8 +455,8 @@ static void replay_cache(ParserThreadArgs *args) {
     args->cache_bytes = behind;
     /* a walk that stopped short of the end read half a cache, and half a cache
        builds an index nobody can tell from a whole one */
-    if (reader.broken && args->cache_result == HOSTMEM_SUCCESS) {
-      args->cache_result = HOSTMEM_ERROR_DECODE_FAILED;
+    if (reader.broken && args->cache_result == ARNM_SUCCESS) {
+      args->cache_result = ARNM_ERROR_DECODE_FAILED;
     }
     place_cache_reader_close(&reader);
   }
@@ -490,7 +487,7 @@ static void *parser_thread(void *arg) {
   /* the queue has run dry — sort what this thread gathered while the others
      do the same, so the join finds nothing but ordered runs */
   args->finish_result = name_collector_finish(&args->words, &args->word_run);
-  if (args->finish_result == HOSTMEM_SUCCESS) {
+  if (args->finish_result == ARNM_SUCCESS) {
     args->finish_result = name_collector_finish(&args->display, &args->display_run);
   }
   return NULL;
@@ -712,8 +709,8 @@ static int build_index(
     const char *cache_directory,
     const PhotonLanguages *languages
 ) {
-  hostmem_mono_timer timeUsedAll;
-  hostmem_mono_timer_reset(&timeUsedAll);
+  arnm_mono_timer timeUsedAll;
+  arnm_mono_timer_reset(&timeUsedAll);
 
   /* --- Is there a cache, may there be one, and does the one that is there
          still answer for this dump?  Three questions, and the answer to the
@@ -803,32 +800,33 @@ static int build_index(
   buffer_pool_init(&buffer_pool, outputSize * 2);
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     /* One chain per thread — a multi arena bumps without a lock, so it must not be
-       shared. The chains outlive the threads: they hold the text bytes. NULL for both
-       allocators leaves the descriptor and the bookkeeping to malloc. */
-    parser_args[i].names = hostmem_multi_arena_create(NAME_ARENA_CAPACITY, 0, NULL, NULL);
+       shared. The chains outlive the threads: they hold the text bytes. A NULL allocator
+       leaves the chain's handle and its bookkeeping to malloc; the arenas themselves always
+       come from the host. Every other option keeps arnm's default. */
+    arnm_multi_arena_options name_arena_options = {.arena_capacity = NAME_ARENA_CAPACITY};
+    parser_args[i].names = arnm_create_multi_arena(&name_arena_options, NULL);
     if (!parser_args[i].names) {
       fatal(ERROR_MEMORY, "Failed to create the name arena for parser thread %u.", i);
     }
-    if (name_collector_init(&parser_args[i].words, parser_args[i].names) != HOSTMEM_SUCCESS ||
-        name_collector_init(&parser_args[i].display, parser_args[i].names) != HOSTMEM_SUCCESS) {
+    if (name_collector_init(&parser_args[i].words, parser_args[i].names) != ARNM_SUCCESS ||
+        name_collector_init(&parser_args[i].display, parser_args[i].names) != ARNM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to init collectors for parser thread %u.", i);
     }
     text_tokenizer_init(&parser_args[i].tokenizer);
     parser_args[i].languages = languages;
     parser_args[i].thread = i;
     parser_args[i].cache_directory = cache_directory;
-    parser_args[i].cache_result = HOSTMEM_SUCCESS;
+    parser_args[i].cache_result = ARNM_SUCCESS;
   }
 
   /* the writers outlive the first pass: they are closed and sealed after it */
   PlaceCacheWriter cache_writers[10] = {0};
   if (cache_write) {
     for (unsigned i = 0; i < parser_thread_count; ++i) {
-      hostmem_result result = place_cache_writer_open(&cache_writers[i], cache_directory, i);
-      if (result != HOSTMEM_SUCCESS) {
+      arnm_result result = place_cache_writer_open(&cache_writers[i], cache_directory, i);
+      if (result != ARNM_SUCCESS) {
         fatal(
-            ERROR_IO, "Cannot open the place cache for thread %u (hostmem_result %d).", i,
-            (int)result
+            ERROR_IO, "Cannot open the place cache for thread %u (arnm_result %d).", i, (int)result
         );
       }
       parser_args[i].cache_write = &cache_writers[i];
@@ -866,9 +864,9 @@ static int build_index(
          it be sealed: the manifest is what the next run reads it by --- */
   if (cache_write) {
     for (unsigned i = 0; i < parser_thread_count; ++i) {
-      if (parser_args[i].cache_result != HOSTMEM_SUCCESS) {
+      if (parser_args[i].cache_result != ARNM_SUCCESS) {
         fatal(
-            ERROR_IO, "Writing the place cache of thread %u failed (hostmem_result %d).", i,
+            ERROR_IO, "Writing the place cache of thread %u failed (arnm_result %d).", i,
             (int)parser_args[i].cache_result
         );
       }
@@ -877,7 +875,7 @@ static int build_index(
       place_cache_writer_close(&cache_writers[i]);
       parser_args[i].cache_write = NULL;
     }
-    if (place_cache_seal(cache_directory, &stamp) != HOSTMEM_SUCCESS) {
+    if (place_cache_seal(cache_directory, &stamp) != ARNM_SUCCESS) {
       fatal(ERROR_IO, "Cannot seal the place cache in '%s'.", cache_directory);
     }
     cache_read = true; /* what was just written is what the next passes read */
@@ -902,31 +900,29 @@ static int build_index(
   const NameRun *display_runs[10];
   uint64_t name_bytes = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].finish_result != HOSTMEM_SUCCESS) {
+    if (parser_args[i].finish_result != ARNM_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to sort its texts (hostmem_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to sort its texts (arnm_result %d).", i,
           (int)parser_args[i].finish_result
       );
     }
     word_runs[i] = &parser_args[i].word_run;
     display_runs[i] = &parser_args[i].display_run;
-    hostmem_multi_arena_stats arena_stats;
-    if (hostmem_multi_arena_measure(parser_args[i].names, &arena_stats) == HOSTMEM_SUCCESS) {
+    arnm_multi_arena_stats arena_stats;
+    if (arnm_multi_arena_measure(parser_args[i].names, &arena_stats) == ARNM_SUCCESS) {
       name_bytes += arena_stats.used;
     }
   }
 
   progress_begin("Joining the words and spellings of all threads", 0);
   NameSet words, display;
-  hostmem_result merge_result =
+  arnm_result merge_result =
       name_run_merge(&words, word_runs, parser_thread_count, parser_thread_count);
-  if (merge_result == HOSTMEM_SUCCESS) {
+  if (merge_result == ARNM_SUCCESS) {
     merge_result = name_run_merge(&display, display_runs, parser_thread_count, parser_thread_count);
   }
-  if (merge_result != HOSTMEM_SUCCESS) {
-    fatal(
-        ERROR_MEMORY, "Failed to merge the collected texts (hostmem_result %d).", (int)merge_result
-    );
+  if (merge_result != ARNM_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to merge the collected texts (arnm_result %d).", (int)merge_result);
   }
   progress_end();
 
@@ -966,8 +962,8 @@ static int build_index(
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].word_set = &words;
     parser_args[i].display_set = &display;
-    parser_args[i].document_result = HOSTMEM_SUCCESS;
-    if (doc_collector_init(&parser_args[i].documents) != HOSTMEM_SUCCESS) {
+    parser_args[i].document_result = ARNM_SUCCESS;
+    if (doc_collector_init(&parser_args[i].documents) != ARNM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to init document collector for parser thread %u.", i);
     }
     /* every occurrence counts now — a posting belongs to its document even
@@ -991,9 +987,9 @@ static int build_index(
   DocCollector *doc_collectors[10];
   uint64_t unknown_words = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].document_result != HOSTMEM_SUCCESS) {
+    if (parser_args[i].document_result != ARNM_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to collect documents (hostmem_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to collect documents (arnm_result %d).", i,
           (int)parser_args[i].document_result
       );
     }
@@ -1003,11 +999,11 @@ static int build_index(
 
   progress_begin("Joining the documents of all threads", 0);
   DocSet documents;
-  hostmem_result doc_result = doc_collector_merge(
+  arnm_result doc_result = doc_collector_merge(
       &documents, doc_collectors, parser_thread_count, words.count, languages->count
   );
-  if (doc_result != HOSTMEM_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to join the documents (hostmem_result %d).", (int)doc_result);
+  if (doc_result != ARNM_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to join the documents (arnm_result %d).", (int)doc_result);
   }
   progress_end();
   printf(
@@ -1025,8 +1021,8 @@ static int build_index(
   printf("\n");
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     parser_args[i].doc_set = &documents;
-    parser_args[i].house_result = HOSTMEM_SUCCESS;
-    if (house_collector_init(&parser_args[i].houses) != HOSTMEM_SUCCESS) {
+    parser_args[i].house_result = ARNM_SUCCESS;
+    if (house_collector_init(&parser_args[i].houses) != ARNM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to init house collector for parser thread %u.", i);
     }
   }
@@ -1045,9 +1041,9 @@ static int build_index(
   }
 
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].cache_result != HOSTMEM_SUCCESS) {
+    if (parser_args[i].cache_result != ARNM_SUCCESS) {
       fatal(
-          ERROR_IO, "Reading the place cache of thread %u failed (hostmem_result %d).", i,
+          ERROR_IO, "Reading the place cache of thread %u failed (arnm_result %d).", i,
           (int)parser_args[i].cache_result
       );
     }
@@ -1055,9 +1051,9 @@ static int build_index(
 
   HouseCollector *house_collectors[10];
   for (unsigned i = 0; i < parser_thread_count; ++i) {
-    if (parser_args[i].house_result != HOSTMEM_SUCCESS) {
+    if (parser_args[i].house_result != ARNM_SUCCESS) {
       fatal(
-          ERROR_MEMORY, "Parser thread %u failed to collect houses (hostmem_result %d).", i,
+          ERROR_MEMORY, "Parser thread %u failed to collect houses (arnm_result %d).", i,
           (int)parser_args[i].house_result
       );
     }
@@ -1066,11 +1062,11 @@ static int build_index(
 
   progress_begin("Ordering the house numbers onto their streets", 0);
   HouseSet houses;
-  hostmem_result house_result = house_collector_merge(
+  arnm_result house_result = house_collector_merge(
       &houses, house_collectors, parser_thread_count, documents.document_count
   );
-  if (house_result != HOSTMEM_SUCCESS) {
-    fatal(ERROR_MEMORY, "Failed to join the houses (hostmem_result %d).", (int)house_result);
+  if (house_result != ARNM_SUCCESS) {
+    fatal(ERROR_MEMORY, "Failed to join the houses (arnm_result %d).", (int)house_result);
   }
   progress_end();
   printf("House numbers: %zu on %zu streets\n", houses.house_count, documents.street_count);
@@ -1109,13 +1105,11 @@ static int build_index(
   char writeLabel[256];
   snprintf(writeLabel, sizeof(writeLabel), "Writing the index to '%s'", index_path);
   progress_begin_polled(writeLabel, 0, file_bytes, (void *)index_path);
-  hostmem_result write_result = geo_index_write(
+  arnm_result write_result = geo_index_write(
       index_path, &words, &display, &documents, &houses, language_tags, words.total
   );
-  if (write_result != HOSTMEM_SUCCESS) {
-    fatal(
-        ERROR_IO, "Failed to write index '%s' (hostmem_result %d).", index_path, (int)write_result
-    );
+  if (write_result != ARNM_SUCCESS) {
+    fatal(ERROR_IO, "Failed to write index '%s' (arnm_result %d).", index_path, (int)write_result);
   }
   progress_end();
 
@@ -1129,7 +1123,7 @@ static int build_index(
     doc_collector_free(&parser_args[i].documents);
     name_collector_free(&parser_args[i].words);
     name_collector_free(&parser_args[i].display);
-    hostmem_multi_arena_destroy(parser_args[i].names, NULL);
+    arnm_destroy(parser_args[i].names, NULL);
   }
   buffer_pool_destroy(&buffer_pool);
   free(outputBuffer);
@@ -1149,8 +1143,8 @@ static int build_index(
 
   /* the only total there is: every step above told what it alone had cost */
   char totalBuffer[32];
-  hostmem_duration_string(
-      totalBuffer, sizeof(totalBuffer), (hostmem_duration)hostmem_mono_timer_nanos(timeUsedAll), 2
+  arnm_duration_string(
+      totalBuffer, sizeof(totalBuffer), (arnm_duration)arnm_mono_timer_nanos(timeUsedAll), 2
   );
   printf("\nTotal time, everything together: %s\n", totalBuffer);
   return 0;
@@ -1209,7 +1203,7 @@ static void print_results(const GeoAddress *found, size_t count, const char *que
  */
 static void format_grouped(char *buffer, size_t size, uint64_t value) {
   char digits[24];
-  size_t length = hostmem_uint64_to_string(digits, (uint8_t)sizeof(digits), value);
+  size_t length = arnm_uint64_to_string(digits, (uint8_t)sizeof(digits), value);
   size_t written = 0;
   for (size_t i = 0; i < length && written + 2 < size; ++i) {
     if (i && (length - i) % 3 == 0) buffer[written++] = ' ';
@@ -1283,9 +1277,9 @@ static int open_index(
     bool prefix,
     const GeoSearchOptions *near
 ) {
-  hostmem_mono_timer timeUsed;
-  hostmem_mono_timer_init();
-  hostmem_mono_timer_reset(&timeUsed);
+  arnm_mono_timer timeUsed;
+  arnm_mono_timer_init();
+  arnm_mono_timer_reset(&timeUsed);
 
   GeoClient *client = NULL;
   GeoStatus status = geo_client_open(&client, index_path);
@@ -1297,7 +1291,7 @@ static int open_index(
   geo_client_info(client, &info);
 
   char timeUsedBuffer[32], sizeBuffer[32];
-  hostmem_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
+  arnm_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), timeUsed);
   format_byte_units(sizeBuffer, sizeof(sizeBuffer), info.file_size, 2);
 
   printf("Index '%s' opened in %s\n", index_path, timeUsedBuffer);
@@ -1330,11 +1324,11 @@ static int open_index(
     options.prefix_last = prefix;
     options.stats = &stats;
 
-    hostmem_mono_timer queryTime;
-    hostmem_mono_timer_reset(&queryTime);
+    arnm_mono_timer queryTime;
+    arnm_mono_timer_reset(&queryTime);
     size_t count =
         geo_client_search_options(client, query, strlen(query), &options, found, result_limit);
-    hostmem_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
+    arnm_mono_timer_string(timeUsedBuffer, sizeof(timeUsedBuffer), queryTime);
 
     printf("\n");
     if (options.has_position) { printf("From %.5f, %.5f:\n", options.latitude, options.longitude); }
@@ -1594,7 +1588,7 @@ int main(int argc, char *argv[]) {
     parser_thread_count = parse_count(argv[3], 1, 10, "parser_threads");
   }
 
-  hostmem_mono_timer_init();
+  arnm_mono_timer_init();
   return build_index(input, index_path, parser_thread_count, cache_directory, &languages);
 }
 

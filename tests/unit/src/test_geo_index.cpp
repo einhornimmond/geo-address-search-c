@@ -88,7 +88,7 @@ class GeoIndexTest : public ::testing::Test {
 protected:
   void SetUp() override {
     ASSERT_TRUE(BuildMiniIndex(path.c_str(), SamplePlaces())) << "could not write " << path.c_str();
-    ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+    ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   }
   void TearDown() override {
     geo_index_close(&index);
@@ -475,7 +475,7 @@ TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   TempPath path{"formername"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
 
   GeoHit hits[8];
   ASSERT_EQ(QueryFrom(index, "Hauptstraße ", 50.7350, 7.0980, hits, 8), 2u)
@@ -509,7 +509,7 @@ TEST(GeoIndexNear, WithoutAPositionTheNameIsNotWeighedAtAll) {
   TempPath path{"formernameplain"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
 
   GeoHit hits[8];
   ASSERT_EQ(Query(index, "Hauptstraße ", hits, 8), 2u);
@@ -529,7 +529,7 @@ TEST(GeoIndexNear, APlaceWithoutACoordinateIsRankedLastRatherThanLost) {
   TempPath path{"nopoint"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
 
   GeoHit hits[8];
   GeoQueryStats stats{};
@@ -567,7 +567,7 @@ TEST(GeoIndexRefusal, ARewrittenMagicIsRefused) {
   TempPath path{"magic"};
   ASSERT_TRUE(WriteDamaged(path.c_str(), 0, 'X'));
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   geo_index_close(&index);
 }
 
@@ -576,7 +576,7 @@ TEST(GeoIndexRefusal, AnotherVersionIsRefused) {
   // the version follows the eight magic bytes
   ASSERT_TRUE(WriteDamaged(path.c_str(), 8, GEO_INDEX_VERSION + 7));
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   geo_index_close(&index);
 }
 
@@ -584,13 +584,13 @@ TEST(GeoIndexRefusal, TheOtherByteOrderIsRefused) {
   TempPath path{"order"};
   ASSERT_TRUE(WriteDamaged(path.c_str(), 12, 0xFF));
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   geo_index_close(&index);
 }
 
 TEST(GeoIndexRefusal, AFileThatIsNotThereIsRefused) {
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, "/nonexistent/geoindex/test.gdx"), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, "/nonexistent/geoindex/test.gdx"), ARNM_SUCCESS);
   EXPECT_EQ(index.base, nullptr);
   geo_index_close(&index);
 }
@@ -599,14 +599,14 @@ TEST(GeoIndexRefusal, AnEmptyFileIsRefused) {
   TempPath path{"empty"};
   { std::ofstream out(path.c_str(), std::ios::binary); }
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   geo_index_close(&index);
 }
 
 TEST(GeoIndexRefusal, NullArgumentsAreAnswered) {
   GeoIndex index{};
-  EXPECT_NE(geo_index_open(nullptr, "x"), HOSTMEM_SUCCESS);
-  EXPECT_NE(geo_index_open(&index, nullptr), HOSTMEM_SUCCESS);
+  EXPECT_NE(geo_index_open(nullptr, "x"), ARNM_SUCCESS);
+  EXPECT_NE(geo_index_open(&index, nullptr), ARNM_SUCCESS);
   geo_index_close(nullptr);
 }
 
@@ -614,7 +614,7 @@ TEST(GeoIndexWrite, AnIndexWithoutPlacesIsStillAnIndex) {
   TempPath path{"nothing"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), {}));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   EXPECT_EQ(index.document_count, 0u);
   GeoHit hits[4];
   EXPECT_EQ(Query(index, "Berlin ", hits, 4), 0u);
@@ -625,7 +625,7 @@ TEST(GeoIndexWrite, ClosingTwiceIsSafe) {
   TempPath path{"twice"};
   ASSERT_TRUE(BuildMiniIndex(path.c_str(), SamplePlaces()));
   GeoIndex index{};
-  ASSERT_EQ(geo_index_open(&index, path.c_str()), HOSTMEM_SUCCESS);
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
   geo_index_close(&index);
   geo_index_close(&index);
   EXPECT_EQ(index.base, nullptr);

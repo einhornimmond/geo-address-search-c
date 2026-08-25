@@ -6,10 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/** Bucket vector bodies — exactly one translation unit defines them. */
-HOSTMEM_BVEC_DEFINE(name_vec, NameRef, NAME_VEC_BUCKET_LOG2, )
-HOSTMEM_BVEC_DEFINE(name_group_vec, name_vec, NAME_GROUP_VEC_BUCKET_LOG2, )
-
 /** Shared remainder of every name that is fully carried by its prefix. */
 static const char name_empty_suffix[] = "";
 
@@ -22,14 +18,14 @@ static inline int key_compare(const uint8_t *lhs, const uint8_t *rhs) {
  *  Per-thread collecting
  * ========================================================================= */
 
-hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena *alloc) {
-  if (!collector || !alloc) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result name_collector_init(NameCollector *collector, arnm *alloc) {
+  if (!collector || !alloc) return ARNM_ERROR_NULL_POINTER;
 
-  hostmem_result result = prefix_tree_init(&collector->prefixes, NAME_PREFIX_DEPTH);
-  if (result != HOSTMEM_SUCCESS) return result;
+  arnm_result result = prefix_tree_init(&collector->prefixes, NAME_PREFIX_DEPTH);
+  if (result != ARNM_SUCCESS) return result;
   /* NULL → malloc/free for the vectors' own bookkeeping */
-  result = name_group_vec_init(&collector->groups, NULL);
-  if (result != HOSTMEM_SUCCESS) return result;
+  result = name_group_vec_init(&collector->groups, NAME_GROUP_VEC_BUCKET_LOG2, 0, NULL);
+  if (result != ARNM_SUCCESS) return result;
   collector->alloc = alloc;
   collector->size = 0;
   collector->seen = 0;
@@ -39,12 +35,12 @@ hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena
     collector->recent[slot].size = SIZE_MAX;
     collector->recent[slot].rest = NULL;
   }
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
-hostmem_result name_collector_add(NameCollector *collector, const char *name, size_t name_size) {
-  if (!collector) return HOSTMEM_ERROR_NULL_POINTER;
-  if (!name) return HOSTMEM_SUCCESS;
+arnm_result name_collector_add(NameCollector *collector, const char *name, size_t name_size) {
+  if (!collector) return ARNM_ERROR_NULL_POINTER;
+  if (!name) return ARNM_SUCCESS;
   ++collector->seen;
 
   PrefixKey key;
@@ -58,20 +54,21 @@ hostmem_result name_collector_add(NameCollector *collector, const char *name, si
     if (recent->size != name_size) continue;
     if (memcmp(recent->key, key, NAME_PREFIX_DEPTH) != 0) continue;
     if (rest_size && memcmp(recent->rest, name + carried, rest_size) != 0) continue;
-    return HOSTMEM_SUCCESS;
+    return ARNM_SUCCESS;
   }
 
   size_t group_index = 0;
-  hostmem_result result = prefix_tree_intern(&collector->prefixes, key, &group_index, NULL);
-  if (result != HOSTMEM_SUCCESS) return result;
+  arnm_result result = prefix_tree_intern(&collector->prefixes, key, &group_index, NULL);
+  if (result != ARNM_SUCCESS) return result;
 
   /* indices are handed out densely, so at most one group is ever missing —
      opening it here also repairs a group left behind by an earlier failure */
   while (name_group_vec_size(&collector->groups) <= group_index) {
-    name_vec *group = NULL;
+    arnm_bvec *group = NULL;
     result = name_group_vec_emplace(&collector->groups, &group);
-    if (result != HOSTMEM_SUCCESS) return result;
-    name_vec_init(group, NULL);
+    if (result != ARNM_SUCCESS) return result;
+    result = name_vec_init(group, NAME_VEC_BUCKET_LOG2, 0, NULL);
+    if (result != ARNM_SUCCESS) return result;
   }
 
   NameRef stored = name_empty_suffix;
@@ -80,16 +77,16 @@ hostmem_result name_collector_add(NameCollector *collector, const char *name, si
     /* A remainder is one place name minus its prefix, so this bound is unreachable
        through any real dump — but the arena measures in uint32_t, and a truncated
        size would allocate short and copy long. */
-    if (rest_size >= UINT32_MAX) return HOSTMEM_ERROR_ARITHMETIC_OVERFLOW;
-    result = hostmem_multi_arena_alloc(&copy, (uint32_t)(rest_size + 1), collector->alloc);
-    if (result != HOSTMEM_SUCCESS) return result;
+    if (rest_size >= UINT32_MAX) return ARNM_ERROR_ARITHMETIC_OVERFLOW;
+    result = arnm_alloc(&copy, (uint32_t)(rest_size + 1), collector->alloc);
+    if (result != ARNM_SUCCESS) return result;
     memcpy(copy, name + carried, rest_size);
     copy[rest_size] = '\0';
     stored = (NameRef)copy;
   }
 
   result = name_vec_push(name_group_vec_get(&collector->groups, group_index), stored);
-  if (result != HOSTMEM_SUCCESS) return result;
+  if (result != ARNM_SUCCESS) return result;
   ++collector->size;
 
   NameRecent *recent = &collector->recent[collector->recent_next];
@@ -97,7 +94,7 @@ hostmem_result name_collector_add(NameCollector *collector, const char *name, si
   recent->rest = stored;
   recent->size = name_size;
   collector->recent_next = (collector->recent_next + 1) % NAME_RECENT_SLOTS;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 size_t name_collector_size(const NameCollector *collector) {
@@ -162,10 +159,10 @@ typedef struct FinishContext {
 /** Gather one prefix group, sort it, let this thread's doubles fall away. */
 static int finish_visit(const uint8_t *key, size_t index, void *user_data) {
   FinishContext *ctx = user_data;
-  const name_vec *vec = name_group_vec_get(&ctx->collector->groups, index);
+  const arnm_bvec *vec = name_group_vec_get(&ctx->collector->groups, index);
   size_t start = ctx->written;
 
-  for (size_t b = 0, buckets = name_vec_bucket_count(vec); b < buckets; ++b) {
+  for (uint16_t b = 0, buckets = name_vec_bucket_count(vec); b < buckets; ++b) {
     size_t count = name_vec_bucket_size(vec, b);
     memcpy(ctx->flat + ctx->written, name_vec_bucket_data(vec, b), count * sizeof(*ctx->flat));
     ctx->written += count;
@@ -183,8 +180,8 @@ static int finish_visit(const uint8_t *key, size_t index, void *user_data) {
   return 0;
 }
 
-hostmem_result name_collector_finish(NameCollector *collector, NameRun *run) {
-  if (!collector || !run) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result name_collector_finish(NameCollector *collector, NameRun *run) {
+  if (!collector || !run) return ARNM_ERROR_NULL_POINTER;
   memset(run, 0, sizeof(*run));
 
   size_t total = collector->size; /* names actually stored */
@@ -192,16 +189,16 @@ hostmem_result name_collector_finish(NameCollector *collector, NameRun *run) {
   size_t group_count = prefix_tree_count(&collector->prefixes);
   if (!total || !group_count) {
     name_collector_free(collector);
-    return HOSTMEM_SUCCESS;
+    return ARNM_SUCCESS;
   }
-  if (total > SIZE_MAX / sizeof(const char *)) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (total > SIZE_MAX / sizeof(const char *)) return ARNM_ERROR_OUT_OF_MEMORY;
 
   const char **flat = malloc(total * sizeof(*flat));
   NameGroup *groups = malloc(group_count * sizeof(*groups));
   if (!flat || !groups) {
     free(flat);
     free(groups);
-    return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    return ARNM_ERROR_OUT_OF_MEMORY;
   }
 
   FinishContext ctx = {.collector = collector, .flat = flat, .groups = groups};
@@ -221,7 +218,7 @@ hostmem_result name_collector_finish(NameCollector *collector, NameRun *run) {
   run->group_count = ctx.group_count;
   run->count = ctx.written;
   run->total = seen;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 void name_run_free(NameRun *run) {
@@ -382,34 +379,34 @@ static void partition_groups(
   while (closed < worker_count) { bounds[++closed] = union_count; }
 }
 
-hostmem_result name_run_merge(
+arnm_result name_run_merge(
     NameSet *out, const NameRun *const *runs, size_t run_count, unsigned worker_count
 ) {
-  if (!out) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!out) return ARNM_ERROR_NULL_POINTER;
   memset(out, 0, sizeof(*out));
-  hostmem_result result = prefix_tree_init(&out->prefixes, NAME_PREFIX_DEPTH);
-  if (result != HOSTMEM_SUCCESS) return result;
-  if (run_count && !runs) return HOSTMEM_ERROR_NULL_POINTER;
-  if (run_count > NAME_RUN_MAX) return HOSTMEM_ERROR_INVALID_PARAM;
+  arnm_result result = prefix_tree_init(&out->prefixes, NAME_PREFIX_DEPTH);
+  if (result != ARNM_SUCCESS) return result;
+  if (run_count && !runs) return ARNM_ERROR_NULL_POINTER;
+  if (run_count > NAME_RUN_MAX) return ARNM_ERROR_INVALID_PARAM;
 
   size_t input = 0;       /* names entering the merge, per-thread doubles already gone */
   size_t total = 0;       /* names ever collected, for the caller's report */
   size_t group_bound = 0; /* upper bound for the union: no key can appear more often */
   for (size_t r = 0; r < run_count; ++r) {
-    if (!runs[r]) return HOSTMEM_ERROR_NULL_POINTER;
+    if (!runs[r]) return ARNM_ERROR_NULL_POINTER;
     input += runs[r]->count;
     total += runs[r]->total;
     group_bound += runs[r]->group_count;
   }
   out->total = total;
-  if (!input || !group_bound) return HOSTMEM_SUCCESS;
+  if (!input || !group_bound) return ARNM_SUCCESS;
   /* Both products are refused before either malloc sees them.  A wrapped size
      would be served as a small block and then written past — the one failure
      here that would not announce itself.  MergeGroup is some twenty times the
      width of a pointer, so it is the group bound, not the name count, that runs
      out first. */
-  if (input > SIZE_MAX / sizeof(const char *)) return HOSTMEM_ERROR_OUT_OF_MEMORY;
-  if (group_bound > SIZE_MAX / sizeof(MergeGroup)) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (input > SIZE_MAX / sizeof(const char *)) return ARNM_ERROR_OUT_OF_MEMORY;
+  if (group_bound > SIZE_MAX / sizeof(MergeGroup)) return ARNM_ERROR_OUT_OF_MEMORY;
 
   if (worker_count < 1) worker_count = 1;
   if (worker_count > NAME_RUN_MAX) worker_count = NAME_RUN_MAX;
@@ -419,7 +416,7 @@ hostmem_result name_run_merge(
   if (!flat || !union_groups) {
     free(flat);
     free(union_groups);
-    return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    return ARNM_ERROR_OUT_OF_MEMORY;
   }
 
   size_t raw_total = 0;
@@ -460,7 +457,7 @@ hostmem_result name_run_merge(
   if (!groups) {
     free(flat);
     free(union_groups);
-    return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    return ARNM_ERROR_OUT_OF_MEMORY;
   }
 
   size_t written = 0;
@@ -478,7 +475,7 @@ hostmem_result name_run_merge(
 
     size_t index = 0;
     result = prefix_tree_intern(&out->prefixes, group->key, &index, NULL);
-    if (result != HOSTMEM_SUCCESS) {
+    if (result != ARNM_SUCCESS) {
       free(flat);
       free(groups);
       free(union_groups);
@@ -500,7 +497,7 @@ hostmem_result name_run_merge(
   out->groups = groups;
   out->group_count = group_count;
   out->count = written;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 /* =========================================================================

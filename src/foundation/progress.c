@@ -2,8 +2,8 @@
 
 #include "foundation/format.h"
 
-#include "hostmem/duration.h"
-#include "hostmem/mono_timer.h"
+#include "arnm/duration.h"
+#include "arnm/mono_timer.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -47,7 +47,7 @@ static struct {
   _Atomic uint64_t current;      /**< What has been done, as last reported. */
   ProgressPoll poll;             /**< Fetches the count when nobody reports it. */
   void *poll_user;               /**< Handed back to @c poll unchanged. */
-  hostmem_mono_timer start;      /**< When the step was announced. */
+  arnm_mono_timer start;         /**< When the step was announced. */
   pthread_t ticker;              /**< Draws the bar; valid while @c ticking. */
   pthread_mutex_t mutex;         /**< Guards everything below @c current. */
   pthread_cond_t wake;           /**< How the ticker is asked to stop early. */
@@ -175,7 +175,7 @@ static size_t compose_eta(
      "ETA 27.5 ms" is a number nobody ever needed */
   if (remaining < 1.0) return at;
   char eta[32];
-  hostmem_duration_string(eta, sizeof(eta), (hostmem_duration)(remaining * 1e9), 1);
+  arnm_duration_string(eta, sizeof(eta), (arnm_duration)(remaining * 1e9), 1);
   at = put(out, size, at, "   ETA ");
   return put(out, size, at, eta);
 }
@@ -209,7 +209,7 @@ static void compose_running(char *out, size_t size, double elapsed, uint64_t cur
   at = compose_eta(out, size, at, current, g.total, elapsed);
 
   char passed[32];
-  hostmem_duration_string(passed, sizeof(passed), (hostmem_duration)(elapsed * 1e9), 1);
+  arnm_duration_string(passed, sizeof(passed), (arnm_duration)(elapsed * 1e9), 1);
   at = put(out, size, at, "   ");
   put(out, size, at, passed);
 }
@@ -259,7 +259,7 @@ static void *ticker_run(void *unused) {
   char line[512];
 
   while (!wait_for_end(PROGRESS_DRAW_MILLIS)) {
-    double elapsed = hostmem_mono_timer_seconds(g.start);
+    double elapsed = arnm_mono_timer_seconds(g.start);
     if (elapsed * 1000.0 < PROGRESS_QUIET_MILLIS) continue;
 
     uint64_t current = read_current();
@@ -297,7 +297,7 @@ void progress_begin_polled(
   g.tty = isatty(fileno(stdout)) != 0;
   g.running = true;
   g.line_open = true;
-  hostmem_mono_timer_reset(&g.start);
+  arnm_mono_timer_reset(&g.start);
 
   /* said before the work starts, not after: the seconds before the first bar
      appears are exactly the ones in which a silent screen looks like a hang */
@@ -328,12 +328,12 @@ void progress_end(void) {
   }
   wipe_line();
 
-  double elapsed = hostmem_mono_timer_seconds(g.start);
+  double elapsed = arnm_mono_timer_seconds(g.start);
   uint64_t current = read_current();
   if (g.total && current < g.total) current = g.total; /* the step is through */
 
   char passed[32], line[256];
-  hostmem_duration_string(passed, sizeof(passed), (hostmem_duration)(elapsed * 1e9), 2);
+  arnm_duration_string(passed, sizeof(passed), (arnm_duration)(elapsed * 1e9), 2);
   /* a step nobody had to watch keeps its duration on its own line */
   size_t at = put(line, sizeof(line), 0, g.line_open ? " — done in " : "  done in ");
   at = put(line, sizeof(line), at, passed);

@@ -176,7 +176,7 @@ the baseline target stays. CRoaring picks its SIMD paths at runtime regardless.
 
 Dependencies are fetched by the Zig build system:
 [zstd](https://github.com/facebook/zstd),
-[hostmem](https://github.com/einhornimmond/hostmem) (bucket vector, arena allocator,
+[arnm](https://github.com/gradido/arnm) (bucket vector, arena allocator,
 number conversion, timer), [yyjson](https://github.com/ibireme/yyjson) and
 [CRoaring](https://github.com/RoaringBitmap/CRoaring) (both vendored).
 
@@ -220,8 +220,8 @@ Three properties you can rely on:
 of one per result field. A buffer that is too small reports the length needed and stays
 NUL-terminated.
 
-The library links against hostmem: `geo_index.h` names `hostmem_result` in its headers and
-`client.c` writes its JSON numbers with hostmem's converter rather than carrying a second
+The library links against arnm: `geo_index.h` names `arnm_result` in its headers and
+`client.c` writes its JSON numbers with arnm's converter rather than carrying a second
 copy of one. Five files of our own are compiled — `client.c`, `geo_cell.c`, `geo_index.c`,
 `prefix_tree.c` and `text_tokenize.c` — and beside them `roaring.c`, vendored from CRoaring
 and built with its own flags.
@@ -286,6 +286,15 @@ Details in [bindings/bun/README.md](bindings/bun/README.md) and
 | `geo_index` | File format, writer, `mmap` loader, word lookup, queries over bitmaps |
 | `client` | The reading library: open, search, close — without the builder |
 | `parse_queue`, `line_buffer`, `progress`, `format`, `error` | Infrastructure |
+
+The collectors gather into arnm bucket vectors, and a bucket vector addresses at most 8191
+buckets. The bucket exponent is therefore a capacity decision and not only a memory one:
+what one thread can hold is `2^log2 × 8191` elements. The exponents in `doc_collector.h`,
+`house_collector.h` and `name_collector.h` are chosen so that a **single-threaded** planet
+build still fits — 268 M houses and postings, 67 M documents, 4.2 M names under one two-byte
+prefix. Splitting the dump over threads divides those counts; a thread that runs into a
+ceiling reports `ARNM_ERROR_ARITHMETIC_OVERFLOW` and the build stops rather than losing
+entries.
 
 ## File format
 

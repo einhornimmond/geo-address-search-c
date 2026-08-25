@@ -166,21 +166,21 @@ bool place_cache_stamp_of(
   return true;
 }
 
-hostmem_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp) {
-  if (!directory || !stamp) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result place_cache_seal(const char *directory, const PlaceCacheStamp *stamp) {
+  if (!directory || !stamp) return ARNM_ERROR_NULL_POINTER;
   char *path = manifest_path(directory);
-  if (!path) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (!path) return ARNM_ERROR_OUT_OF_MEMORY;
 
-  hostmem_result result = HOSTMEM_ERROR_ENCODE_FAILED;
+  arnm_result result = ARNM_ERROR_ENCODE_FAILED;
   FILE *file = fopen(path, "wb");
   if (file) {
     /* The magic goes down with the rest, and the file appears whole or not at
        all — a half-written manifest would claim a cache that is not there. */
     if (fwrite(PLACE_CACHE_MAGIC, 8, 1, file) == 1 && fwrite(stamp, sizeof(*stamp), 1, file) == 1) {
-      result = HOSTMEM_SUCCESS;
+      result = ARNM_SUCCESS;
     }
-    if (fclose(file) != 0) result = HOSTMEM_ERROR_ENCODE_FAILED;
-    if (result != HOSTMEM_SUCCESS) remove(path);
+    if (fclose(file) != 0) result = ARNM_ERROR_ENCODE_FAILED;
+    if (result != ARNM_SUCCESS) remove(path);
   }
   free(path);
   return result;
@@ -344,26 +344,26 @@ static bool becomes_document(const PhotonPlace *place) {
   return !place->house.data && place->typeEnum != PHOTON_PLACE_TYPE_HOUSE;
 }
 
-hostmem_result place_cache_writer_open(
+arnm_result place_cache_writer_open(
     PlaceCacheWriter *writer, const char *directory, unsigned thread
 ) {
-  if (!writer || !directory) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!writer || !directory) return ARNM_ERROR_NULL_POINTER;
   memset(writer, 0, sizeof(*writer));
 
   writer->capacity = 64 * 1024;
   writer->buffer = malloc(writer->capacity);
-  if (!writer->buffer) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (!writer->buffer) return ARNM_ERROR_OUT_OF_MEMORY;
 
   for (int k = 0; k < 2; ++k) {
     writer->path[k] = file_path(directory, thread, (PlaceCacheKind)k);
     if (!writer->path[k]) {
       place_cache_writer_remove(writer);
-      return HOSTMEM_ERROR_OUT_OF_MEMORY;
+      return ARNM_ERROR_OUT_OF_MEMORY;
     }
     writer->file[k] = fopen(writer->path[k], "wb");
     if (!writer->file[k]) {
       place_cache_writer_remove(writer);
-      return HOSTMEM_ERROR_ENCODE_FAILED;
+      return ARNM_ERROR_ENCODE_FAILED;
     }
     /* a megabyte of buffer per file: the write is sequential and wants to
        arrive at the disk in pieces the disk likes */
@@ -373,15 +373,15 @@ hostmem_result place_cache_writer_open(
     if (fwrite(PLACE_CACHE_MAGIC, 8, 1, writer->file[k]) != 1 ||
         fwrite(header, sizeof(header), 1, writer->file[k]) != 1) {
       place_cache_writer_remove(writer);
-      return HOSTMEM_ERROR_ENCODE_FAILED;
+      return ARNM_ERROR_ENCODE_FAILED;
     }
     writer->bytes[k] = 8 + sizeof(header);
   }
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
-hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place) {
-  if (!writer || !place) return HOSTMEM_ERROR_NULL_POINTER;
+arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place) {
+  if (!writer || !place) return ARNM_ERROR_NULL_POINTER;
 
   /* Everything that is not a document of its own goes to the other file, the
      numbered doors and the house-level entries the dump left without a number
@@ -427,16 +427,16 @@ hostmem_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *pl
     put_string(&builder, place->postcode);
     put_string(&builder, place->house);
   }
-  if (builder.overflowed) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (builder.overflowed) return ARNM_ERROR_OUT_OF_MEMORY;
 
   uint32_t payload = (uint32_t)(builder.used - 4);
   memcpy(writer->buffer, &payload, 4);
   if (fwrite(writer->buffer, builder.used, 1, writer->file[kind]) != 1) {
-    return HOSTMEM_ERROR_ENCODE_FAILED;
+    return ARNM_ERROR_ENCODE_FAILED;
   }
   ++writer->count[kind];
   writer->bytes[kind] += builder.used;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 void place_cache_writer_close(PlaceCacheWriter *writer) {
@@ -468,17 +468,17 @@ void place_cache_writer_remove(PlaceCacheWriter *writer) {
  *  Reading
  * ========================================================================= */
 
-hostmem_result place_cache_reader_open(
+arnm_result place_cache_reader_open(
     PlaceCacheReader *reader, const char *directory, unsigned thread, PlaceCacheKind kind
 ) {
-  if (!reader || !directory) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!reader || !directory) return ARNM_ERROR_NULL_POINTER;
   memset(reader, 0, sizeof(*reader));
 
   char *path = file_path(directory, thread, kind);
-  if (!path) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+  if (!path) return ARNM_ERROR_OUT_OF_MEMORY;
   reader->file = fopen(path, "rb");
   free(path);
-  if (!reader->file) return HOSTMEM_ERROR_DECODE_FAILED;
+  if (!reader->file) return ARNM_ERROR_DECODE_FAILED;
   setvbuf(reader->file, NULL, _IOFBF, 1u << 20);
 
   char magic[8];
@@ -489,7 +489,7 @@ hostmem_result place_cache_reader_open(
       header[1] != (uint32_t)kind) {
     fclose(reader->file);
     memset(reader, 0, sizeof(*reader));
-    return HOSTMEM_ERROR_INVALID_PARAM;
+    return ARNM_ERROR_INVALID_PARAM;
   }
 
   reader->kind = kind;
@@ -498,10 +498,10 @@ hostmem_result place_cache_reader_open(
   if (!reader->buffer) {
     fclose(reader->file);
     memset(reader, 0, sizeof(*reader));
-    return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    return ARNM_ERROR_OUT_OF_MEMORY;
   }
   reader->bytes = sizeof(magic) + sizeof(header);
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 /** Walk a record: the cursor moves, the strings stay where they lie. */

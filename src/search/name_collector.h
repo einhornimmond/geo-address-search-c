@@ -7,7 +7,7 @@
  *  Each parser thread owns one @ref NameCollector.  A name's first
  *  @ref NAME_PREFIX_DEPTH bytes travel down the index tree and come back as a
  *  dense group index; the name itself is stored **without** those bytes,
- *  copied into a @c hostmem_multi_arena.  Only prefixes that actually occur
+ *  copied into an arnm arena chain.  Only prefixes that actually occur
  *  exist — no empty space is reserved for the ones that never come.  Nothing
  *  here is synchronised; a collector belongs to exactly one thread and
  *  collecting stays lock-free.
@@ -45,17 +45,17 @@
 
 #include <stddef.h>
 
-#include "hostmem/bucket_vector.h"
-#include "hostmem/multi_arena.h"
-#include "hostmem/result.h"
+#include "arnm/bucket_vector.h"
+#include "arnm/multi_arena.h"
+#include "arnm/result.h"
 #include "search/prefix_tree.h"
 
 /** Bytes an arena of the name chain reserves — 32 MiB.
  *
  *  Name remainders are short, so what this figure decides is how often the chain asks the
  *  host for ground and how many arenas a first-fit scan can end up walking.  One arena per
- *  32 MiB of text keeps both small.  The full threshold stays at hostmem's default: a
- *  remainder under 136 bytes holds no name worth the walk past it. */
+ *  32 MiB of text keeps both small.  The full threshold stays at arnm's default: a
+ *  remainder of 64 bytes or less holds no name worth the walk past it. */
 #define NAME_ARENA_CAPACITY ((uint32_t)32 * 1024 * 1024)
 
 /** A stored name remainder — points into arena memory, never owned by the vector. */
@@ -69,11 +69,20 @@ static_assert(
     "NAME_PREFIX_DEPTH must fit into a PrefixKey"
 );
 
-/** log2 bucket size for one prefix group: 64 pointers (512 B) per bucket.
- *  Kept small because most groups hold only a handful of names. */
-#define NAME_VEC_BUCKET_LOG2 6
+/** log2 bucket size for one prefix group: 512 pointers (4 KiB) per bucket.
+ *
+ *  A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY (8191) buckets, so this
+ *  exponent is also the ceiling of a group: 512 × 8191 ≈ 4.2 M names under one prefix, per
+ *  thread.  Smaller buckets would suit the many groups that hold a handful of names, but a
+ *  two-byte prefix is a coarse sieve and the busiest group of a planet build carries far more
+ *  than a bucket count of that size could address.  The floor this costs is one bucket per
+ *  occurring prefix. */
+#define NAME_VEC_BUCKET_LOG2 9
 
-/** log2 bucket size for the group array: 64 vectors (4 KiB) per bucket. */
+/** log2 bucket size for the group array: 64 vectors (2.5 KiB) per bucket.
+ *
+ *  A key is @ref NAME_PREFIX_DEPTH bytes, so there are at most 65536 groups — well inside
+ *  what 64 × 8191 addresses. */
 #define NAME_GROUP_VEC_BUCKET_LOG2 6
 
 /** Upper bound for runs and merge workers — one per parser thread, generously rounded. */
@@ -84,12 +93,12 @@ static_assert(
  *  repetition of the *previous* entry is already overwritten when it returns. */
 #define NAME_RECENT_SLOTS 64
 
-/** Bucket vector over stored name remainders, shared across translation units. */
-HOSTMEM_BVEC_DECLARE(name_vec, NameRef, NAME_VEC_BUCKET_LOG2, extern)
+/** Bucket vector over stored name remainders. */
+ARNM_BVEC_DEFINE(name_vec, NameRef)
 
 /** Bucket vector over the prefix groups — pointer-stable, so growth never
  *  disturbs a vector a caller is currently filling. */
-HOSTMEM_BVEC_DECLARE(name_group_vec, name_vec, NAME_GROUP_VEC_BUCKET_LOG2, extern)
+ARNM_BVEC_DEFINE(name_group_vec, arnm_bvec)
 
 /**
  * @brief A name the collector has just stored, held for comparison.
@@ -114,8 +123,8 @@ typedef struct NameRecent {
  */
 typedef struct NameCollector {
   PrefixTree prefixes;                  /**< Leading bytes → group index. */
-  name_group_vec groups;                /**< One vector of remainders per occurring prefix. */
-  hostmem_multi_arena *alloc;           /**< Arena the remainders are drawn from; not owned. */
+  arnm_bvec groups;                     /**< One vector of remainders per occurring prefix. */
+  arnm *alloc;                          /**< Arena the remainders are drawn from; not owned. */
   size_t size;                          /**< Names stored, duplicates included. */
   size_t seen;                          /**< Names offered, including those the filter absorbed. */
   NameRecent recent[NAME_RECENT_SLOTS]; /**< Ring of the last names stored. */
@@ -131,9 +140,9 @@ typedef struct NameCollector {
  *  @param[in,out] collector  Collector to initialise; must not be NULL.
  *  @param[in]     alloc      Arena for the name bytes; must not be NULL and
  *                            must not be shared with another thread.
- *  @return HOSTMEM_SUCCESS, or HOSTMEM_ERROR_NULL_POINTER if an argument is NULL.
+ *  @return ARNM_SUCCESS, or ARNM_ERROR_NULL_POINTER if an argument is NULL.
  */
-hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena *alloc);
+arnm_result name_collector_init(NameCollector *collector, arnm *alloc);
 
 /**
  * @brief File @p name under its prefix, keeping only the remainder.
@@ -153,10 +162,10 @@ hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena
  *                            rather than truncated.  No dump comes near it; the bound
  *                            is there because a truncated size would reserve short and
  *                            copy long.
- *  @retval HOSTMEM_SUCCESS            The name is filed, or @p name was NULL and there
- *                                     was nothing to file.
- *  @retval HOSTMEM_ERROR_NULL_POINTER @p collector is NULL.
- *  @retval HOSTMEM_ERROR_ARITHMETIC_OVERFLOW @p name_size is at or above the bound above.
+ *  @retval ARNM_SUCCESS            The name is filed, or @p name was NULL and there
+ *                                  was nothing to file.
+ *  @retval ARNM_ERROR_NULL_POINTER @p collector is NULL.
+ *  @retval ARNM_ERROR_ARITHMETIC_OVERFLOW @p name_size is at or above the bound above.
  *  @retval Anything the prefix tree, the group vectors or the arena answer with when
  *          they cannot take what this name needs, passed on unchanged.
  *  @note A refusal is not undone.  A name that fails partway may leave a key in the
@@ -166,7 +175,7 @@ hostmem_result name_collector_init(NameCollector *collector, hostmem_multi_arena
  *
  *  @whisper Every name is kept, its first letters carried by the branch it hangs on
  */
-hostmem_result name_collector_add(NameCollector *collector, const char *name, size_t name_size);
+arnm_result name_collector_add(NameCollector *collector, const char *name, size_t name_size);
 
 /** @brief Number of names stored so far (duplicates included). */
 size_t name_collector_size(const NameCollector *collector);
@@ -228,12 +237,12 @@ typedef struct NameRun {
  *
  *  @param[in,out] collector  Collector to drain; must not be NULL.
  *  @param[out]    run        Receives the sorted run.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER on a NULL argument, or
+ *          ARNM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken.
  *
  *  @whisper The stream stops running and lets its sediment lie in order
  */
-hostmem_result name_collector_finish(NameCollector *collector, NameRun *run);
+arnm_result name_collector_finish(NameCollector *collector, NameRun *run);
 
 /**
  * @brief Release the arrays of a run; the strings belong to the arena.
@@ -282,15 +291,15 @@ typedef struct NameSet {
  *  @param[in]  worker_count  Merge threads to use; clamped to
  *                            [1, NAME_RUN_MAX].  Threads that cannot be
  *                            created have their share done by the caller.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument,
- *          HOSTMEM_ERROR_INVALID_PARAM if @p run_count exceeds NAME_RUN_MAX, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken — or
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER on a NULL argument,
+ *          ARNM_ERROR_INVALID_PARAM if @p run_count exceeds NAME_RUN_MAX, or
+ *          ARNM_ERROR_OUT_OF_MEMORY when the flat arrays could not be taken — or
  *          when the size one of them would need cannot be expressed at all, which is
  *          refused before the allocator is asked for anything.
  *
  *  @whisper Many streams reach the same lake, and what was said twice becomes one
  */
-hostmem_result name_run_merge(
+arnm_result name_run_merge(
     NameSet *out, const NameRun *const *runs, size_t run_count, unsigned worker_count
 );
 
