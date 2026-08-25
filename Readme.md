@@ -362,12 +362,23 @@ read. That is why loading is an `mmap` and costs nothing regardless of file size
 ## Development
 
 ```sh
-./lint.sh     # clang-format over src/
-doxygen       # API documentation
+./lint.sh          # clang-format over src/
+./test_all.sh      # build and run the unit suite in every optimisation mode
+doxygen            # API documentation
 ```
 
 Comments follow the two-layer standard from [AGENTS.md](AGENTS.md): a precise technical
 specification, plus a `@whisper` line where one fits.
+
+## Releases
+
+Version 1.2.0. What each release changed, and what it asks of a build that had the one
+before it, is in [CHANGELOG.md](CHANGELOG.md). The number lives in `build.zig.zon` and,
+a second time, in `Doxyfile`.
+
+An index carries the format version it was written with — 9 today — and is read by any
+build that knows it. What a *release* may ask for is a rebuild, and the changelog says so
+where it does.
 
 ## License
 

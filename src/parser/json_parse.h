@@ -71,9 +71,9 @@ typedef struct PhotonLanguages {
    *  cost more than the fields they name.  Recognising the two address keys by
    *  a whole-string compare is what keeps the colon out of the hot path: an
    *  entry that becomes no document never has to look for one. */
-  char name_key[PHOTON_LANGUAGE_TAG_MAX + 6];
-  char city_key[PHOTON_LANGUAGE_TAG_MAX + 6];
-  char street_key[PHOTON_LANGUAGE_TAG_MAX + 8];
+  char name_key[PHOTON_LANGUAGE_TAG_MAX + 6];   /**< `name:<default>`, NUL-terminated. */
+  char city_key[PHOTON_LANGUAGE_TAG_MAX + 6];   /**< `city:<default>`, likewise. */
+  char street_key[PHOTON_LANGUAGE_TAG_MAX + 8]; /**< `street:<default>`, likewise. */
   uint8_t city_key_size;   /**< Length of @c city_key; 0 where there is none. */
   uint8_t street_key_size; /**< Length of @c street_key; 0 where there is none. */
 } PhotonLanguages;
@@ -101,7 +101,7 @@ typedef struct PhotonVariant {
  *  @param[in]  text  The list as written; NULL or empty yields a count of 0.
  *  @param[out] out   Zeroed first, then filled.
  *  @return false when a tag was too long or there were more than
- *          @ref PHOTON_LANGUAGE_MAX of them; @p out then holds what fit.
+ *          `PHOTON_LANGUAGE_MAX` of them; @p out then holds what fit.
  */
 bool photon_languages_parse(const char *text, PhotonLanguages *out);
 

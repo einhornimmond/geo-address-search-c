@@ -71,8 +71,8 @@ static_assert(
 
 /** log2 bucket size for one prefix group: 512 pointers (4 KiB) per bucket.
  *
- *  A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY (8191) buckets, so this
- *  exponent is also the ceiling of a group: 512 × 8191 ≈ 4.2 M names under one prefix, per
+ *  A bucket vector holds at most `ARNM_BVEC_MAX_INDEX_CAPACITY` buckets, so this
+ *  exponent is also the ceiling of a group: 4 190 208 names under one prefix, per
  *  thread.  Smaller buckets would suit the many groups that hold a handful of names, but a
  *  two-byte prefix is a coarse sieve and the busiest group of a planet build carries far more
  *  than a bucket count of that size could address.  The floor this costs is one bucket per
@@ -82,7 +82,7 @@ static_assert(
 /** log2 bucket size for the group array: 64 vectors (2.5 KiB) per bucket.
  *
  *  A key is @ref NAME_PREFIX_DEPTH bytes, so there are at most 65536 groups — well inside
- *  what 64 × 8191 addresses. */
+ *  the 523 776 this exponent addresses. */
 #define NAME_GROUP_VEC_BUCKET_LOG2 6
 
 /** Upper bound for runs and merge workers — one per parser thread, generously rounded. */

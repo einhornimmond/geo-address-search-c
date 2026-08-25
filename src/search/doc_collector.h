@@ -103,10 +103,10 @@ typedef struct GeoVariantRecord {
   uint32_t language;  /**< Index into the build's language list. */
 } GeoVariantRecord;
 
-/* A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY (8191) buckets, so the
- * exponent alone decides how much *one thread* can gather: 2^log2 × 8191 elements, and 15
- * is the largest exponent arnm takes.  268 402 688 is therefore the ceiling of any of
- * these vectors, whatever is written below.
+/* A bucket vector holds at most @ref ARNM_BVEC_MAX_INDEX_CAPACITY buckets, so the exponent
+ * alone decides how much *one thread* can gather, and 15 is the largest exponent arnm
+ * takes.  @ref GEO_VEC_CEILING is therefore the ceiling of any of these vectors, whatever
+ * is written below.
  *
  * What a planet dump asks for, measured on the 2026 master dump with 32 languages:
  * 64.1 M segments, 1.88 G word postings before the merge — 29.4 per segment, because the
@@ -188,17 +188,6 @@ typedef struct GeoStreetKey {
 } GeoStreetKey;
 
 /**
- * @brief One thread's harvest of the second pass.
- *
- *  Documents are numbered from 0 upward in the order the thread meets them.
- *
- *  The words are kept the way they arrive: the entry of one document lies
- *  behind the entry of the one before it, so a word needs to record only
- *  *which* word it is — **which document** follows from where it lies.  That
- *  halves what a connection costs while it is being gathered, and it is by far
- *  the largest thing in memory when the threads are joined.
- */
-/**
  * @brief The vector that ran out of buckets, and what it held when it did.
  *
  *  A refusal comes back as @c ARNM_ERROR_ARITHMETIC_OVERFLOW, which on its own says
@@ -211,6 +200,17 @@ typedef struct CollectorLimit {
   size_t ceiling;     /**< Elements it can ever hold. */
 } CollectorLimit;
 
+/**
+ * @brief One thread's harvest of the second pass.
+ *
+ *  Documents are numbered from 0 upward in the order the thread meets them.
+ *
+ *  The words are kept the way they arrive: the entry of one document lies
+ *  behind the entry of the one before it, so a word needs to record only
+ *  *which* word it is — **which document** follows from where it lies.  That
+ *  halves what a connection costs while it is being gathered, and it is by far
+ *  the largest thing in memory when the threads are joined.
+ */
 typedef struct DocCollector {
   arnm_bvec documents;            /**< One record per place this thread met. */
   arnm_bvec variants;             /**< Localized readings, pointing back at those records. */

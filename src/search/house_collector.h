@@ -43,8 +43,8 @@ typedef struct HouseEntry {
 /** Elements per bucket of a house vector, as a power of two — 32768 per bucket, 512 KiB.
  *
  *  15 is the largest exponent arnm takes, so this is the ceiling and not a choice:
- *  32768 × 8191 = 268 402 688 houses per thread.  The 2026 planet dump carries
- *  248 552 976 of them, which one thread alone would hold with 7 % to spare and two
+ *  @ref GEO_VEC_CEILING houses per thread — 268 173 312 of them.  The 2026 planet dump
+ *  carries 248 552 976, which one thread alone would hold with 7 % to spare and two
  *  threads hold twice over.  A dump that outgrows it needs more parser threads.
  *  @see house_collector_limit(), which says so rather than leaving a bare error code. */
 #define HOUSE_VEC_BUCKET_LOG2 15
