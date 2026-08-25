@@ -34,7 +34,7 @@
  *  This is for the paths where continuing would be a lie: a dump that will not
  *  open, an arena that cannot be grown, an invariant that has already given
  *  way.  Anything a caller could reasonably handle returns a
- *  @c hostmem_result instead and lets them decide.
+ *  @c arnm_result instead and lets them decide.
  *
  *  @param art  Which failure this is, choosing the banner.
  *  @param fmt  printf-style format for the line under it.

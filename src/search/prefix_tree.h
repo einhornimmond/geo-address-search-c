@@ -32,7 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "hostmem/result.h"
+#include "arnm/result.h"
 
 /** Slots per level — one for every possible byte value. */
 #define PREFIX_TREE_FANOUT 256
@@ -62,10 +62,10 @@ typedef struct PrefixTree {
  *
  *  @param[in,out] tree   Tree to initialise; must not be NULL.
  *  @param[in]     depth  Key length in bytes, in [1, PREFIX_TREE_DEPTH_MAX].
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER if @p tree is NULL, or
- *          HOSTMEM_ERROR_INVALID_PARAM if @p depth is out of range.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER if @p tree is NULL, or
+ *          ARNM_ERROR_INVALID_PARAM if @p depth is out of range.
  */
-hostmem_result prefix_tree_init(PrefixTree *tree, unsigned depth);
+arnm_result prefix_tree_init(PrefixTree *tree, unsigned depth);
 
 /**
  * @brief Release every level, leaving a reusable empty tree.
@@ -106,12 +106,12 @@ static inline void prefix_tree_key(
  *  @param[in]     key          @c tree->depth bytes.
  *  @param[out]    out_index    Receives the index belonging to @p key.
  *  @param[out]    out_created  Set true if the key was new; may be NULL.
- *  @return HOSTMEM_SUCCESS, HOSTMEM_ERROR_NULL_POINTER on a NULL argument, or
- *          HOSTMEM_ERROR_OUT_OF_MEMORY when a level could not be opened.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER on a NULL argument, or
+ *          ARNM_ERROR_OUT_OF_MEMORY when a level could not be opened.
  *
  *  @whisper A new word is given its number, an old one recognised
  */
-hostmem_result prefix_tree_intern(
+arnm_result prefix_tree_intern(
     PrefixTree *tree, const uint8_t *key, size_t *out_index, bool *out_created
 );
 

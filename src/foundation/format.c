@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "hostmem/converter.h"
+#include "arnm/converter.h"
 
 /** @cond INTERNAL */
 
@@ -50,14 +50,14 @@ int format_byte_units(char *buffer, size_t buffer_size, uint64_t bytes, uint8_t 
      precision asked for there is quietly let go of. */
   const uint8_t places = divisor > 1ULL ? precision : 0;
 
-  const uint8_t int_size = hostmem_uint64_to_string_size(whole);
+  const uint8_t int_size = arnm_uint64_to_string_size(whole);
   const size_t suffix_len = strlen(suffix);
   const size_t needed = (size_t)int_size + (places ? 1u + places : 0u) + suffix_len;
 
   /* Nothing is written unless the whole of it fits, terminator included. */
   if (buffer_size < needed + 1) { return (int)needed; }
 
-  size_t written = hostmem_uint64_to_string_known_string_size(buffer, whole, int_size);
+  size_t written = arnm_uint64_to_string_known_string_size(buffer, whole, int_size);
 
   if (places) {
     buffer[written++] = '.';

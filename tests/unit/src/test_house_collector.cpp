@@ -43,7 +43,7 @@ std::vector<uint32_t> NumbersOf(const HouseSet &set, uint32_t document) {
 class HouseCollectorTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    ASSERT_EQ(house_collector_init(&collector), HOSTMEM_SUCCESS);
+    ASSERT_EQ(house_collector_init(&collector), ARNM_SUCCESS);
   }
   void TearDown() override {
     house_set_free(&set);
@@ -60,12 +60,12 @@ protected:
   ) {
     EXPECT_EQ(
         house_collector_add(&collector, document, &street, number, lat, lon, has_point),
-        HOSTMEM_SUCCESS
+        ARNM_SUCCESS
     );
   }
   void Merge(size_t document_count) {
     HouseCollector *list[1] = {&collector};
-    ASSERT_EQ(house_collector_merge(&set, list, 1, document_count), HOSTMEM_SUCCESS);
+    ASSERT_EQ(house_collector_merge(&set, list, 1, document_count), ARNM_SUCCESS);
   }
 
   HouseCollector collector{};
@@ -181,19 +181,19 @@ TEST_F(HouseCollectorTest, NoDocumentsYieldAnEmptySet) {
 
 TEST(HouseCollectorMerge, JoinsWhatSeveralThreadsGathered) {
   HouseCollector a{}, b{};
-  ASSERT_EQ(house_collector_init(&a), HOSTMEM_SUCCESS);
-  ASSERT_EQ(house_collector_init(&b), HOSTMEM_SUCCESS);
+  ASSERT_EQ(house_collector_init(&a), ARNM_SUCCESS);
+  ASSERT_EQ(house_collector_init(&b), ARNM_SUCCESS);
 
   GeoDocument street = Street(1);
-  ASSERT_EQ(house_collector_add(&a, 0, &street, 10, 0, 0, 1), HOSTMEM_SUCCESS);
-  ASSERT_EQ(house_collector_add(&a, 1, &street, 20, 0, 0, 1), HOSTMEM_SUCCESS);
-  ASSERT_EQ(house_collector_add(&b, 0, &street, 30, 0, 0, 1), HOSTMEM_SUCCESS);
+  ASSERT_EQ(house_collector_add(&a, 0, &street, 10, 0, 0, 1), ARNM_SUCCESS);
+  ASSERT_EQ(house_collector_add(&a, 1, &street, 20, 0, 0, 1), ARNM_SUCCESS);
+  ASSERT_EQ(house_collector_add(&b, 0, &street, 30, 0, 0, 1), ARNM_SUCCESS);
   a.homeless = 1;
   b.homeless = 2;
 
   HouseSet set{};
   HouseCollector *list[2] = {&a, &b};
-  ASSERT_EQ(house_collector_merge(&set, list, 2, 2), HOSTMEM_SUCCESS);
+  ASSERT_EQ(house_collector_merge(&set, list, 2, 2), ARNM_SUCCESS);
 
   EXPECT_EQ(set.house_count, 3u);
   EXPECT_EQ(NumbersOf(set, 0).size(), 2u) << "both threads put a number on document 0";
@@ -206,12 +206,12 @@ TEST(HouseCollectorMerge, JoinsWhatSeveralThreadsGathered) {
 }
 
 TEST(HouseCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
-  EXPECT_NE(house_collector_init(nullptr), HOSTMEM_SUCCESS);
+  EXPECT_NE(house_collector_init(nullptr), ARNM_SUCCESS);
   EXPECT_EQ(house_collector_count(nullptr), 0u);
   house_collector_free(nullptr);
   house_set_free(nullptr);
 
   HouseSet set{};
-  EXPECT_NE(house_collector_merge(nullptr, nullptr, 0, 0), HOSTMEM_SUCCESS);
+  EXPECT_NE(house_collector_merge(nullptr, nullptr, 0, 0), ARNM_SUCCESS);
   house_set_free(&set);
 }

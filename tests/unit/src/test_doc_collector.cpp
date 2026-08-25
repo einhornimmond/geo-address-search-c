@@ -48,7 +48,7 @@ std::set<uint32_t> DocumentsOf(const DocSet &set, uint32_t word) {
 class DocCollectorTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+    ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   }
   void TearDown() override {
     doc_set_free(&set);
@@ -57,15 +57,15 @@ protected:
 
   uint32_t AddDoc(const GeoDocument &d) {
     uint32_t number = UINT32_MAX;
-    EXPECT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
+    EXPECT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
     return number;
   }
   void AddWord(uint32_t word) {
-    EXPECT_EQ(doc_collector_add_posting(&collector, word), HOSTMEM_SUCCESS);
+    EXPECT_EQ(doc_collector_add_posting(&collector, word), ARNM_SUCCESS);
   }
   void Merge(size_t word_count) {
     DocCollector *list[1] = {&collector};
-    ASSERT_EQ(doc_collector_merge(&set, list, 1, word_count, 0), HOSTMEM_SUCCESS);
+    ASSERT_EQ(doc_collector_merge(&set, list, 1, word_count, 0), ARNM_SUCCESS);
   }
 
   DocCollector collector{};
@@ -193,26 +193,26 @@ TEST_F(DocCollectorTest, HandlesManyDocuments) {
 
 TEST(DocCollectorMerge, RenumbersTheDocumentsOfEveryThread) {
   DocCollector a{}, b{};
-  ASSERT_EQ(doc_collector_init(&a), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_init(&b), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&a), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&b), ARNM_SUCCESS);
 
   uint32_t number = 0;
   GeoDocument first = Doc(10);
   GeoDocument second = Doc(20);
   GeoDocument third = Doc(30);
-  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), ARNM_SUCCESS);
   EXPECT_EQ(number, 0u);
   doc_collector_add_posting(&a, 1);
-  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), ARNM_SUCCESS);
   EXPECT_EQ(number, 0u) << "each thread counts from zero on its own";
   doc_collector_add_posting(&b, 1);
-  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), ARNM_SUCCESS);
   EXPECT_EQ(number, 1u);
   doc_collector_add_posting(&b, 2);
 
   DocSet set{};
   DocCollector *list[2] = {&a, &b};
-  ASSERT_EQ(doc_collector_merge(&set, list, 2, 4, 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 2, 4, 0), ARNM_SUCCESS);
 
   EXPECT_EQ(set.document_count, 3u) << "and the merge gives them one numbering";
   std::set<uint32_t> names;
@@ -230,13 +230,13 @@ TEST(DocCollectorMerge, RenumbersTheDocumentsOfEveryThread) {
 
 TEST(DocCollectorMerge, NoCollectorsYieldAnEmptySet) {
   DocSet set{};
-  EXPECT_EQ(doc_collector_merge(&set, nullptr, 0, 0, 0), HOSTMEM_SUCCESS);
+  EXPECT_EQ(doc_collector_merge(&set, nullptr, 0, 0, 0), ARNM_SUCCESS);
   EXPECT_EQ(set.document_count, 0u);
   doc_set_free(&set);
 }
 
 TEST(DocCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
-  EXPECT_NE(doc_collector_init(nullptr), HOSTMEM_SUCCESS);
+  EXPECT_NE(doc_collector_init(nullptr), ARNM_SUCCESS);
   EXPECT_EQ(doc_collector_document_count(nullptr), 0u);
   EXPECT_EQ(doc_collector_posting_count(nullptr), 0u);
   doc_collector_free(nullptr);
@@ -245,7 +245,7 @@ TEST(DocCollectorGuards, NullIsAnsweredRatherThanDereferenced) {
 
 TEST(DocCollectorGuards, APostingBeforeAnyDocumentIsRefused) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   // no document is open, so the word has nothing to point at
   doc_collector_add_posting(&collector, 1);
   EXPECT_EQ(doc_collector_document_count(&collector), 0u);
@@ -279,21 +279,21 @@ uint32_t DocumentNamed(const DocSet &set, uint32_t name_rank) {
 
 TEST(DocCollectorVariants, AReadingFollowsItsDocumentIntoTheNewNumbering) {
   DocCollector a{}, b{};
-  ASSERT_EQ(doc_collector_init(&a), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_init(&b), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&a), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&b), ARNM_SUCCESS);
 
   uint32_t number = 0;
   GeoDocument first = Doc(10), second = Doc(20), third = Doc(30);
-  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&a, 1, 110, 111), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&b, 1, 120, GEO_RANK_NONE), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&b, 2, 230, GEO_RANK_NONE), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&a, 1, 110, 111), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&b, 1, 120, GEO_RANK_NONE), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&b, 2, 230, GEO_RANK_NONE), ARNM_SUCCESS);
 
   DocSet set{};
   DocCollector *list[2] = {&a, &b};
-  ASSERT_EQ(doc_collector_merge(&set, list, 2, 4, 3), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 2, 4, 3), ARNM_SUCCESS);
 
   EXPECT_EQ(set.language_count, 3u);
   EXPECT_EQ(set.variant_count, 3u);
@@ -322,7 +322,7 @@ TEST(DocCollectorVariants, AReadingFollowsItsDocumentIntoTheNewNumbering) {
 
 TEST(DocCollectorVariants, EveryLanguagesRunIsAscendingByDocument) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   for (uint32_t i = 0; i < 5; ++i) {
     /* The names descend, and the merge numbers documents by ascending name: the
@@ -330,13 +330,13 @@ TEST(DocCollectorVariants, EveryLanguagesRunIsAscendingByDocument) {
        Handed over in ascending order the run would come out sorted by itself and
        the test would hold even if the merge never sorted at all. */
     GeoDocument d = Doc(14 - i);
-    ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
-    ASSERT_EQ(doc_collector_add_variant(&collector, 1, 100 + i, GEO_RANK_NONE), HOSTMEM_SUCCESS);
+    ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+    ASSERT_EQ(doc_collector_add_variant(&collector, 1, 100 + i, GEO_RANK_NONE), ARNM_SUCCESS);
   }
 
   DocSet set{};
   DocCollector *list[1] = {&collector};
-  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), ARNM_SUCCESS);
   ASSERT_EQ(set.variant_count, 5u);
   for (uint32_t i = set.language_offsets[1] + 1; i < set.language_offsets[2]; ++i) {
     EXPECT_LT(set.variants[i - 1].document, set.variants[i].document)
@@ -350,17 +350,17 @@ TEST(DocCollectorVariants, SegmentsOfOneStreetJoinTheirFields) {
   // two pieces of the same street, standing in the same spot: they become one
   // document, and one reading out of what each piece knew
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument piece = Doc(10, 20, 30);
-  ASSERT_EQ(doc_collector_add_document(&collector, &piece, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&collector, 1, 110, GEO_RANK_NONE), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_document(&collector, &piece, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&collector, 1, GEO_RANK_NONE, 111), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &piece, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&collector, 1, 110, GEO_RANK_NONE), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &piece, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&collector, 1, GEO_RANK_NONE, 111), ARNM_SUCCESS);
 
   DocSet set{};
   DocCollector *list[1] = {&collector};
-  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), ARNM_SUCCESS);
   ASSERT_EQ(set.document_count, 1u) << "the two pieces are one street";
   ASSERT_EQ(set.variant_count, 1u) << "and carry one reading between them";
   EXPECT_EQ(set.variants[0].name_rank, 110u);
@@ -371,17 +371,15 @@ TEST(DocCollectorVariants, SegmentsOfOneStreetJoinTheirFields) {
 
 TEST(DocCollectorVariants, AReadingThatSaysNothingIsNotStored) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument d = Doc(10);
-  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
-  EXPECT_EQ(
-      doc_collector_add_variant(&collector, 1, GEO_RANK_NONE, GEO_RANK_NONE), HOSTMEM_SUCCESS
-  );
+  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+  EXPECT_EQ(doc_collector_add_variant(&collector, 1, GEO_RANK_NONE, GEO_RANK_NONE), ARNM_SUCCESS);
 
   DocSet set{};
   DocCollector *list[1] = {&collector};
-  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), ARNM_SUCCESS);
   EXPECT_EQ(set.variant_count, 0u);
   doc_set_free(&set);
   doc_collector_free(&collector);
@@ -389,15 +387,15 @@ TEST(DocCollectorVariants, AReadingThatSaysNothingIsNotStored) {
 
 TEST(DocCollectorVariants, ALanguageBeyondTheListIsPassedOver) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument d = Doc(10);
-  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&collector, 7, 110, 111), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&collector, 7, 110, 111), ARNM_SUCCESS);
 
   DocSet set{};
   DocCollector *list[1] = {&collector};
-  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 2), ARNM_SUCCESS);
   EXPECT_EQ(set.variant_count, 0u) << "the build named two languages, not eight";
   doc_set_free(&set);
   doc_collector_free(&collector);
@@ -405,15 +403,15 @@ TEST(DocCollectorVariants, ALanguageBeyondTheListIsPassedOver) {
 
 TEST(DocCollectorVariants, WithoutLanguagesNothingIsGatheredAtAll) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument d = Doc(10);
-  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), HOSTMEM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_variant(&collector, 1, 110, 111), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_variant(&collector, 1, 110, 111), ARNM_SUCCESS);
 
   DocSet set{};
   DocCollector *list[1] = {&collector};
-  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&set, list, 1, 2, 0), ARNM_SUCCESS);
   EXPECT_EQ(set.variant_count, 0u);
   EXPECT_EQ(set.language_count, 0u);
   EXPECT_EQ(set.language_offsets, nullptr);
@@ -423,8 +421,8 @@ TEST(DocCollectorVariants, WithoutLanguagesNothingIsGatheredAtAll) {
 
 TEST(DocCollectorVariants, AReadingWithoutAnOpenDocumentIsRefusedQuietly) {
   DocCollector collector{};
-  ASSERT_EQ(doc_collector_init(&collector), HOSTMEM_SUCCESS);
-  EXPECT_EQ(doc_collector_add_variant(&collector, 1, 110, 111), HOSTMEM_SUCCESS);
-  EXPECT_EQ(doc_collector_add_variant(nullptr, 1, 110, 111), HOSTMEM_ERROR_NULL_POINTER);
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
+  EXPECT_EQ(doc_collector_add_variant(&collector, 1, 110, 111), ARNM_SUCCESS);
+  EXPECT_EQ(doc_collector_add_variant(nullptr, 1, 110, 111), ARNM_ERROR_NULL_POINTER);
   doc_collector_free(&collector);
 }

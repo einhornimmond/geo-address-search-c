@@ -21,7 +21,7 @@ size_t Intern(PrefixTree *tree, const std::string &name, bool *created = nullptr
   prefix_tree_key(name.c_str(), name.size(), tree->depth, key);
   size_t index = SIZE_MAX;
   bool made = false;
-  EXPECT_EQ(prefix_tree_intern(tree, key, &index, &made), HOSTMEM_SUCCESS) << name;
+  EXPECT_EQ(prefix_tree_intern(tree, key, &index, &made), ARNM_SUCCESS) << name;
   if (created) *created = made;
   return index;
 }
@@ -35,7 +35,7 @@ bool Find(const PrefixTree *tree, const std::string &name, size_t *index) {
 class PrefixTreeTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    ASSERT_EQ(prefix_tree_init(&tree, 2), HOSTMEM_SUCCESS);
+    ASSERT_EQ(prefix_tree_init(&tree, 2), ARNM_SUCCESS);
   }
   void TearDown() override {
     prefix_tree_free(&tree);
@@ -165,7 +165,7 @@ TEST_F(PrefixTreeTest, ForeachStopsWhenTheVisitorSaysSo) {
 TEST(PrefixTreeDepth, EveryDepthUpToTheMaximumWorks) {
   for (unsigned depth = 1; depth <= PREFIX_TREE_DEPTH_MAX; ++depth) {
     PrefixTree tree{};
-    ASSERT_EQ(prefix_tree_init(&tree, depth), HOSTMEM_SUCCESS) << "depth " << depth;
+    ASSERT_EQ(prefix_tree_init(&tree, depth), ARNM_SUCCESS) << "depth " << depth;
     EXPECT_EQ(tree.depth, depth);
     EXPECT_EQ(Intern(&tree, "berlin"), 0u);
     EXPECT_EQ(Intern(&tree, "berlin"), 0u);
@@ -175,8 +175,8 @@ TEST(PrefixTreeDepth, EveryDepthUpToTheMaximumWorks) {
 
 TEST(PrefixTreeDepth, DeeperTreesTellApartWhatShallowOnesJoin) {
   PrefixTree shallow{}, deep{};
-  ASSERT_EQ(prefix_tree_init(&shallow, 1), HOSTMEM_SUCCESS);
-  ASSERT_EQ(prefix_tree_init(&deep, 4), HOSTMEM_SUCCESS);
+  ASSERT_EQ(prefix_tree_init(&shallow, 1), ARNM_SUCCESS);
+  ASSERT_EQ(prefix_tree_init(&deep, 4), ARNM_SUCCESS);
 
   EXPECT_EQ(Intern(&shallow, "berlin"), Intern(&shallow, "bonn"));
   EXPECT_NE(Intern(&deep, "berlin"), Intern(&deep, "bonn"));
@@ -187,12 +187,12 @@ TEST(PrefixTreeDepth, DeeperTreesTellApartWhatShallowOnesJoin) {
 
 TEST(PrefixTreeGuards, RefusesADepthItCannotHold) {
   PrefixTree tree{};
-  EXPECT_NE(prefix_tree_init(&tree, 0), HOSTMEM_SUCCESS);
-  EXPECT_NE(prefix_tree_init(&tree, PREFIX_TREE_DEPTH_MAX + 1), HOSTMEM_SUCCESS);
+  EXPECT_NE(prefix_tree_init(&tree, 0), ARNM_SUCCESS);
+  EXPECT_NE(prefix_tree_init(&tree, PREFIX_TREE_DEPTH_MAX + 1), ARNM_SUCCESS);
 }
 
 TEST(PrefixTreeGuards, NullIsAnsweredRatherThanDereferenced) {
-  EXPECT_NE(prefix_tree_init(nullptr, 2), HOSTMEM_SUCCESS);
+  EXPECT_NE(prefix_tree_init(nullptr, 2), ARNM_SUCCESS);
   EXPECT_EQ(prefix_tree_count(nullptr), 0u);
   EXPECT_EQ(prefix_tree_memory(nullptr), 0u);
   prefix_tree_free(nullptr);
@@ -200,7 +200,7 @@ TEST(PrefixTreeGuards, NullIsAnsweredRatherThanDereferenced) {
 
 TEST(PrefixTreeGuards, FreeingTwiceIsSafe) {
   PrefixTree tree{};
-  ASSERT_EQ(prefix_tree_init(&tree, 2), HOSTMEM_SUCCESS);
+  ASSERT_EQ(prefix_tree_init(&tree, 2), ARNM_SUCCESS);
   Intern(&tree, "berlin");
   prefix_tree_free(&tree);
   prefix_tree_free(&tree);

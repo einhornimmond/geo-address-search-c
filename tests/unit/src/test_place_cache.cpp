@@ -98,7 +98,7 @@ std::vector<PhotonPlace> ReadAll(
 ) {
   std::vector<PhotonPlace> places;
   PlaceCacheReader reader{};
-  if (place_cache_reader_open(&reader, directory, thread, kind) != HOSTMEM_SUCCESS) {
+  if (place_cache_reader_open(&reader, directory, thread, kind) != ARNM_SUCCESS) {
     if (out_broken) *out_broken = true;
     return places;
   }
@@ -139,12 +139,12 @@ std::vector<PhotonPlace> ReadAll(
 TEST(PlaceCache, AStreetSurvivesTheRoundTrip) {
   TempDir directory{"street"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = Street("Hauptstraße", "Bonn", "53111");
   out.search_count = 2;
   out.search[0] = Text("Hauptstraße");
   out.search[1] = Text("Bonn");
-  ASSERT_EQ(place_cache_write(&writer, &out), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::vector<PhotonPlace> back = ReadAll(directory.c_str(), 0, PLACE_CACHE_DOCUMENTS);
@@ -163,9 +163,9 @@ TEST(PlaceCache, AStreetSurvivesTheRoundTrip) {
 TEST(PlaceCache, AHouseSurvivesTheRoundTrip) {
   TempDir directory{"house"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = House("Hauptstraße", "Bonn", "53111", "12a");
-  ASSERT_EQ(place_cache_write(&writer, &out), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::vector<PhotonPlace> back = ReadAll(directory.c_str(), 0, PLACE_CACHE_HOUSES);
@@ -179,14 +179,14 @@ TEST(PlaceCache, AHouseSurvivesTheRoundTrip) {
 TEST(PlaceCache, AbsentAndEmptyStayApart) {
   TempDir directory{"absent"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = Street("Feldweg", nullptr, "");
-  ASSERT_EQ(place_cache_write(&writer, &out), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   PlaceCacheReader reader{};
   ASSERT_EQ(
-      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), HOSTMEM_SUCCESS
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
   );
   PhotonPlace back{};
   ASSERT_TRUE(place_cache_read(&reader, &back));
@@ -201,14 +201,14 @@ TEST(PlaceCache, TextsComeBackTerminated) {
   // length would find a terminator there, and must here too
   TempDir directory{"terminated"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = Street("Marienplatz", "München", "80331");
-  ASSERT_EQ(place_cache_write(&writer, &out), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   PlaceCacheReader reader{};
   ASSERT_EQ(
-      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), HOSTMEM_SUCCESS
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
   );
   PhotonPlace back{};
   ASSERT_TRUE(place_cache_read(&reader, &back));
@@ -220,18 +220,18 @@ TEST(PlaceCache, TextsComeBackTerminated) {
 TEST(PlaceCache, EverySearchTextIsKept) {
   TempDir directory{"search"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = Street("Praha", "Praha", "11000");
   out.search_count = PHOTON_PLACE_SEARCH_MAX;
   std::vector<std::string> texts;
   for (int i = 0; i < PHOTON_PLACE_SEARCH_MAX; ++i) texts.push_back("term-" + std::to_string(i));
   for (int i = 0; i < PHOTON_PLACE_SEARCH_MAX; ++i) out.search[i] = Text(texts[i].c_str());
-  ASSERT_EQ(place_cache_write(&writer, &out), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   PlaceCacheReader reader{};
   ASSERT_EQ(
-      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), HOSTMEM_SUCCESS
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
   );
   PhotonPlace back{};
   ASSERT_TRUE(place_cache_read(&reader, &back));
@@ -251,12 +251,12 @@ TEST(PlaceCache, EverySearchTextIsKept) {
 TEST(PlaceCache, TheTwoHalvesOfTheDumpAreWrittenApart) {
   TempDir directory{"halves"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
 
   PhotonPlace street = Street("Hauptstraße", "Bonn", "53111");
   PhotonPlace house = House("Hauptstraße", "Bonn", "53111", "5");
-  ASSERT_EQ(place_cache_write(&writer, &street), HOSTMEM_SUCCESS);
-  ASSERT_EQ(place_cache_write(&writer, &house), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &street), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &house), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   EXPECT_EQ(ReadAll(directory.c_str(), 0, PLACE_CACHE_DOCUMENTS).size(), 1u);
@@ -268,14 +268,14 @@ TEST(PlaceCache, AHouseWithoutANumberIsKeptAllTheSame) {
   // town and its postal code into the dictionary, so the cache may not drop it
   TempDir directory{"numberless"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
 
   PhotonPlace nameless{};
   nameless.typeEnum = PHOTON_PLACE_TYPE_HOUSE;
   nameless.own_name = Text("Villa Sonnenschein");
   nameless.city = Text("Bonn");
   nameless.postcode = Text("53111");
-  ASSERT_EQ(place_cache_write(&writer, &nameless), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &nameless), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::vector<PhotonPlace> back = ReadAll(directory.c_str(), 0, PLACE_CACHE_HOUSES);
@@ -294,14 +294,14 @@ TEST(PlaceCacheRefusal, AFileThatIsNotThereIsRefused) {
   PlaceCacheReader reader{};
   EXPECT_EQ(
       place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS),
-      HOSTMEM_ERROR_DECODE_FAILED
+      ARNM_ERROR_DECODE_FAILED
   );
 }
 
 TEST(PlaceCacheRefusal, TheOtherHalfIsRefused) {
   TempDir directory{"kind"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   // the documents file, opened as if it held houses
@@ -316,14 +316,14 @@ TEST(PlaceCacheRefusal, TheOtherHalfIsRefused) {
   PlaceCacheReader reader{};
   EXPECT_EQ(
       place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_HOUSES),
-      HOSTMEM_ERROR_INVALID_PARAM
+      ARNM_ERROR_INVALID_PARAM
   );
 }
 
 TEST(PlaceCacheRefusal, ARewrittenMagicIsRefused) {
   TempDir directory{"magic"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::fstream file(
@@ -337,17 +337,17 @@ TEST(PlaceCacheRefusal, ARewrittenMagicIsRefused) {
   PlaceCacheReader reader{};
   EXPECT_EQ(
       place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS),
-      HOSTMEM_ERROR_INVALID_PARAM
+      ARNM_ERROR_INVALID_PARAM
   );
 }
 
 TEST(PlaceCacheRefusal, ATruncatedFileSaysSoInsteadOfEnding) {
   TempDir directory{"truncated"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   for (int i = 0; i < 8; ++i) {
     PhotonPlace place = Street("Hauptstraße", "Bonn", "53111");
-    ASSERT_EQ(place_cache_write(&writer, &place), HOSTMEM_SUCCESS);
+    ASSERT_EQ(place_cache_write(&writer, &place), ARNM_SUCCESS);
   }
   place_cache_writer_close(&writer);
 
@@ -365,10 +365,10 @@ TEST(PlaceCacheRefusal, ATruncatedFileSaysSoInsteadOfEnding) {
 TEST(PlaceCacheRefusal, AWholeFileEndsWithoutComplaint) {
   TempDir directory{"whole"};
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   for (int i = 0; i < 8; ++i) {
     PhotonPlace place = Street("Hauptstraße", "Bonn", "53111");
-    ASSERT_EQ(place_cache_write(&writer, &place), HOSTMEM_SUCCESS);
+    ASSERT_EQ(place_cache_write(&writer, &place), ARNM_SUCCESS);
   }
   place_cache_writer_close(&writer);
 
@@ -419,11 +419,11 @@ TEST(PlaceCacheManifest, ASealedCacheIsReadAgain) {
   EXPECT_EQ(stamp.threads, 1u);
 
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   EXPECT_FALSE(place_cache_is_current(directory.c_str(), &stamp)) << "not sealed yet";
-  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), ARNM_SUCCESS);
   EXPECT_TRUE(place_cache_is_current(directory.c_str(), &stamp));
 }
 
@@ -434,9 +434,9 @@ TEST(PlaceCacheManifest, AnotherDumpIsNotThisOne) {
   ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, nullptr, &stamp));
 
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
-  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), ARNM_SUCCESS);
 
   PlaceCacheStamp grown = stamp;
   grown.dump_bytes += 1;
@@ -464,9 +464,9 @@ TEST(PlaceCacheManifest, AMissingFileUndoesTheSeal) {
   ASSERT_TRUE(place_cache_stamp_of(dump.c_str(), 1, nullptr, &stamp));
 
   PlaceCacheWriter writer{};
-  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
-  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), ARNM_SUCCESS);
   ASSERT_TRUE(place_cache_is_current(directory.c_str(), &stamp));
 
   std::remove(directory.file(0, "houses").c_str());
@@ -482,10 +482,10 @@ TEST(PlaceCacheManifest, DiscardLeavesNothingBehind) {
 
   for (unsigned t = 0; t < 2; ++t) {
     PlaceCacheWriter writer{};
-    ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), t), HOSTMEM_SUCCESS);
+    ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), t), ARNM_SUCCESS);
     place_cache_writer_close(&writer);
   }
-  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), HOSTMEM_SUCCESS);
+  ASSERT_EQ(place_cache_seal(directory.c_str(), &stamp), ARNM_SUCCESS);
   ASSERT_TRUE(place_cache_is_current(directory.c_str(), &stamp));
 
   place_cache_discard(directory.c_str(), 2);

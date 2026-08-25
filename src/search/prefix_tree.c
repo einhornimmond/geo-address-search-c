@@ -34,14 +34,14 @@ static void level_free(void *block, unsigned level, unsigned depth) {
   free(block);
 }
 
-hostmem_result prefix_tree_init(PrefixTree *tree, unsigned depth) {
-  if (!tree) return HOSTMEM_ERROR_NULL_POINTER;
-  if (depth < 1 || depth > PREFIX_TREE_DEPTH_MAX) return HOSTMEM_ERROR_INVALID_PARAM;
+arnm_result prefix_tree_init(PrefixTree *tree, unsigned depth) {
+  if (!tree) return ARNM_ERROR_NULL_POINTER;
+  if (depth < 1 || depth > PREFIX_TREE_DEPTH_MAX) return ARNM_ERROR_INVALID_PARAM;
   tree->root = NULL;
   tree->count = 0;
   tree->levels = 0;
   tree->depth = depth;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 void prefix_tree_free(PrefixTree *tree) {
@@ -52,15 +52,15 @@ void prefix_tree_free(PrefixTree *tree) {
   tree->levels = 0;
 }
 
-hostmem_result prefix_tree_intern(
+arnm_result prefix_tree_intern(
     PrefixTree *tree, const uint8_t *key, size_t *out_index, bool *out_created
 ) {
-  if (!tree || !key || !out_index) return HOSTMEM_ERROR_NULL_POINTER;
+  if (!tree || !key || !out_index) return ARNM_ERROR_NULL_POINTER;
   if (out_created) *out_created = false;
 
   if (!tree->root) {
     tree->root = level_alloc(tree, 0);
-    if (!tree->root) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+    if (!tree->root) return ARNM_ERROR_OUT_OF_MEMORY;
   }
 
   /* --- one character, one door --- */
@@ -70,7 +70,7 @@ hostmem_result prefix_tree_intern(
     void **slot = &node->slots[key[d]];
     if (!*slot) {
       *slot = level_alloc(tree, d + 1);
-      if (!*slot) return HOSTMEM_ERROR_OUT_OF_MEMORY;
+      if (!*slot) return ARNM_ERROR_OUT_OF_MEMORY;
     }
     level = *slot;
   }
@@ -82,7 +82,7 @@ hostmem_result prefix_tree_intern(
     if (out_created) *out_created = true;
   }
   *out_index = *cell - 1;
-  return HOSTMEM_SUCCESS;
+  return ARNM_SUCCESS;
 }
 
 bool prefix_tree_find(const PrefixTree *tree, const uint8_t *key, size_t *out_index) {
