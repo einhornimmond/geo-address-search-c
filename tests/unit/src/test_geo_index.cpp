@@ -516,6 +516,40 @@ TEST(GeoIndexTown, ATownNamedBesideAnotherStandsBehindTheTownItself) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexTown, AWordBeyondTheSixtyFourthOfATownIsNotCounted) {
+  // a word repeated sixty-four times leaves a single token behind, so the one
+  // after it is only the second token yet the sixty-fifth word — group 64,
+  // beyond the bits town_agreement() keeps.  It may not earn the town anything.
+  std::string far_town;
+  for (int w = 0; w < 64; ++w) far_town += "x ";
+  far_town += "Zielort";
+
+  std::vector<testsupport::MiniPlace> places = {
+      {"Feldweg", far_town, "", 507350000, 70980000, PHOTON_PLACE_TYPE_STREET, 1000},
+      {"Feldweg",
+       "Anderswo",
+       "",
+       535500000,
+       100000000,
+       PHOTON_PLACE_TYPE_STREET,
+       9000,
+       {},
+       true,
+       {"Zielort"}},
+  };
+  TempPath path{"townfarword"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Feldweg Zielort ", hits, 8), 2u)
+      << "both carry the word, one in its town and one among its other names";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Anderswo")
+      << "neither town counts, so weight decides";
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexTown, APrefixOrASuffixStillNamesTheTown) {
   // one word in front (Den Haag) or a qualifier behind (Halle (Saale),
   // Frankfurt am Main) is still the town's own name: weight decides between

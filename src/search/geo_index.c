@@ -1444,7 +1444,8 @@ static unsigned town_agreement(
   bool found = false;
   for (size_t t = 0; t < tokens; ++t) {
     const TextToken *token = &scratch->tokens[t];
-    uint64_t bit = token->group < 64 ? UINT64_C(1) << token->group : 0;
+    if (token->group >= 64) continue; /* beyond the bits: neither demanded nor counted */
+    uint64_t bit = UINT64_C(1) << token->group;
     if (!token->part) words |= bit;
     if (query_words_have(kept, token->data, token->size)) {
       found = true;

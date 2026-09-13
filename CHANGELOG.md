@@ -41,6 +41,24 @@ summarise what the commits show rather than what was noted at the time.
   outweighs any town. Requiring the whole name instead was measured and rejected: `Halle`
   then answered with a village before Halle (Saale), `Haag` with Haag in Oberbayern before
   Den Haag.
+- **A text after one wider than 64 bytes gets its own words.** The tokenizer remembers the
+  input its words belong to, so that the same text again costs nothing — but only inputs of
+  up to 64 bytes are remembered, and a wider one left the memory of the input *before* it
+  standing. Asked for that earlier text again, the tokenizer handed out the wide input's
+  words instead; an empty input in between did the same with no words at all. Only a
+  tokenizer with the repetition filter cleared answered with anything, which is exactly the
+  two that must count every text:
+  - the ranking, which folds one candidate's postcode, town and name after another. On the
+    planet, `Paris` lost the Paris entry whose postcode lists all 22 codes (`75000;75001;…`,
+    over 64 bytes): the town behind it read as those codes, agreed with nothing, and fell out
+    of the first ten. It is second again.
+  - the second pass of a build, which turns every text of an entry into its postings. The
+    same sequence — a short text, a wide one, the short one again — attached the wide text's
+    words to the entry and dropped the short text's own. Counted on the German dump, the
+    whole pass met that sequence once — `Grünhaid` right after a
+    `Gartenbauverein der Belegschaft der Porzellanfabrik Schönwald e. V.` — so an index built
+    before this fix is not wrong enough to need a rebuild; a rebuild removes what there is.
+    The file format is unchanged, and an existing index opens and answers as before.
 
 ## 1.2.2 -- 2026-08-25
 

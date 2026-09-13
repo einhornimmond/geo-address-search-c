@@ -104,7 +104,9 @@ typedef struct TextTokenizer {
   uint64_t repeated;                    /**< Inputs the filter absorbed. */
   uint64_t dropped;                     /**< Words that found no slot or no space. */
   TextRecent recent[TEXT_RECENT_SLOTS]; /**< Ring of recently seen inputs. */
-  TextRecent previous;                  /**< The input right before this one. */
+  TextRecent previous;                  /**< The input whose words lie in @c tokens; size 0
+                                             when that input was empty or wider than
+                                             @ref TEXT_RECENT_BYTES. */
   unsigned recent_next;                 /**< Slot the next input overwrites. */
   int repetition_filter;                /**< Set by init; clear it to fold every input. */
 } TextTokenizer;

@@ -555,6 +555,8 @@ size_t text_tokenize(TextTokenizer *tokenizer, const char *text, size_t size) {
   if (!text || !size) {
     tokenizer->used = 0;
     tokenizer->token_count = 0;
+    /* the words are gone, so no later input may be answered with them */
+    tokenizer->previous.size = 0;
     return 0;
   }
   ++tokenizer->inputs;
@@ -596,6 +598,11 @@ size_t text_tokenize(TextTokenizer *tokenizer, const char *text, size_t size) {
       memcpy(recent->bytes, text, size);
       tokenizer->recent_next = (tokenizer->recent_next + 1) % TEXT_RECENT_SLOTS;
     }
+  } else {
+    /* The words lying here now belong to an input too wide to be kept.  The
+       one before it may not go on standing as the previous input, or a later
+       copy of that one would be handed this input's words. */
+    tokenizer->previous.size = 0;
   }
   return tokenizer->token_count;
 }
