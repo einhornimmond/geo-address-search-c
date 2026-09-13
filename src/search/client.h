@@ -262,7 +262,8 @@ typedef struct GeoSearchOptions {
  *  with Würzburg, not with the Würzburger Straße around the corner.  A place
  *  standing beyond the searcher's surroundings is lifted that way only when it
  *  weighs at least 40000 of 65535 — a city, not a village named after a common
- *  word.  A small town typed from afar may therefore still stand behind a
+ *  word — and at most 16 such places are lifted per search, the heaviest first.
+ *  A small town typed from afar may therefore still stand behind a
  *  nearby street that carries its name.  And where nothing at all stands near
  *  the given point, the position is dropped and the search runs without it — a
  *  wrong position costs a place its order, never its presence.

@@ -1633,8 +1633,12 @@ static void rank_hits(GeoHit *hits, HitRank *ranks, size_t count) {
  *
  *  - it weighs at least @ref GEO_QUERY_FAR_WEIGHT_MIN;
  *  - it is not already among the first @p count of @p pool;
- *  - the query names its town fully or its postcode — agreement_of() reaches
- *    GEO_AGREEMENT_CITY.
+ *  - agreement_of() reaches GEO_AGREEMENT_CITY: the query names its postcode,
+ *    or names its town by name as town_agreement() reads it — the first word of
+ *    the town typed, or all but at most one of its words.  So *Halle* takes in
+ *    Halle (Saale) and *Frankfurt* Frankfurt am Main; only a town the query
+ *    names as the place it lies beside, *Garching bei München* for *München*,
+ *    stays out.
  *
  *  At most @ref GEO_QUERY_FAR_MAX join, in the order @p far holds them, which is
  *  heaviest first.  Each arrives with its agreement written into @p ranks; the

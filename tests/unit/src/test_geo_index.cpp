@@ -626,6 +626,41 @@ TEST(GeoIndexNear, ACityBeyondTheRingIsNotHiddenByAStreetNamedAfterIt) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexNear, ACityWithAQualifierBehindItIsTakenInFromBeyondTheRingToo) {
+  // the city is named by its first word, not by all of them: Halle (Saale)
+  // lacks one word of what was typed, Frankfurt am Main two — both still count
+  // as named, and both have to come in from beyond the ring
+  std::vector<testsupport::MiniPlace> places = {
+      {"Hallesches Ufer", "Berlin", "10963", 525000000, 133800000, PHOTON_PLACE_TYPE_STREET, 14452},
+      {"Halle (Saale)", "Halle (Saale)", "", 514824354, 119712985, PHOTON_PLACE_TYPE_CITY, 43648},
+      {"Frankfurter Allee",
+       "Berlin",
+       "10247",
+       525150000,
+       134600000,
+       PHOTON_PLACE_TYPE_STREET,
+       29271},
+      {"Frankfurt am Main",
+       "Frankfurt am Main",
+       "",
+       501106444,
+       86820917,
+       PHOTON_PLACE_TYPE_CITY,
+       49643},
+  };
+  TempPath path{"farqualifier"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Halle", 52.50, 13.38, hits, 8, nullptr, true), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Halle (Saale)");
+  ASSERT_EQ(QueryFrom(index, "Frankfurt", 52.50, 13.38, hits, 8, nullptr, true), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Frankfurt am Main");
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexNear, ALightPlaceBeyondTheRingDoesNotPushAsideWhatIsNear) {
   // a village named after a common word carries it as its own name, just as a
   // city would; only its weight tells it apart, and it weighs too little
