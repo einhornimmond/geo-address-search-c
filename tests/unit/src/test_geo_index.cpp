@@ -553,10 +553,12 @@ TEST(GeoIndexTown, AWordBeyondTheSixtyFourthOfATownIsNotCounted) {
 TEST(GeoIndexTown, APrefixOrASuffixStillNamesTheTown) {
   // one word in front (Den Haag) or a qualifier behind (Halle (Saale),
   // Frankfurt am Main) is still the town's own name: weight decides between
-  // them and the village that bears the bare word, as it always did
+  // them and the smaller town that bears the bare word, as it always did
   std::vector<testsupport::MiniPlace> places = {
       {"Den Haag", "Den Haag", "", 520799838, 43113461, PHOTON_PLACE_TYPE_CITY, 47760},
       {"Haag", "Haag", "3350", 481120000, 145650000, PHOTON_PLACE_TYPE_CITY, 28384},
+      {"Halle (Saale)", "Halle (Saale)", "", 514824354, 119712985, PHOTON_PLACE_TYPE_CITY, 43648},
+      {"Halle", "Halle", "37620", 519913559, 95634922, PHOTON_PLACE_TYPE_CITY, 27151},
       {"Frankfurt am Main",
        "Frankfurt am Main",
        "",
@@ -575,6 +577,14 @@ TEST(GeoIndexTown, APrefixOrASuffixStillNamesTheTown) {
   GeoHit hits[8];
   ASSERT_EQ(Query(index, "Haag ", hits, 8), 2u);
   EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Den Haag");
+
+  // the qualifier behind may not cost the town its name: were it to, the
+  // smaller Halle, which carries none, would stand before Halle (Saale)
+  ASSERT_EQ(Query(index, "Halle ", hits, 8), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Halle (Saale)");
+
+  // two different cities, both with a qualifier behind: both are named, and
+  // weight alone decides — this one would hold even if qualifiers cost something
   ASSERT_EQ(Query(index, "Frankfurt ", hits, 8), 2u);
   EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Frankfurt am Main");
   geo_index_close(&index);
