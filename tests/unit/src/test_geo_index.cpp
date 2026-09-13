@@ -456,6 +456,96 @@ TEST_F(GeoIndexTest, APositionAloneIsNoQuery) {
   EXPECT_EQ(QueryFrom(index, "Kwyjibo Blorf ", 52.4869, 13.3283, hits, 8), 0u);
 }
 
+TEST(GeoIndexTown, ATownFiledAsACountyStillAnswersToItsOwnName) {
+  // the planet's Würzburg: a kreisfreie Stadt, filed as a county and carrying
+  // no town of its own, while the villages around it carry theirs — and one of
+  // those spells the city in its name.  Weight alone would put the city first.
+  std::vector<testsupport::MiniPlace> places = {
+      {"Würzburg", "", "", 497780356, 99434769, PHOTON_PLACE_TYPE_COUNTY, 43929},
+      {"Neubrunn bei Würzburg",
+       "Neubrunn bei Würzburg",
+       "97277",
+       497307037,
+       96723536,
+       PHOTON_PLACE_TYPE_CITY,
+       29626},
+      {"Residenzplatz", "Würzburg", "97070", 497929124, 99382411, PHOTON_PLACE_TYPE_STREET, 21888},
+  };
+  TempPath path{"countytown"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Würzburg ", hits, 8), 3u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Würzburg")
+      << "the city that was typed, not a village that mentions it";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[1].document].name_rank), "Residenzplatz")
+      << "a square in the city, lighter, still before the village beside it";
+  EXPECT_EQ(
+      DisplayWord(index, index.documents[hits[2].document].name_rank), "Neubrunn bei Würzburg"
+  );
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexTown, ATownNamedBesideAnotherStandsBehindTheTownItself) {
+  // the village street weighs more, and its town holds Würzburg as well — but
+  // only as the place it lies beside, so the city's own street comes first
+  std::vector<testsupport::MiniPlace> places = {
+      {"Schulstraße",
+       "Hausen bei Würzburg",
+       "97262",
+       499270599,
+       100264921,
+       PHOTON_PLACE_TYPE_STREET,
+       9000},
+      {"Schulstraße", "Würzburg", "97084", 497700000, 99300000, PHOTON_PLACE_TYPE_STREET, 3500},
+  };
+  TempPath path{"townbeside"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Schulstraße Würzburg ", hits, 8), 2u)
+      << "the village is still an answer";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Würzburg");
+  EXPECT_EQ(
+      DisplayWord(index, index.documents[hits[1].document].city_rank), "Hausen bei Würzburg"
+  );
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexTown, APrefixOrASuffixStillNamesTheTown) {
+  // one word in front (Den Haag) or a qualifier behind (Halle (Saale),
+  // Frankfurt am Main) is still the town's own name: weight decides between
+  // them and the village that bears the bare word, as it always did
+  std::vector<testsupport::MiniPlace> places = {
+      {"Den Haag", "Den Haag", "", 520799838, 43113461, PHOTON_PLACE_TYPE_CITY, 47760},
+      {"Haag", "Haag", "3350", 481120000, 145650000, PHOTON_PLACE_TYPE_CITY, 28384},
+      {"Frankfurt am Main",
+       "Frankfurt am Main",
+       "",
+       501106444,
+       86820917,
+       PHOTON_PLACE_TYPE_CITY,
+       49643},
+      {"Frankfurt (Oder)", "Frankfurt (Oder)", "", 523412273, 145494520, PHOTON_PLACE_TYPE_CITY,
+       40527},
+  };
+  TempPath path{"townprefix"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Haag ", hits, 8), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Den Haag");
+  ASSERT_EQ(Query(index, "Frankfurt ", hits, 8), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Frankfurt am Main");
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
   // and lies nearer to the searcher than the street that is called that today

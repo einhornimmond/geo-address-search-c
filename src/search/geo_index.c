@@ -3,6 +3,7 @@
 #include "search/geo_index.h"
 
 #include "search/geo_cell.h"
+#include "types/photon_place_type.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -1277,9 +1278,18 @@ static_assert(
 );
 
 /** A postcode the query named — the narrowest thing an address can say. */
-#define GEO_AGREEMENT_POSTCODE 2u
-/** A town the query named. Towns repeat, postcodes far less. */
-#define GEO_AGREEMENT_CITY 1u
+#define GEO_AGREEMENT_POSTCODE 4u
+/** A town the query named by its own name. Towns repeat, postcodes far less. */
+#define GEO_AGREEMENT_CITY 2u
+/** A town whose name holds the query's word only as the place it lies *beside* —
+ *  *Neubrunn bei Würzburg* to someone asking for Würzburg. */
+#define GEO_AGREEMENT_CITY_BESIDE 1u
+
+/* A postcode outweighs any town, however it was named. */
+static_assert(
+    GEO_AGREEMENT_POSTCODE > GEO_AGREEMENT_CITY && GEO_AGREEMENT_CITY > GEO_AGREEMENT_CITY_BESIDE,
+    "the agreements lost their order"
+);
 
 /**
  * @brief The query's own words, kept while the tokenizer turns to other texts.
@@ -1357,6 +1367,99 @@ static unsigned words_in_display(
 }
 
 /**
+ * @brief Is a place of this kind an area in its own right — something a query
+ *        names as *where*, not *what*?
+ *
+ *  True for @c PHOTON_PLACE_TYPE_COUNTRY, @c _STATE, @c _COUNTY, @c _CITY,
+ *  @c _STATE_COUNTY_CITY and @c _INDEPENDENT_CITY; false for every other value,
+ *  unknown ones included.  Streets, houses, districts and localities lie
+ *  *inside* a town and are answered by the town they carry.
+ *
+ *  @param[in] type  A @c PhotonPlaceType as the document record stores it.
+ *  @return Whether the place's own name stands for its town.
+ */
+static bool place_is_area(uint8_t type) {
+  switch (type) {
+  case PHOTON_PLACE_TYPE_COUNTRY:
+  case PHOTON_PLACE_TYPE_STATE:
+  case PHOTON_PLACE_TYPE_COUNTY:
+  case PHOTON_PLACE_TYPE_CITY:
+  case PHOTON_PLACE_TYPE_STATE_COUNTY_CITY:
+  case PHOTON_PLACE_TYPE_INDEPENDENT_CITY:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/**
+ * @brief How plainly the spelling behind @p rank names a town the query named.
+ *
+ *  The spelling is cut into words by the same tokenizer the query passed
+ *  through; its first word is the one with @c group 0.  A query word found in
+ *  it counts in one of two ways:
+ *
+ *  - **by name** — the first word was typed, or all words but at most one
+ *    were: *Halle (Saale)*, *Frankfurt am Main*, *Den Haag*, *Bad Tölz*,
+ *    *Landkreis Würzburg* for someone asking for Halle, Frankfurt, Haag, Tölz,
+ *    Würzburg;
+ *  - **beside** — the word stands later and two words or more were not typed:
+ *    *Neubrunn bei Würzburg*, *Garching bei München*, *Le Touquet-Paris-Plage*.
+ *
+ *  The line runs between one word and two because that is what separates a
+ *  prefix from a locator.  A prefix — *Bad*, *Den*, *Wiener*, *Landkreis* — is
+ *  one word in front of the name.  A locator always brings a preposition and a
+ *  place of its own, so the town it names is someone else's.  Demanding the
+ *  whole spelling instead was measured and reads worse: *Halle* then answers
+ *  with a village of that name before Halle (Saale), and *Haag* with Haag in
+ *  Oberbayern before Den Haag.
+ *
+ *  Only the first 64 words of a spelling take part; a word beyond them is
+ *  neither demanded nor counted.
+ *
+ *  @param[in]     index    Opened index; the spelling is borrowed from it.
+ *  @param[in]     rank     Display rank, or GEO_RANK_NONE for a field the
+ *                          document never carried.
+ *  @param[in]     kept     Words of the query.
+ *  @param[in,out] scratch  Tokenizer, overwritten by this call.
+ *  @return GEO_AGREEMENT_CITY, GEO_AGREEMENT_CITY_BESIDE, or 0 when no word of
+ *          the query stands in the spelling or there is none.
+ *
+ *  @whisper A town named in passing is still a town, only not the one that was asked for
+ */
+static unsigned town_agreement(
+    const GeoIndex *index, uint32_t rank, const QueryWords *kept, TextTokenizer *scratch
+) {
+  if (rank == GEO_RANK_NONE) return 0;
+  size_t size = 0;
+  const char *text = geo_dictionary_word(&index->display, rank, &size);
+  if (!text || !size) return 0;
+
+  /* one bit per word of the spelling: which it has, and which the query typed.
+     Both readings of an umlaut and the pieces of a compound share their word's
+     bit, so any of them meets it. */
+  size_t tokens = text_tokenize(scratch, text, size);
+  uint64_t words = 0;
+  uint64_t typed = 0;
+  bool found = false;
+  for (size_t t = 0; t < tokens; ++t) {
+    const TextToken *token = &scratch->tokens[t];
+    uint64_t bit = token->group < 64 ? UINT64_C(1) << token->group : 0;
+    if (!token->part) words |= bit;
+    if (query_words_have(kept, token->data, token->size)) {
+      found = true;
+      typed |= bit;
+    }
+  }
+  if (!found) return 0;
+  if (typed & UINT64_C(1)) return GEO_AGREEMENT_CITY;
+
+  uint64_t missing = words & ~typed;
+  bool at_most_one = (missing & (missing - 1)) == 0;
+  return at_most_one ? GEO_AGREEMENT_CITY : GEO_AGREEMENT_CITY_BESIDE;
+}
+
+/**
  * @brief How far a document lies where the query said it should.
  *
  *  Two questions, and only two: does the query name this document's postcode,
@@ -1364,7 +1467,22 @@ static unsigned words_in_display(
  *  that postcode or it does not — and neither can be earned by a document that
  *  merely mentions another place in passing.
  *
- *  The name is deliberately left out of this.  A word reaches a document
+ *  An area — see place_is_area() — *is* a where, and its own name answers the
+ *  town question alongside the town it carries.  Without that the dump's own
+ *  filing decides the order: *Würzburg* is filed as a county and carries no
+ *  town at all, so it scored nothing, while *Neubrunn bei Würzburg* scored
+ *  through its town field and *Residenzplatz* through Würzburg's — every one of
+ *  them ranked before the city that was typed, whatever its weight.  Where both
+ *  fields agree, the plainer of the two counts; they are never added.
+ *
+ *  A town counts fully only where it is named by its own name, and half where
+ *  its name holds the query's word as a place it lies beside — see
+ *  town_agreement().  Otherwise *Schulstraße Würzburg* weighs the street in
+ *  Hausen bei Würzburg exactly like the one in Würzburg, and only a single
+ *  point of weight, which the dump happens to give the city's street, keeps
+ *  them apart.
+ *
+ *  Every other name is deliberately left out of this.  A word reaches a document
  *  through everything its entry carried, its own name as much as the street its
  *  address block named, and the index cannot tell the two apart: *Domplatte*
  *  answers to *Dom* without showing it, and so does the *Leopoldstraße* whose
@@ -1393,13 +1511,18 @@ static unsigned agreement_of(
   if (words_in_display(index, record->postcode_rank, kept, scratch)) {
     score += GEO_AGREEMENT_POSTCODE;
   }
-  if (words_in_display(index, record->city_rank, kept, scratch)) { score += GEO_AGREEMENT_CITY; }
-  return score;
+  unsigned town = town_agreement(index, record->city_rank, kept, scratch);
+  if (town < GEO_AGREEMENT_CITY && place_is_area(record->type)) {
+    unsigned own = town_agreement(index, record->name_rank, kept, scratch);
+    if (own > town) town = own;
+  }
+  return score + town;
 }
 
 /** One candidate as the ranking sees it — the hit itself says nothing of this. */
 typedef struct HitRank {
-  uint8_t agreement; /**< What the query said about *where*, 0 … 3. */
+  uint8_t agreement; /**< What the query said about *where*, 0 …
+                          GEO_AGREEMENT_POSTCODE + GEO_AGREEMENT_CITY. */
   uint8_t named;     /**< The place still goes by what was typed; 0 for everyone
                           when no position was given. */
   uint8_t band;      /**< How near the searcher stands, 0 = nearest; 0 for everyone
