@@ -65,10 +65,12 @@ size_t QueryFrom(
     double longitude,
     GeoHit *hits,
     size_t limit,
-    GeoQueryStats *stats = nullptr
+    GeoQueryStats *stats = nullptr,
+    bool prefix_last = false
 ) {
   TextTokenizer tok;
   GeoQueryOptions options{};
+  options.prefix_last = prefix_last;
   options.has_position = true;
   options.latitude_e7 = E7(latitude);
   options.longitude_e7 = E7(longitude);
@@ -587,6 +589,69 @@ TEST(GeoIndexTown, APrefixOrASuffixStillNamesTheTown) {
   // weight alone decides — this one would hold even if qualifiers cost something
   ASSERT_EQ(Query(index, "Frankfurt ", hits, 8), 2u);
   EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Frankfurt am Main");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, ACityBeyondTheRingIsNotHiddenByAStreetNamedAfterIt) {
+  // the planet's case: Würzburg typed in Berlin.  Read as a beginning, the word
+  // meets the Würzburger Straße there, so the ring holds — and the city, far
+  // outside it, would never have been a candidate at all
+  std::vector<testsupport::MiniPlace> places = {
+      {"Würzburger Straße",
+       "Berlin",
+       "10789",
+       524990000,
+       133380000,
+       PHOTON_PLACE_TYPE_STREET,
+       3501},
+      {"Würzburg", "", "", 497780356, 99434769, PHOTON_PLACE_TYPE_COUNTY, 43929},
+  };
+  TempPath path{"farcity"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  ASSERT_EQ(QueryFrom(index, "Würzburg", 52.499, 13.338, hits, 8, &stats, true), 2u)
+      << "the city joins the street the ring found";
+  EXPECT_EQ(stats.position_dropped, 0u) << "the ring held; the city came from beyond it";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Würzburg")
+      << "a named city of weight stands before a street that only carries its name";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[1].document].name_rank), "Würzburger Straße");
+
+  // asked from Würzburg itself, the city is inside the ring and found there once
+  ASSERT_EQ(QueryFrom(index, "Würzburg", 49.778, 9.943, hits, 8, nullptr, true), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Würzburg");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, ALightPlaceBeyondTheRingDoesNotPushAsideWhatIsNear) {
+  // a village named after a common word carries it as its own name, just as a
+  // city would; only its weight tells it apart, and it weighs too little
+  std::vector<testsupport::MiniPlace> places = {
+      {"Bahnhofstraße", "Berlin", "12159", 524701016, 133396361, PHOTON_PLACE_TYPE_STREET, 3501},
+      {"Gmünd-Bahnhof",
+       "Gmünd-Bahnhof",
+       "378 10",
+       487685057,
+       149636772,
+       PHOTON_PLACE_TYPE_CITY,
+       33409},
+  };
+  TempPath path{"farvillage"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Bahnhof ", 52.47, 13.34, hits, 8), 1u)
+      << "the village stays beyond the ring";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Bahnhofstraße");
+
+  // without a position both answer, and the village is the heavier and named one
+  ASSERT_EQ(Query(index, "Bahnhof ", hits, 8), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Gmünd-Bahnhof");
   geo_index_close(&index);
 }
 

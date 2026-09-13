@@ -1270,6 +1270,31 @@ static size_t query_words(
  */
 #define GEO_QUERY_SAMPLE_MIN 64
 
+/**
+ * Places from beyond the ring the ranking may take in — see far_named_places().
+ *
+ * Few by nature: they have to be named by the query *and* weigh at least
+ * @ref GEO_QUERY_FAR_WEIGHT_MIN, which on the planet is a handful of cities per
+ * name.  The bound is what keeps the sample and its scores on the stack.
+ */
+#define GEO_QUERY_FAR_MAX 16
+
+/**
+ * Weight a place beyond the ring needs before a name may lift it over what is
+ * near, on the 0 … 65535 scale of GeoDocument::importance.
+ *
+ * Measured on the planet index against queries asked from Berlin, Munich,
+ * Cologne and Vienna.  Everything that has to be lifted weighs more — Frankfurt
+ * (Oder) 40527, Ulm 42393, Halle (Saale) 43648, Würzburg 43929, Wien 54450 —
+ * and everything that must not be lifted weighs less: Charlottenburg 39243 for
+ * *Berlin* asked from Munich, Neustadt an der Weinstraße 36110 over Cologne's
+ * own Neustadt/Nord, Gmünd-Bahnhof 33409 over the stations around Berlin, the
+ * Burkinabé region Mitte-Ost 31526 over Berlin-Mitte.  At 36000 the last two
+ * stay down but Neustadt and the districts come up; at 44000 Halle and Würzburg
+ * stay hidden.
+ */
+#define GEO_QUERY_FAR_WEIGHT_MIN 40000u
+
 /* The sample is what @ref GEO_QUERY_LIMIT_MAX measures — 256 hits are four
    kilobytes of stack — so the two are one number, kept in the header where a
    caller can read it. */
@@ -1601,6 +1626,72 @@ static void rank_hits(GeoHit *hits, HitRank *ranks, size_t count) {
   }
 }
 
+/**
+ * @brief Take in the places beyond the ring that the query names outright.
+ *
+ *  A candidate of @p far joins the sample when all of these hold:
+ *
+ *  - it weighs at least @ref GEO_QUERY_FAR_WEIGHT_MIN;
+ *  - it is not already among the first @p count of @p pool;
+ *  - the query names its town fully or its postcode — agreement_of() reaches
+ *    GEO_AGREEMENT_CITY.
+ *
+ *  At most @ref GEO_QUERY_FAR_MAX join, in the order @p far holds them, which is
+ *  heaviest first.  Each arrives with its agreement written into @p ranks; the
+ *  other keys are the caller's to fill, as for every candidate.
+ *
+ *  Once in, nothing is settled.  The ranking weighs a far place against the
+ *  near ones by the same keys as always, so a named city stands before a street
+ *  that only carries its name, and a named place inside the ring still stands
+ *  before a named one outside it, since its band is nearer.
+ *
+ *  The weight is the guard.  A name alone would lift every village called
+ *  after a common word — *Gmünd-Bahnhof* over the stations around the searcher,
+ *  *Mitte-Ost* over the Mitte they stand in — because such a village carries
+ *  the word as its own name just as a city does.  What tells the two apart is
+ *  not the name but how much the place weighs.
+ *
+ *  @param[in]     index     Opened index.
+ *  @param[in]     kept      Words of the query.
+ *  @param[in,out] scratch   Tokenizer, overwritten.
+ *  @param[in]     far       Candidates found without the ring.
+ *  @param[in]     far_count Entries in @p far.
+ *  @param[in,out] pool      Sample; room for @p count + @ref GEO_QUERY_FAR_MAX.
+ *  @param[out]    ranks     Receives the agreement of every place taken in.
+ *  @param[in]     count     Candidates already in @p pool.
+ *  @return Candidates in @p pool afterwards, at most @p count + GEO_QUERY_FAR_MAX.
+ *
+ *  @whisper A city heard from afar still answers to its name
+ */
+static size_t far_named_places(
+    const GeoIndex *index,
+    const QueryWords *kept,
+    TextTokenizer *scratch,
+    const GeoHit *far,
+    size_t far_count,
+    GeoHit *pool,
+    HitRank *ranks,
+    size_t count
+) {
+  const size_t near_count = count;
+  for (size_t f = 0; f < far_count && count < near_count + GEO_QUERY_FAR_MAX; ++f) {
+    /* cheapest first: the weight is a field, the agreement folds two texts */
+    if (far[f].importance < GEO_QUERY_FAR_WEIGHT_MIN) continue;
+
+    bool held = false;
+    for (size_t h = 0; h < near_count && !held; ++h) held = pool[h].document == far[f].document;
+    if (held) continue;
+
+    unsigned agreement = agreement_of(index, far[f].document, kept, scratch);
+    if (agreement < GEO_AGREEMENT_CITY) continue;
+
+    pool[count] = far[f];
+    ranks[count].agreement = (uint8_t)agreement;
+    ++count;
+  }
+  return count;
+}
+
 size_t geo_index_query(
     const GeoIndex *index,
     TextTokenizer *tokenizer,
@@ -1653,19 +1744,20 @@ size_t geo_index_query_options(
   /* --- more candidates than were asked for, so the ranking has something to
          choose from.  The place someone means is not always among the heaviest
          that carry the words, and what is cut here can never be lifted later.
-         A caller who wants more at once than the sample holds is served
-         straight into its own array, as before.
+         A caller who asks for more than a sample of four per result holds is
+         weighed at exactly its limit.
 
-         Both arrays are bounded by the ceiling the limit was clamped to, so
-         however many candidates survive, the ranking below can hold every one
-         of them.  That is the whole point of clamping: a query that answers
-         more places than the sample fits would otherwise have to give the
-         ranking up, and would give it up in silence. --- */
-  GeoHit sample[GEO_QUERY_LIMIT_MAX];
-  GeoHit *pool = hits;
+         The sample is bounded by the ceiling the limit was clamped to, plus the
+         few places far_named_places() may add, so however many candidates
+         survive, the ranking below can hold every one of them.  That is the
+         whole point of clamping: a query that answers more places than the
+         sample fits would otherwise have to give the ranking up, and would give
+         it up in silence.  The answer is copied out at the end — at most 256
+         hits, which is nothing beside the search that found them. --- */
+  GeoHit sample[GEO_QUERY_LIMIT_MAX + GEO_QUERY_FAR_MAX];
+  GeoHit *pool = sample;
   size_t pool_limit = limit;
   if (limit <= GEO_QUERY_LIMIT_MAX / GEO_QUERY_OVERSAMPLE) {
-    pool = sample;
     pool_limit = limit * GEO_QUERY_OVERSAMPLE;
     if (pool_limit < GEO_QUERY_SAMPLE_MIN) pool_limit = GEO_QUERY_SAMPLE_MIN;
   }
@@ -1699,6 +1791,7 @@ size_t geo_index_query_options(
 
   size_t count = 0;
   bool near_used = near != NULL;
+  NumberReading answered = NUMBERS_AS_WORDS;
   for (int attempt = 0; attempt < 2 && !count; ++attempt) {
     /* The position is the first thing let go of.  A search that finds nothing
        nearby was asking about somewhere else — that is a plain reading of the
@@ -1713,10 +1806,12 @@ size_t geo_index_query_options(
     numbered = numbers_present;
 
     if (numbered) {
+      answered = NUMBERS_BUT_CODES;
       count = query_words(
           index, tokenizer, NUMBERS_BUT_CODES, prefix_last, carried_near, pool, pool_limit, stats
       );
       if (!count) {
+        answered = NUMBERS_AS_HOUSES;
         count = query_words(
             index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, carried_near, pool, pool_limit, stats
         );
@@ -1724,6 +1819,7 @@ size_t geo_index_query_options(
     }
     if (!count) {
       numbered = false;
+      answered = NUMBERS_AS_WORDS;
       count = query_words(
           index, tokenizer, NUMBERS_AS_WORDS, prefix_last, carried_near, pool, pool_limit, stats
       );
@@ -1732,15 +1828,37 @@ size_t geo_index_query_options(
   if (near) roaring_bitmap_free(near);
   if (!count) return 0;
 
+  /* --- The ring narrowed before weight could cut, and that is also its blind
+         spot: a place the query names outright is never a candidate when it
+         lies beyond the ring and something inside it carries the same word.
+         *Würzburg* asked from Berlin meets the Würzburger Straße there, the
+         ring holds, and the city itself is never seen.  So the reading that
+         answered is asked once more without the ring, and far_named_places()
+         lets the heavy places it names join the ranking.  A position that was
+         let go of has already asked without it. --- */
+  GeoHit far[GEO_QUERY_LIMIT_MAX];
+  size_t far_count = 0;
+  if (near_used) {
+    /* the counts describe the pass that answered, and this one only looks */
+    uint32_t groups = stats ? stats->groups : 0;
+    uint64_t narrowed = stats ? stats->narrowed : 0;
+    far_count = query_words(index, tokenizer, answered, prefix_last, NULL, far, pool_limit, stats);
+    if (stats) {
+      stats->groups = groups;
+      stats->narrowed = narrowed;
+    }
+  }
+
   /* --- and now the number finds its door --- */
   if (numbered) {
-    for (size_t h = 0; h < count; ++h) {
+    for (size_t h = 0; h < count + far_count; ++h) {
+      GeoHit *hit = h < count ? &pool[h] : &far[h - count];
       for (size_t t = 0; t < tokenizer->token_count; ++t) {
         const TextToken *token = &tokenizer->tokens[t];
         if (token->part || !token_has_digit(token)) continue;
-        uint32_t house = find_house(index, pool[h].document, token);
+        uint32_t house = find_house(index, hit->document, token);
         if (house != GEO_RANK_NONE) {
-          pool[h].house = house;
+          hit->house = house;
           break;
         }
       }
@@ -1758,12 +1876,17 @@ size_t geo_index_query_options(
      the second one score nothing. */
   tokenizer->repetition_filter = 0;
 
-  /* pool_limit is bounded above, and hit_insert never returns more than it was
-     given — so count fits, always, and the ranking runs for every query rather
-     than for most of them. */
-  HitRank ranks[GEO_QUERY_LIMIT_MAX];
+  /* pool_limit is bounded above, hit_insert never returns more than it was
+     given, and far_named_places() adds at most GEO_QUERY_FAR_MAX — so count
+     fits, always, and the ranking runs for every query rather than for most. */
+  HitRank ranks[GEO_QUERY_LIMIT_MAX + GEO_QUERY_FAR_MAX];
+  size_t near_count = count;
+  count = far_named_places(index, &kept, tokenizer, far, far_count, pool, ranks, count);
   for (size_t h = 0; h < count; ++h) {
-    ranks[h].agreement = (uint8_t)agreement_of(index, pool[h].document, &kept, tokenizer);
+    /* a place taken in from beyond the ring arrives with its agreement */
+    if (h < near_count) {
+      ranks[h].agreement = (uint8_t)agreement_of(index, pool[h].document, &kept, tokenizer);
+    }
     /* Nearness is weighed even where the ring found nothing and was dropped:
        the question "which of these is closest" still has an answer, and the
        band is the only key that can give it.  Its guard travels with it — see
@@ -1781,7 +1904,7 @@ size_t geo_index_query_options(
 
   if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;
-  if (pool != hits) { memcpy(hits, pool, count * sizeof(*hits)); }
+  memcpy(hits, pool, count * sizeof(*hits));
   if (stats) stats->results = count;
   return count;
 }

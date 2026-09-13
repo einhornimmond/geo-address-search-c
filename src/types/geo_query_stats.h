@@ -57,7 +57,8 @@ typedef struct GeoQueryStats {
   uint32_t near_cells;
   /** 1 when the ring left nothing standing and the position was let go of. */
   uint32_t position_dropped;
-  /** Readings the query needed, 1 … 6. */
+  /** Readings the query needed, 1 … 6 — the look beyond the ring a held position
+      takes is one of them. */
   uint32_t passes;
   /** Words that narrowed in the answering pass, after their readings were joined. */
   uint32_t groups;

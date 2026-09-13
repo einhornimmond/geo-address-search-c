@@ -21,6 +21,33 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **A city named from afar is no longer hidden by a street named after it.** With a
+  position, the candidates are narrowed to the searcher's surroundings before the ranking
+  sees them, and the position is let go of only when nothing nearby answers. Something
+  nearby nearly always carries a city's name: `Würzburg` typed in Berlin met the
+  Würzburger Straße there, `Wien` typed in Munich the Willi-Wien-Straße, `Hannover` typed
+  in Berlin the Hannoverstraße — and the city itself never became a candidate, so the rule
+  that a named town outranks nearness had nothing to rank. Read as a beginning, as a map's
+  search box reads every query, it hit almost every city: `München` from Berlin answered
+  with Münchener Straße, `Paris` with Pariser Platz, `Berlin` from Munich with the
+  Leopoldstraße. Where the ring holds, the reading that answered is now asked once more
+  without it, and the places found there that the query names by town or postcode join
+  the ranking, at most 16 of them.
+  - **Only places of weight are taken in: 40000 of 65535 or more.** A name alone would
+    also lift every village called after a common word, because such a village carries
+    the word as its own name just as a city does — `Bahnhof` in Berlin would answer with
+    Gmünd-Bahnhof in Bohemia, `Mitte` with the Burkinabé region Mitte-Ost. The threshold
+    was measured on the planet index from Berlin, Munich, Cologne and Vienna: Frankfurt
+    (Oder) at 40527 is the lightest place that has to come up, Charlottenburg at 39243 the
+    heaviest that must not come up (for `Berlin` asked from Munich). A small town typed
+    from afar can therefore still stand behind a nearby street carrying its name.
+  - **Cost:** a query whose ring held pays one more reading. Warm on the planet index the
+    median grows by 0 to 0.5 ms — least for rare words and house numbers, most for
+    `Berlin` asked from Munich (0.54 → 1.02 ms), whose word stands on hundreds of
+    thousands of places.
+  - The sample is now always the query's own and copied out at the end, including for
+    limits above 64, where it used to be the caller's array.
+
 - **A city filed as a county answers to its own name first.** The ranking asks whether the
   query names a place's town, and read that only from the town field. `Würzburg` is a
   kreisfreie Stadt, which the dump files as `county` with no town at all, so it scored

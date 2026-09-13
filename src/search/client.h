@@ -257,10 +257,15 @@ typedef struct GeoSearchOptions {
  *  *Hauptstraße* answer with the one nearby rather than with the heaviest of
  *  the nine thousand that carry the word.
  *
- *  Nearness never overrules a named place: whoever types *Berlin* from Potsdam
- *  is answered with Berlin.  And where nothing at all stands near the given
- *  point, the position is dropped and the search runs without it — a wrong
- *  position costs a place its order, never its presence.
+ *  Nearness never overrules a named place of weight: whoever types *Berlin* from
+ *  Potsdam is answered with Berlin, and whoever types *Würzburg* from Berlin
+ *  with Würzburg, not with the Würzburger Straße around the corner.  A place
+ *  standing beyond the searcher's surroundings is lifted that way only when it
+ *  weighs at least 40000 of 65535 — a city, not a village named after a common
+ *  word.  A small town typed from afar may therefore still stand behind a
+ *  nearby street that carries its name.  And where nothing at all stands near
+ *  the given point, the position is dropped and the search runs without it — a
+ *  wrong position costs a place its order, never its presence.
  *
  *  ### The counts
  *

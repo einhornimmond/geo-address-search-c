@@ -472,6 +472,17 @@ typedef struct GeoQueryOptions {
  *  distance counts in coarse bands only, so that three streets closer never
  *  outweighs what a place is.
  *
+ *  A town beyond the ring is not a candidate of the ring, though, and the
+ *  ranking can only order what it was given.  So where the ring held, the
+ *  reading that answered is asked once more without it, and the places found
+ *  there that the query names by town or postcode join the ranking — provided
+ *  they weigh at least 40000 of 65535.  *Würzburg* asked from Berlin then
+ *  answers with Würzburg before the Würzburger Straße nearby.  A lighter named
+ *  place stays hidden behind a nearby one carrying its word: without the
+ *  weight, every village called after a common word would be lifted too, and
+ *  *Bahnhof* would answer with Gmünd-Bahnhof rather than with the stations
+ *  around the searcher.
+ *
  *  @param[in]     index      Opened index; must not be NULL.
  *  @param[in,out] tokenizer  Scratch space; reset by this call.
  *  @param[in]     query      Free text, words in any order.
