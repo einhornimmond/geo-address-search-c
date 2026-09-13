@@ -241,6 +241,30 @@ TEST(TextTokenizeFilter, ClearedFilterFoldsEveryInput) {
   EXPECT_EQ(first, again) << "with the filter off the words are handed out again";
 }
 
+TEST(TextTokenizeFilter, ALongInputInBetweenLeavesNoStaleWordsBehind) {
+  TextTokenizer tok;
+  text_tokenizer_init(&tok);
+  tok.repetition_filter = 0;
+  // the long input is too wide to be remembered, yet it overwrote the words; the
+  // short one after it may not be mistaken for a repetition of the short one before
+  std::string wide = "KGV 501 Gartenverein Fuhlsbüttel Kolonie Hummelsbütteler Hauptstraße";
+  ASSERT_GT(wide.size(), (size_t)TEXT_RECENT_BYTES);
+  EXPECT_EQ(Tokens(&tok, "Hamburg"), std::vector<std::string>{"hamburg"});
+  EXPECT_FALSE(Tokens(&tok, wide).empty());
+  EXPECT_EQ(Tokens(&tok, "Hamburg"), std::vector<std::string>{"hamburg"})
+      << "the words of the wide input were handed out again";
+}
+
+TEST(TextTokenizeFilter, AnEmptyInputInBetweenLeavesNoStaleWordsBehind) {
+  TextTokenizer tok;
+  text_tokenizer_init(&tok);
+  tok.repetition_filter = 0;
+  EXPECT_EQ(Tokens(&tok, "Hamburg"), std::vector<std::string>{"hamburg"});
+  EXPECT_EQ(text_tokenize(&tok, "", 0), 0u);
+  EXPECT_EQ(Tokens(&tok, "Hamburg"), std::vector<std::string>{"hamburg"})
+      << "the empty input cleared the words, so there is nothing to hand out again";
+}
+
 TEST(TextTokenizeFilter, LongInputsAreNeverFilteredCheaply) {
   TextTokenizer tok;
   text_tokenizer_init(&tok);

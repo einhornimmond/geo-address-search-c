@@ -17,6 +17,49 @@ summarise what the commits show rather than what was noted at the time.
 1.2.0 is tagged but cannot be fetched as a Zig package; 1.2.1 is the first that can, and
 1.2.2 the first that builds once fetched.
 
+## Unreleased
+
+### Fixed
+
+- **A city filed as a county answers to its own name first.** The ranking asks whether the
+  query names a place's town, and read that only from the town field. `Würzburg` is a
+  kreisfreie Stadt, which the dump files as `county` with no town at all, so it scored
+  nothing — while `Neubrunn bei Würzburg`, `Hausen bei Würzburg` and every street of the city
+  scored through theirs and stood before it, whatever its weight. An area — country, state,
+  county, city — now lets its own name answer that question too. On the planet index this
+  lifts the city named (Würzburg), and the counties and states named alike (Landkreis
+  München, Region Hannover, the state of Brandenburg) into the same tier; street and address
+  queries keep their order.
+- **A town named beside another no longer ties with the town itself.** `Neubrunn bei
+  Würzburg` holds the word *Würzburg*, but as the place it lies beside. It counted exactly as
+  much as Würzburg, and on the planet only a single point of weight — 3500 against 3499 —
+  kept a street in Würzburg ahead of the one in the village; where the village had the house
+  number, it won outright (`Bahnhofstraße 1 München` answered with Grafing bei München). A
+  town now counts fully where its first word was typed or at most one word of it was not,
+  and half otherwise. So `Halle (Saale)`, `Frankfurt am Main`, `Den Haag` and `Bad Tölz`
+  still count fully, `Garching bei München` and `Wentorf bei Hamburg` half. A postcode still
+  outweighs any town. Requiring the whole name instead was measured and rejected: `Halle`
+  then answered with a village before Halle (Saale), `Haag` with Haag in Oberbayern before
+  Den Haag.
+- **A text after one wider than 64 bytes gets its own words.** The tokenizer remembers the
+  input its words belong to, so that the same text again costs nothing — but only inputs of
+  up to 64 bytes are remembered, and a wider one left the memory of the input *before* it
+  standing. Asked for that earlier text again, the tokenizer handed out the wide input's
+  words instead; an empty input in between did the same with no words at all. Only a
+  tokenizer with the repetition filter cleared answered with anything, which is exactly the
+  two that must count every text:
+  - the ranking, which folds one candidate's postcode, town and name after another. On the
+    planet, `Paris` lost the Paris entry whose postcode lists all 22 codes (`75000;75001;…`,
+    over 64 bytes): the town behind it read as those codes, agreed with nothing, and fell out
+    of the first ten. It is second again.
+  - the second pass of a build, which turns every text of an entry into its postings. The
+    same sequence — a short text, a wide one, the short one again — attached the wide text's
+    words to the entry and dropped the short text's own. Counted on the German dump, the
+    whole pass met that sequence once — `Grünhaid` right after a
+    `Gartenbauverein der Belegschaft der Porzellanfabrik Schönwald e. V.` — so an index built
+    before this fix is not wrong enough to need a rebuild; a rebuild removes what there is.
+    The file format is unchanged, and an existing index opens and answers as before.
+
 ## 1.2.2 -- 2026-08-25
 
 `build.zig` looked for `src/` in the working directory rather than in its own, which is the
