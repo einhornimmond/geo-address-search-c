@@ -21,6 +21,29 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **The same dump builds the same index, whatever the thread count.** Two builds of the
+  German dump with the same binary and four threads came out different — 1 605 497 and
+  1 605 499 documents, 21 986 296 and 21 986 325 postings — while two builds with one thread
+  were identical to the byte ([#11](https://github.com/einhornimmond/geo-address-search-c/issues/11)).
+  The parser threads take batches off one queue as they come free, and four steps of the
+  build decided ties by the order the threads' work was joined in:
+  - **Joining segments into documents.** Records alike in name, town, postcode and kind were
+    ordered by where they landed in the flattened array, and the join is greedy — the first
+    founds a cluster, the next is measured against its moving centre. Every batch now carries
+    its position in the dump (`ParseBatch::sequence`), each thread notes where its batches
+    begin, and such records are joined in dump order. A build with ten threads lines them up
+    as a build with one does.
+  - **Localized readings.** Where segments of one place disagree about its name in a
+    language, the first one gathered won, and `qsort` keeps no order among equals. The
+    spelling that sorts first wins now.
+  - **Doors with the same number on one street.** They were ordered by the number alone and a
+    search takes the first, so which position it answered with was up to the threads. They
+    are ordered by where they stand now.
+  - **The term count in the file header.** It came from the first pass, whose repetition
+    filter lets through a different set of texts depending on which thread met them. It is
+    taken from the second pass now, which folds every text. The first pass's count still
+    decides whether a build has threads enough, as before.
+
 - **A city named from afar is no longer hidden by a street named after it.** With a
   position, the candidates are narrowed to the searcher's surroundings before the ranking
   sees them, and the position is let go of only when nothing nearby answers. Something
@@ -86,6 +109,16 @@ summarise what the commits show rather than what was noted at the time.
     `Gartenbauverein der Belegschaft der Porzellanfabrik Schönwald e. V.` — so an index built
     before this fix is not wrong enough to need a rebuild; a rebuild removes what there is.
     The file format is unchanged, and an existing index opens and answers as before.
+
+### Changed
+
+- **The place cache moves to layout 3:** a document record carries the batch it arrived in,
+  four bytes each, so that a pass replayed from the cache joins its documents in dump order
+  too. A cache of layout 2 is refused and written anew on the next build.
+- **Joining the documents holds four more bytes per segment** while it sorts them — on the
+  2026 planet dump with its 64 M segments about 250 MB, for the length of the join.
+- `doc_collector_add_document()` takes the batch as a third argument, `place_cache_write()`
+  and `place_cache_read()` take and return it. None of these are part of `client.h`.
 
 ## 1.2.2 -- 2026-08-25
 

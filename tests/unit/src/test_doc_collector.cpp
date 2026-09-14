@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstring>
 #include <set>
 #include <vector>
 
@@ -57,7 +59,7 @@ protected:
 
   uint32_t AddDoc(const GeoDocument &d) {
     uint32_t number = UINT32_MAX;
-    EXPECT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+    EXPECT_EQ(doc_collector_add_document(&collector, &d, 0, &number), ARNM_SUCCESS);
     return number;
   }
   void AddWord(uint32_t word) {
@@ -200,13 +202,13 @@ TEST(DocCollectorMerge, RenumbersTheDocumentsOfEveryThread) {
   GeoDocument first = Doc(10);
   GeoDocument second = Doc(20);
   GeoDocument third = Doc(30);
-  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&a, &first, 0, &number), ARNM_SUCCESS);
   EXPECT_EQ(number, 0u);
   doc_collector_add_posting(&a, 1);
-  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &second, 0, &number), ARNM_SUCCESS);
   EXPECT_EQ(number, 0u) << "each thread counts from zero on its own";
   doc_collector_add_posting(&b, 1);
-  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &third, 0, &number), ARNM_SUCCESS);
   EXPECT_EQ(number, 1u);
   doc_collector_add_posting(&b, 2);
 
@@ -226,6 +228,133 @@ TEST(DocCollectorMerge, RenumbersTheDocumentsOfEveryThread) {
   doc_set_free(&set);
   doc_collector_free(&a);
   doc_collector_free(&b);
+}
+
+namespace {
+
+/** One entry of a made-up dump: the record, the batch it came in, its words, its readings. */
+struct DumpEntry {
+  GeoDocument record;
+  uint32_t batch;
+  std::vector<uint32_t> words;
+  std::vector<GeoVariantRecord> readings; /**< @c record of each is ignored. */
+};
+
+/**
+ * @brief Hand the entries to @p threads collectors, batch by batch, as @p thread_of says.
+ *
+ *  Each collector receives its batches in dump order, the way a parser thread
+ *  takes them off the queue — only which thread gets which batch is chosen here.
+ */
+void Distribute(
+    const std::vector<DumpEntry> &dump,
+    std::vector<DocCollector> &threads,
+    uint32_t (*thread_of)(uint32_t batch)
+) {
+  for (DocCollector &collector : threads) ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
+  /* the dump is read front to back; entries of one batch keep the order given */
+  std::vector<DumpEntry> in_order = dump;
+  std::stable_sort(in_order.begin(), in_order.end(), [](const DumpEntry &a, const DumpEntry &b) {
+    return a.batch < b.batch;
+  });
+  for (const DumpEntry &entry : in_order) {
+    DocCollector &collector = threads[thread_of(entry.batch)];
+    uint32_t number = 0;
+    ASSERT_EQ(
+        doc_collector_add_document(&collector, &entry.record, entry.batch, &number), ARNM_SUCCESS
+    );
+    for (uint32_t word : entry.words) doc_collector_add_posting(&collector, word);
+    for (const GeoVariantRecord &reading : entry.readings) {
+      doc_collector_add_variant(&collector, reading.language, reading.name_rank, reading.city_rank);
+    }
+  }
+}
+
+/** Every array a merged set will write into the file, compared byte for byte. */
+void ExpectSameSet(const DocSet &a, const DocSet &b) {
+  ASSERT_EQ(a.document_count, b.document_count);
+  ASSERT_EQ(a.posting_count, b.posting_count);
+  ASSERT_EQ(a.street_count, b.street_count);
+  ASSERT_EQ(a.variant_count, b.variant_count);
+  ASSERT_EQ(a.word_count, b.word_count);
+  EXPECT_EQ(memcmp(a.documents, b.documents, a.document_count * sizeof(GeoDocument)), 0);
+  EXPECT_EQ(memcmp(a.postings, b.postings, a.posting_count * sizeof(uint32_t)), 0);
+  EXPECT_EQ(memcmp(a.posting_offsets, b.posting_offsets, (a.word_count + 1) * sizeof(uint32_t)), 0);
+  EXPECT_EQ(memcmp(a.streets, b.streets, a.street_count * sizeof(GeoStreetKey)), 0);
+  EXPECT_EQ(memcmp(a.variants, b.variants, a.variant_count * sizeof(GeoVariant)), 0);
+}
+
+uint32_t AllInOne(uint32_t) {
+  return 0;
+}
+
+/** The later batches to the first thread, so the threads' order is the dump's reversed. */
+uint32_t LateBatchesFirst(uint32_t batch) {
+  return batch >= 4 ? 0 : (batch >= 2 ? 1 : 2);
+}
+
+} // namespace
+
+TEST(DocCollectorMerge, TheThreadsABatchFellToDoNotChangeTheSet) {
+  // everything that used to be decided by the order the threads were joined in
+  std::vector<DumpEntry> dump;
+
+  // three records of one key, 260 m apart in a row: joined greedily, the first
+  // founds a cluster and the running centre decides where the third belongs —
+  // taken the other way round, a different pair ends up together
+  GeoDocument kiosk = Doc(5, 7);
+  kiosk.type = PHOTON_PLACE_TYPE_OTHER;
+  for (int32_t step = 0; step < 3; ++step) {
+    GeoDocument record = kiosk;
+    record.lat_e7 = 480000000 + step * 26000;
+    dump.push_back({record, (uint32_t)step * 2, {(uint32_t)(10 + step)}, {}});
+  }
+
+  // two records alike to the byte but without a point: each stays a document of
+  // its own, and only the order says which of the two carries which word
+  GeoDocument nowhere = Doc(6, 7);
+  nowhere.type = PHOTON_PLACE_TYPE_OTHER;
+  nowhere.flags = 0;
+  dump.push_back({nowhere, 1, {20}, {}});
+  dump.push_back({nowhere, 3, {21}, {}});
+
+  // two segments of one street that disagree about its English name
+  GeoDocument street = Doc(8, 7, 9, 480500000, 115000000);
+  dump.push_back({street, 5, {30}, {{0, 41, GEO_RANK_NONE, 1}}});
+  dump.push_back({street, 5, {31}, {{0, 40, GEO_RANK_NONE, 1}}});
+
+  std::vector<DocCollector> one(1), three(3);
+  Distribute(dump, one, AllInOne);
+  Distribute(dump, three, LateBatchesFirst);
+
+  DocSet in_one{}, in_three{};
+  DocCollector *one_list[1] = {&one[0]};
+  DocCollector *three_list[3] = {&three[0], &three[1], &three[2]};
+  ASSERT_EQ(doc_collector_merge(&in_one, one_list, 1, 64, 2), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_merge(&in_three, three_list, 3, 64, 2), ARNM_SUCCESS);
+
+  ExpectSameSet(in_one, in_three);
+  EXPECT_EQ(in_one.document_count, 5u) << "two kiosks, two nowheres, one street";
+  ASSERT_EQ(in_one.variant_count, 1u);
+  EXPECT_EQ(in_one.variants[0].name_rank, 40u) << "the spelling that sorts first names it";
+
+  doc_set_free(&in_one);
+  doc_set_free(&in_three);
+  for (DocCollector &collector : one) doc_collector_free(&collector);
+  for (DocCollector &collector : three) doc_collector_free(&collector);
+}
+
+TEST(DocCollectorMerge, ABatchMayNotGoBackBehindTheOneBeforeIt) {
+  DocCollector collector{};
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
+  GeoDocument record = Doc(1);
+  uint32_t number = 0;
+  ASSERT_EQ(doc_collector_add_document(&collector, &record, 4, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &record, 4, &number), ARNM_SUCCESS);
+  EXPECT_EQ(doc_collector_add_document(&collector, &record, 3, &number), ARNM_ERROR_INVALID_PARAM)
+      << "a thread takes its batches in the order they were cut";
+  EXPECT_EQ(doc_collector_document_count(&collector), 2u) << "and the refused one is not stored";
+  doc_collector_free(&collector);
 }
 
 TEST(DocCollectorMerge, NoCollectorsYieldAnEmptySet) {
@@ -253,7 +382,7 @@ TEST(DocCollectorLimit, ACollectorThatFitsReportsNoLimit) {
   ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   GeoDocument document{};
   uint32_t number = 0;
-  ASSERT_EQ(doc_collector_add_document(&collector, &document, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &document, 0, &number), ARNM_SUCCESS);
   for (uint32_t word = 0; word < 1000; ++word) {
     ASSERT_EQ(doc_collector_add_posting(&collector, word), ARNM_SUCCESS);
   }
@@ -319,11 +448,11 @@ TEST(DocCollectorVariants, AReadingFollowsItsDocumentIntoTheNewNumbering) {
 
   uint32_t number = 0;
   GeoDocument first = Doc(10), second = Doc(20), third = Doc(30);
-  ASSERT_EQ(doc_collector_add_document(&a, &first, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&a, &first, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&a, 1, 110, 111), ARNM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_document(&b, &second, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &second, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&b, 1, 120, GEO_RANK_NONE), ARNM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_document(&b, &third, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&b, &third, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&b, 2, 230, GEO_RANK_NONE), ARNM_SUCCESS);
 
   DocSet set{};
@@ -365,7 +494,7 @@ TEST(DocCollectorVariants, EveryLanguagesRunIsAscendingByDocument) {
        Handed over in ascending order the run would come out sorted by itself and
        the test would hold even if the merge never sorted at all. */
     GeoDocument d = Doc(14 - i);
-    ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+    ASSERT_EQ(doc_collector_add_document(&collector, &d, 0, &number), ARNM_SUCCESS);
     ASSERT_EQ(doc_collector_add_variant(&collector, 1, 100 + i, GEO_RANK_NONE), ARNM_SUCCESS);
   }
 
@@ -388,9 +517,9 @@ TEST(DocCollectorVariants, SegmentsOfOneStreetJoinTheirFields) {
   ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument piece = Doc(10, 20, 30);
-  ASSERT_EQ(doc_collector_add_document(&collector, &piece, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &piece, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&collector, 1, 110, GEO_RANK_NONE), ARNM_SUCCESS);
-  ASSERT_EQ(doc_collector_add_document(&collector, &piece, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &piece, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&collector, 1, GEO_RANK_NONE, 111), ARNM_SUCCESS);
 
   DocSet set{};
@@ -409,7 +538,7 @@ TEST(DocCollectorVariants, AReadingThatSaysNothingIsNotStored) {
   ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument d = Doc(10);
-  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &d, 0, &number), ARNM_SUCCESS);
   EXPECT_EQ(doc_collector_add_variant(&collector, 1, GEO_RANK_NONE, GEO_RANK_NONE), ARNM_SUCCESS);
 
   DocSet set{};
@@ -425,7 +554,7 @@ TEST(DocCollectorVariants, ALanguageBeyondTheListIsPassedOver) {
   ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument d = Doc(10);
-  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &d, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&collector, 7, 110, 111), ARNM_SUCCESS);
 
   DocSet set{};
@@ -441,7 +570,7 @@ TEST(DocCollectorVariants, WithoutLanguagesNothingIsGatheredAtAll) {
   ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
   uint32_t number = 0;
   GeoDocument d = Doc(10);
-  ASSERT_EQ(doc_collector_add_document(&collector, &d, &number), ARNM_SUCCESS);
+  ASSERT_EQ(doc_collector_add_document(&collector, &d, 0, &number), ARNM_SUCCESS);
   ASSERT_EQ(doc_collector_add_variant(&collector, 1, 110, 111), ARNM_SUCCESS);
 
   DocSet set{};

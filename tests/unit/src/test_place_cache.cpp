@@ -103,7 +103,7 @@ std::vector<PhotonPlace> ReadAll(
     return places;
   }
   PhotonPlace place;
-  while (place_cache_read(&reader, &place)) {
+  while (place_cache_read(&reader, &place, nullptr)) {
     // the strings point into the reader's buffer, so what is kept is a copy
     places.push_back(place);
     places.back().own_name = Text(
@@ -144,7 +144,7 @@ TEST(PlaceCache, AStreetSurvivesTheRoundTrip) {
   out.search_count = 2;
   out.search[0] = Text("Hauptstraße");
   out.search[1] = Text("Bonn");
-  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::vector<PhotonPlace> back = ReadAll(directory.c_str(), 0, PLACE_CACHE_DOCUMENTS);
@@ -165,7 +165,7 @@ TEST(PlaceCache, AHouseSurvivesTheRoundTrip) {
   PlaceCacheWriter writer{};
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = House("Hauptstraße", "Bonn", "53111", "12a");
-  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::vector<PhotonPlace> back = ReadAll(directory.c_str(), 0, PLACE_CACHE_HOUSES);
@@ -176,12 +176,46 @@ TEST(PlaceCache, AHouseSurvivesTheRoundTrip) {
   EXPECT_EQ(Value(back[0].postcode), "53111");
 }
 
+TEST(PlaceCache, ADocumentKeepsTheBatchItArrivedIn) {
+  // replayed from the cache, the second pass has no batches of its own to count —
+  // the documents have to bring theirs, or the threads' files would interleave
+  // in no particular order; a door has no use for one and carries none
+  TempDir directory{"batch"};
+  PlaceCacheWriter writer{};
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
+  PhotonPlace street = Street("Hauptstraße", "Bonn", "53111");
+  PhotonPlace house = House("Hauptstraße", "Bonn", "53111", "5");
+  ASSERT_EQ(place_cache_write(&writer, &street, 4000000000u), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &house, 17), ARNM_SUCCESS);
+  place_cache_writer_close(&writer);
+
+  PlaceCacheReader reader{};
+  PhotonPlace back{};
+  uint32_t batch = 1;
+  ASSERT_EQ(
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
+  );
+  ASSERT_TRUE(place_cache_read(&reader, &back, &batch));
+  EXPECT_EQ(batch, 4000000000u) << "all 32 bits of it";
+  EXPECT_EQ(Value(back.own_name), "Hauptstraße") << "and the fields behind it are still in step";
+  EXPECT_FALSE(place_cache_read(&reader, &back, &batch));
+  EXPECT_EQ(batch, 4000000000u) << "the end of the file leaves the batch as it was";
+  place_cache_reader_close(&reader);
+
+  ASSERT_EQ(
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_HOUSES), ARNM_SUCCESS
+  );
+  ASSERT_TRUE(place_cache_read(&reader, &back, &batch));
+  EXPECT_EQ(batch, 0u);
+  place_cache_reader_close(&reader);
+}
+
 TEST(PlaceCache, AbsentAndEmptyStayApart) {
   TempDir directory{"absent"};
   PlaceCacheWriter writer{};
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = Street("Feldweg", nullptr, "");
-  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   PlaceCacheReader reader{};
@@ -189,7 +223,7 @@ TEST(PlaceCache, AbsentAndEmptyStayApart) {
       place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
   );
   PhotonPlace back{};
-  ASSERT_TRUE(place_cache_read(&reader, &back));
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
   EXPECT_EQ(back.city.data, nullptr) << "a field the entry never had comes back as nothing";
   ASSERT_NE(back.postcode.data, nullptr) << "an empty text is a text";
   EXPECT_EQ(back.postcode.size, 0u);
@@ -203,7 +237,7 @@ TEST(PlaceCache, TextsComeBackTerminated) {
   PlaceCacheWriter writer{};
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   PhotonPlace out = Street("Marienplatz", "München", "80331");
-  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   PlaceCacheReader reader{};
@@ -211,7 +245,7 @@ TEST(PlaceCache, TextsComeBackTerminated) {
       place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
   );
   PhotonPlace back{};
-  ASSERT_TRUE(place_cache_read(&reader, &back));
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
   EXPECT_STREQ(back.own_name.data, "Marienplatz");
   EXPECT_STREQ(back.city.data, "München");
   place_cache_reader_close(&reader);
@@ -226,7 +260,7 @@ TEST(PlaceCache, EverySearchTextIsKept) {
   std::vector<std::string> texts;
   for (int i = 0; i < PHOTON_PLACE_SEARCH_MAX; ++i) texts.push_back("term-" + std::to_string(i));
   for (int i = 0; i < PHOTON_PLACE_SEARCH_MAX; ++i) out.search[i] = Text(texts[i].c_str());
-  ASSERT_EQ(place_cache_write(&writer, &out), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &out, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   PlaceCacheReader reader{};
@@ -234,7 +268,7 @@ TEST(PlaceCache, EverySearchTextIsKept) {
       place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
   );
   PhotonPlace back{};
-  ASSERT_TRUE(place_cache_read(&reader, &back));
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
   ASSERT_EQ(back.search_count, PHOTON_PLACE_SEARCH_MAX);
   EXPECT_EQ(Value(back.search[0]), "term-0");
   EXPECT_EQ(
@@ -255,8 +289,8 @@ TEST(PlaceCache, TheTwoHalvesOfTheDumpAreWrittenApart) {
 
   PhotonPlace street = Street("Hauptstraße", "Bonn", "53111");
   PhotonPlace house = House("Hauptstraße", "Bonn", "53111", "5");
-  ASSERT_EQ(place_cache_write(&writer, &street), ARNM_SUCCESS);
-  ASSERT_EQ(place_cache_write(&writer, &house), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &street, 0), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &house, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   EXPECT_EQ(ReadAll(directory.c_str(), 0, PLACE_CACHE_DOCUMENTS).size(), 1u);
@@ -275,7 +309,7 @@ TEST(PlaceCache, AHouseWithoutANumberIsKeptAllTheSame) {
   nameless.own_name = Text("Villa Sonnenschein");
   nameless.city = Text("Bonn");
   nameless.postcode = Text("53111");
-  ASSERT_EQ(place_cache_write(&writer, &nameless), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &nameless, 0), ARNM_SUCCESS);
   place_cache_writer_close(&writer);
 
   std::vector<PhotonPlace> back = ReadAll(directory.c_str(), 0, PLACE_CACHE_HOUSES);
@@ -347,7 +381,7 @@ TEST(PlaceCacheRefusal, ATruncatedFileSaysSoInsteadOfEnding) {
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   for (int i = 0; i < 8; ++i) {
     PhotonPlace place = Street("Hauptstraße", "Bonn", "53111");
-    ASSERT_EQ(place_cache_write(&writer, &place), ARNM_SUCCESS);
+    ASSERT_EQ(place_cache_write(&writer, &place, 0), ARNM_SUCCESS);
   }
   place_cache_writer_close(&writer);
 
@@ -368,7 +402,7 @@ TEST(PlaceCacheRefusal, AWholeFileEndsWithoutComplaint) {
   ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
   for (int i = 0; i < 8; ++i) {
     PhotonPlace place = Street("Hauptstraße", "Bonn", "53111");
-    ASSERT_EQ(place_cache_write(&writer, &place), ARNM_SUCCESS);
+    ASSERT_EQ(place_cache_write(&writer, &place, 0), ARNM_SUCCESS);
   }
   place_cache_writer_close(&writer);
 

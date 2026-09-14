@@ -154,7 +154,9 @@ typedef struct GeoIndexHeader {
   uint64_t document_count;      /**< Places one can find. */
   uint64_t posting_count;       /**< Word-to-document connections. */
   uint64_t house_count;         /**< House numbers hanging on the streets. */
-  uint64_t total_terms;         /**< Terms seen while building — reporting only. */
+  uint64_t total_terms;         /**< Word occurrences the second pass of the build met,
+                                     repetitions within one place included — reporting
+                                     only, and the same however many threads built. */
   uint64_t language_count;      /**< Languages of the build, the default one at place 0
                                      included; also the records in the language section. */
   uint64_t variant_count;       /**< Localized readings held for them. */
@@ -206,7 +208,7 @@ typedef struct GeoIndex {
   size_t language_count;             /**< Entries in @c languages. */
   const GeoVariant *variants;        /**< Localized readings, or NULL. */
   size_t variant_count;              /**< Entries in @c variants. */
-  uint64_t total_terms;            /**< Terms seen while building; reporting only. */
+  uint64_t total_terms;            /**< Word occurrences of the second pass; reporting only. */
 } GeoIndex;
 
 /**
@@ -223,7 +225,7 @@ typedef struct GeoIndex {
  *  @param[in] houses       Joined house numbers, ordered by street.
  *  @param[in] language_tags One tag per language @p documents counted; may be
  *                          NULL where there are none.
- *  @param[in] total_terms  Terms seen while building, kept for the report.
+ *  @param[in] total_terms  Word occurrences the second pass met, kept for the report.
  *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER on a NULL argument,
  *          ARNM_ERROR_ARITHMETIC_OVERFLOW when a text exceeds 4 GiB, the
  *          localized readings outgrow what a uint32 addresses or @p documents

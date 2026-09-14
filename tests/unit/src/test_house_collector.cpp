@@ -138,6 +138,35 @@ TEST_F(HouseCollectorTest, NumbersOfOneStreetAreOrderedByTheirRank) {
   }
 }
 
+TEST(HouseCollectorMerge, OneNumberTwiceOnAStreetIsOrderedByWhereItStands) {
+  // the same number twice — two entrances — met by two threads in either order:
+  // a search takes the first, so the first may not depend on who met it
+  GeoDocument street = Street(1);
+  auto merged = [&](bool swapped) {
+    HouseCollector a{}, b{};
+    EXPECT_EQ(house_collector_init(&a), ARNM_SUCCESS);
+    EXPECT_EQ(house_collector_init(&b), ARNM_SUCCESS);
+    EXPECT_EQ(
+        house_collector_add(swapped ? &b : &a, 0, &street, 7, 481000100, 115000000, 1), ARNM_SUCCESS
+    );
+    EXPECT_EQ(
+        house_collector_add(swapped ? &a : &b, 0, &street, 7, 481000000, 115000000, 1), ARNM_SUCCESS
+    );
+    HouseSet set{};
+    HouseCollector *list[2] = {&a, &b};
+    EXPECT_EQ(house_collector_merge(&set, list, 2, 1), ARNM_SUCCESS);
+    std::vector<int32_t> latitudes;
+    for (uint32_t i = 0; i < set.house_count; ++i) latitudes.push_back(set.houses[i].lat_e7);
+    house_set_free(&set);
+    house_collector_free(&a);
+    house_collector_free(&b);
+    return latitudes;
+  };
+  EXPECT_EQ(merged(false), merged(true));
+  EXPECT_EQ(merged(false), (std::vector<int32_t>{481000000, 481000100}))
+      << "the southern door first";
+}
+
 TEST_F(HouseCollectorTest, EveryNumberSurvivesTheMerge) {
   GeoDocument street = Street(1);
   const uint32_t kCount = 2000;

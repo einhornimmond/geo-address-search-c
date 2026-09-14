@@ -132,6 +132,10 @@ typedef struct GeoVariantRecord {
 /** Where each document's words begin — 32768 per bucket, 128 KiB; ceiling 268 M documents. */
 #define GEO_START_VEC_BUCKET_LOG2 15
 
+/** Batches one thread took, one entry each — 1024 per bucket, 8 KiB.  A planet dump is
+ *  cut into a few hundred thousand batches, so a thread fills a handful of buckets. */
+#define GEO_BATCH_VEC_BUCKET_LOG2 10
+
 /** Elements one of these vectors can ever hold.
  *
  *  Not quite the bucket cap times the bucket size: the index array grows a fixed number
@@ -155,6 +159,22 @@ ARNM_BVEC_DEFINE(geo_word_vec, uint32_t)
 
 /** Where each document's words begin — one entry per document. */
 ARNM_BVEC_DEFINE(geo_start_vec, uint32_t)
+
+/**
+ * @brief From which document on a thread's records came out of one batch.
+ *
+ *  A thread takes whole batches and works through each from its first line to
+ *  its last, so its documents stand in dump order already — only where they
+ *  stand among the other threads' is lost.  One of these per batch restores
+ *  that without a number on every document.
+ */
+typedef struct GeoBatchStart {
+  uint32_t batch;  /**< ParseBatch::sequence, or whatever order the caller counts in. */
+  uint32_t record; /**< Thread-local number of the batch's first document. */
+} GeoBatchStart;
+
+/** Batches of one thread, in the order it took them. */
+ARNM_BVEC_DEFINE(geo_batch_vec, GeoBatchStart)
 
 /** Words of one document compared against each other before anything is stored. */
 #define POSTING_RUN_MAX 64
@@ -216,6 +236,7 @@ typedef struct DocCollector {
   arnm_bvec variants;             /**< Localized readings, pointing back at those records. */
   arnm_bvec words;                /**< Word ranks, grouped by document. */
   arnm_bvec starts;               /**< First word of each document. */
+  arnm_bvec batches;              /**< Where each batch's documents begin. */
   uint64_t dropped_words;         /**< Tokens the dictionary did not know — 0 in a sound build. */
   uint64_t dropped_doubles;       /**< Repetitions of a word within one document. */
   uint32_t seen[POSTING_RUN_MAX]; /**< Words of the open document so far. */
@@ -259,13 +280,25 @@ void doc_collector_free(DocCollector *collector);
  *  Every word noted afterwards belongs to this document, until the next one
  *  opens.
  *
+ *  @p batch says where the entry stood in the dump.  doc_collector_merge() uses it
+ *  to line up records that are otherwise alike — the same name, town, postcode
+ *  and kind — in the order the dump gave them, whichever thread met them and
+ *  however many threads there were.  Without it, those records would be joined
+ *  in an order the scheduler chose, and two builds of one dump would differ.
+ *
  *  @param[in,out] collector  Collector receiving the document.
  *  @param[in]     document   Record to store; copied.
+ *  @param[in]     batch      Position of the entry's batch in the dump.  Must not
+ *                            be smaller than the one the document before carried:
+ *                            a thread works through its batches in the order it
+ *                            took them, and they were handed out in that order.
  *  @param[out]    out_number Receives the thread-local document number.
- *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, or ARNM_ERROR_OUT_OF_MEMORY.
+ *  @return ARNM_SUCCESS, ARNM_ERROR_NULL_POINTER, ARNM_ERROR_OUT_OF_MEMORY, or
+ *          ARNM_ERROR_INVALID_PARAM when @p batch goes back behind the batch
+ *          before it — nothing is stored then.
  */
 arnm_result doc_collector_add_document(
-    DocCollector *collector, const GeoDocument *document, uint32_t *out_number
+    DocCollector *collector, const GeoDocument *document, uint32_t batch, uint32_t *out_number
 );
 
 /**

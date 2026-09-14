@@ -214,7 +214,7 @@ inline bool BuildMiniIndex(
     record.flags = p.has_point ? GEO_DOCUMENT_HAS_POINT : 0u;
 
     uint32_t number = 0;
-    if (doc_collector_add_document(&docs, &record, &number) != ARNM_SUCCESS) goto done;
+    if (doc_collector_add_document(&docs, &record, 0, &number) != ARNM_SUCCESS) goto done;
 
     for (const MiniPlace::Reading &reading : p.readings) {
       size_t language = languages.size();

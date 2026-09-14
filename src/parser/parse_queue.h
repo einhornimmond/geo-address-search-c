@@ -14,6 +14,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "foundation/line_buffer.h"
 
@@ -31,6 +32,10 @@ enum { PARSE_QUEUE_CAPACITY = 8 };
 typedef struct ParseBatch {
   LineBuffer *buffer; /**< Buffer holding the raw bytes; borrowed from the pool. */
   size_t len;         /**< Bytes to read from @c buffer. */
+  /** Where this batch stands in the dump, counted from 0 in the order the reader
+   *  cut it.  Threads take batches as they come free, so this is the one thing
+   *  that still says which entry came first once they have been shared out. */
+  uint32_t sequence;
 } ParseBatch;
 
 /** Opaque handle for a fixed-capacity, thread-safe work queue. */

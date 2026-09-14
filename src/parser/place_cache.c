@@ -315,6 +315,9 @@ static void put_u8(RecordBuilder *b, uint8_t value) {
 static void put_i32(RecordBuilder *b, int32_t value) {
   put_bytes(b, &value, 4);
 }
+static void put_u32(RecordBuilder *b, uint32_t value) {
+  put_bytes(b, &value, 4);
+}
 static void put_f64(RecordBuilder *b, double value) {
   put_bytes(b, &value, 8);
 }
@@ -380,7 +383,7 @@ arnm_result place_cache_writer_open(
   return ARNM_SUCCESS;
 }
 
-arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place) {
+arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place, uint32_t batch) {
   if (!writer || !place) return ARNM_ERROR_NULL_POINTER;
 
   /* Everything that is not a document of its own goes to the other file, the
@@ -403,6 +406,7 @@ arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place
     put_i32(&builder, place->lat_e7);
     put_i32(&builder, place->lon_e7);
     put_f64(&builder, place->importance);
+    put_u32(&builder, batch);
     put_string(&builder, place->own_name);
     put_string(&builder, place->city);
     put_string(&builder, place->postcode);
@@ -545,6 +549,13 @@ static int32_t take_i32(RecordCursor *c) {
   return value;
 }
 
+static uint32_t take_u32(RecordCursor *c) {
+  const void *at = take(c, 4);
+  uint32_t value = 0;
+  if (at) memcpy(&value, at, 4);
+  return value;
+}
+
 static double take_f64(RecordCursor *c) {
   const void *at = take(c, 8);
   double value = 0;
@@ -566,7 +577,7 @@ static PhotonString take_string(RecordCursor *c) {
   return text;
 }
 
-bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out) {
+bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out, uint32_t *batch) {
   if (!reader || !reader->file || !out) return false;
 
   /* The end of the file and a record that will not be read both stop the walk,
@@ -606,8 +617,10 @@ bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out) {
   out->lat_e7 = take_i32(&cursor);
   out->lon_e7 = take_i32(&cursor);
 
+  uint32_t arrived = 0;
   if (reader->kind == PLACE_CACHE_DOCUMENTS) {
     out->importance = take_f64(&cursor);
+    arrived = take_u32(&cursor);
     out->own_name = take_string(&cursor);
     out->city = take_string(&cursor);
     out->postcode = take_string(&cursor);
@@ -645,6 +658,7 @@ bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out) {
 
   ++reader->count;
   reader->bytes += sizeof(payload) + payload;
+  if (batch) *batch = arrived;
   return true;
 }
 
