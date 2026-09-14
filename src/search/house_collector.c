@@ -72,11 +72,19 @@ size_t house_collector_count(const HouseCollector *collector) {
  *  Joining
  * ========================================================================= */
 
-/** Order houses of one street by the rank of their number. */
+/** Order houses of one street by the rank of their number, then by where they stand. */
 static int compare_house(const void *lhs, const void *rhs) {
-  uint32_t a = ((const GeoHouse *)lhs)->number_rank;
-  uint32_t b = ((const GeoHouse *)rhs)->number_rank;
-  return a < b ? -1 : (a > b ? 1 : 0);
+  const GeoHouse *a = lhs;
+  const GeoHouse *b = rhs;
+  if (a->number_rank != b->number_rank) return a->number_rank < b->number_rank ? -1 : 1;
+  /* One number may stand on a street more than once — two entrances, a
+     segment the dump repeats — and a search takes the first of them.  Which
+     one that is may not depend on the thread that met it, nor on qsort, which
+     keeps no order among equals; so the doors are ordered by where they stand.
+     Two that agree in all three fields are one and the same. */
+  if (a->lat_e7 != b->lat_e7) return a->lat_e7 < b->lat_e7 ? -1 : 1;
+  if (a->lon_e7 != b->lon_e7) return a->lon_e7 < b->lon_e7 ? -1 : 1;
+  return 0;
 }
 
 arnm_result house_collector_merge(

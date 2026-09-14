@@ -45,10 +45,10 @@
  *
  *  Only what @c collect_document and @c collect_house read.  A house record
  *  carries four texts and a point; a document record adds its own name, its
- *  weight, its kind and the search texts.  Everything else the dump offers —
- *  the thirty translated names of every ancestor, the object ids, the
- *  categories — went into the vocabulary in the first pass and is never asked
- *  for again.
+ *  weight, its kind, the search texts and the batch it arrived in.  Everything
+ *  else the dump offers — the thirty translated names of every ancestor, the
+ *  object ids, the categories — went into the vocabulary in the first pass and
+ *  is never asked for again.
  *
  *  The narrowness is the point and the risk both.  Should a later pass come to
  *  read a field the cache does not carry, it would find nothing and say
@@ -72,8 +72,9 @@
 /** Eight bytes opening every cache file. */
 #define PLACE_CACHE_MAGIC "GRDPCACH"
 
-/** Raise this when a record gains, loses or reorders a field. */
-#define PLACE_CACHE_LAYOUT 2u
+/** Raise this when a record gains, loses or reorders a field.
+ *  3: a document record carries the batch its entry arrived in. */
+#define PLACE_CACHE_LAYOUT 3u
 
 /** Most parser threads a build may use, and so most files a cache may hold.
  *  Removal reaches this far whatever this run was asked for — otherwise a cache
@@ -276,15 +277,21 @@ arnm_result place_cache_writer_open(
  *  An entry that becomes neither a document nor a house — a house-level record
  *  the dump gave no number — is passed over silently; nothing will ask for it.
  *
+ *  A document keeps @p batch beside it, so that a pass read back from the cache
+ *  still knows which entry came first in the dump — the documents of one thread
+ *  file are in order, but the files of all threads interleave, and only the
+ *  batch says how.  A house does not need it and does not carry it.
+ *
  *  @param[in,out] writer  Open writer.
  *  @param[in]     place   Entry as the parser handed it over.
+ *  @param[in]     batch   ParseBatch::sequence the entry arrived in.
  *  @retval ARNM_SUCCESS            Written, or passed over as described above.
  *  @retval ARNM_ERROR_NULL_POINTER @p writer or @p place is NULL.
  *  @retval ARNM_ERROR_OUT_OF_MEMORY The record outgrew the writer's buffer and it
  *                                  could not be grown; nothing was written.
  *  @retval ARNM_ERROR_ENCODE_FAILED The write to the file did not go through.
  */
-arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place);
+arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place, uint32_t batch);
 
 /** @brief Flush and close both files, leaving them on disk. Safe with NULL. */
 void place_cache_writer_close(PlaceCacheWriter *writer);
@@ -318,11 +325,14 @@ arnm_result place_cache_reader_open(
  *
  *  @param[in,out] reader  Open reader.
  *  @param[out]    out     Receives the entry, zeroed first.
+ *  @param[out]    batch   Receives the batch the entry arrived in when it was
+ *                         written; 0 for a house, which does not carry one.  May be
+ *                         NULL.  Left untouched when no record was read.
  *  @return true while a record was read; false at the end of the file.
  *
  *  @whisper What was set down comes back in the shape it was needed in
  */
-bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out);
+bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out, uint32_t *batch);
 
 /** @brief Close the file. Safe to call with NULL. */
 void place_cache_reader_close(PlaceCacheReader *reader);

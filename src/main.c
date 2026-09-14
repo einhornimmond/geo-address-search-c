@@ -139,6 +139,8 @@ typedef struct ParserThreadArgs {
   const NameSet *display_set;       /**< Second pass: where a spelling finds its rank. */
   DocCollector documents;           /**< Second pass: what this thread found. */
   arnm_result document_result;      /**< First failure while collecting documents. */
+  uint32_t batch;                   /**< Where the entry being handled stands in the dump —
+                                         the ParseBatch::sequence it arrived in. */
   const DocSet *doc_set;            /**< Third pass: where a street became a document. */
   HouseCollector houses;            /**< Third pass: the numbers this thread met. */
   arnm_result house_result;         /**< First failure while collecting houses. */
@@ -305,7 +307,8 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   };
 
   uint32_t number = 0;
-  arnm_result result = doc_collector_add_document(&args->documents, &document, &number);
+  arnm_result result =
+      doc_collector_add_document(&args->documents, &document, args->batch, &number);
   if (result != ARNM_SUCCESS) {
     if (args->document_result == ARNM_SUCCESS) args->document_result = result;
     return;
@@ -373,7 +376,7 @@ static int process_place_callback(const PhotonPlace *place, void *user_data) {
        the only one that can write the cache down.  What it writes is what the
        two passes behind it will read instead of unpacking the file again. */
     if (args->cache_write) {
-      arnm_result result = place_cache_write(args->cache_write, place);
+      arnm_result result = place_cache_write(args->cache_write, place, args->batch);
       if (result != ARNM_SUCCESS && args->cache_result == ARNM_SUCCESS) {
         args->cache_result = result;
       }
@@ -391,6 +394,7 @@ static int process_place_callback(const PhotonPlace *place, void *user_data) {
 
 /** Parse every line of one batch, counting the documents as they go by. */
 static void process_batch(const ParseBatch *batch, ParserThreadArgs *args) {
+  args->batch = batch->sequence;
   const char *line = batch->buffer->buffer;
   const char *end = line + batch->len;
 
@@ -445,7 +449,7 @@ static void replay_cache(ParserThreadArgs *args) {
     }
     PhotonPlace place;
     uint64_t seen = 0;
-    while (place_cache_read(&reader, &place)) {
+    while (place_cache_read(&reader, &place, &args->batch)) {
       process_place_callback(&place, args);
       /* the progress is read from another thread; telling it every few
          thousand records keeps the line moving without a lock per entry */
@@ -493,9 +497,10 @@ static void *parser_thread(void *arg) {
   return NULL;
 }
 
-/** Send whatever whole lines the buffer holds down the queue, and keep the rest. */
+/** Send whatever whole lines the buffer holds down the queue, and keep the rest.
+ *  The batch sent takes the number @p sequence points at, which then moves on. */
 static void enqueue_complete_lines(
-    ParseQueue *queue, BufferPool *pool, LineBuffer **active_buffer
+    ParseQueue *queue, BufferPool *pool, LineBuffer **active_buffer, uint32_t *sequence
 ) {
   LineBuffer *current = *active_buffer;
   size_t complete_len = 0;
@@ -506,7 +511,9 @@ static void enqueue_complete_lines(
   LineBuffer *next = buffer_pool_acquire(pool);
   size_t remaining = current->position - complete_len;
   if (remaining) { line_buffer_append(next, current->buffer + complete_len, remaining); }
-  parse_queue_push(queue, (ParseBatch){.buffer = current, .len = complete_len});
+  parse_queue_push(
+      queue, (ParseBatch){.buffer = current, .len = complete_len, .sequence = (*sequence)++}
+  );
   *active_buffer = next;
 }
 
@@ -533,6 +540,9 @@ static void stream_dump(
   ZSTD_inBuffer input = {.src = inputBuffer, .size = 0, .pos = 0};
   ZSTD_outBuffer output = {.dst = outputBuffer, .size = outputSize, .pos = 0};
   LineBuffer *lineBuffer = buffer_pool_acquire(pool);
+  /* the batches are numbered as they are cut, so the order of the dump survives
+     their being shared out among the threads */
+  uint32_t sequence = 0;
 
   while (1) {
     size_t read = fread(inputBuffer, 1, inputSize, fp);
@@ -546,7 +556,7 @@ static void stream_dump(
       if (ZSTD_isError(ret)) { fatal(ERROR_ZSTD, "%s", ZSTD_getErrorName(ret)); }
 
       line_buffer_append(lineBuffer, (char *)output.dst, output.pos);
-      enqueue_complete_lines(queue, pool, &lineBuffer);
+      enqueue_complete_lines(queue, pool, &lineBuffer, &sequence);
       output.pos = 0;
 
       if (0 == ret) { break; } /* fully flushed */
@@ -554,7 +564,9 @@ static void stream_dump(
   }
 
   if (lineBuffer->position > 0) {
-    parse_queue_push(queue, (ParseBatch){.buffer = lineBuffer, .len = lineBuffer->position});
+    parse_queue_push(
+        queue, (ParseBatch){.buffer = lineBuffer, .len = lineBuffer->position, .sequence = sequence}
+    );
   } else {
     buffer_pool_release(pool, lineBuffer);
   }
@@ -1096,6 +1108,11 @@ static int build_index(
 
   DocCollector *doc_collectors[PARSER_THREADS_MAX];
   uint64_t unknown_words = 0;
+  /* The count the file keeps is taken here and not from the first pass: the
+     first pass lets repetitions pass unfolded, and which ones it meets depends
+     on how the batches fell to the threads.  The second folds every text, so
+     what it met is the same however many threads met it. */
+  uint64_t terms_met = 0;
   for (unsigned i = 0; i < parser_thread_count; ++i) {
     if (parser_args[i].document_result != ARNM_SUCCESS) {
       CollectorLimit limit = {NULL, 0, 0};
@@ -1104,6 +1121,8 @@ static int build_index(
     }
     doc_collectors[i] = &parser_args[i].documents;
     unknown_words += parser_args[i].documents.dropped_words;
+    terms_met += doc_collector_posting_count(&parser_args[i].documents) +
+                 parser_args[i].documents.dropped_doubles + parser_args[i].documents.dropped_words;
   }
 
   progress_begin("Joining the documents of all threads", 0);
@@ -1213,9 +1232,8 @@ static int build_index(
   char writeLabel[256];
   snprintf(writeLabel, sizeof(writeLabel), "Writing the index to '%s'", index_path);
   progress_begin_polled(writeLabel, 0, file_bytes, (void *)index_path);
-  arnm_result write_result = geo_index_write(
-      index_path, &words, &display, &documents, &houses, language_tags, words.total
-  );
+  arnm_result write_result =
+      geo_index_write(index_path, &words, &display, &documents, &houses, language_tags, terms_met);
   if (write_result != ARNM_SUCCESS) {
     fatal(ERROR_IO, "Failed to write index '%s' (arnm_result %d).", index_path, (int)write_result);
   }

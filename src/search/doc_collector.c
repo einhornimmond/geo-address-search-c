@@ -50,7 +50,9 @@ arnm_result doc_collector_init(DocCollector *collector) {
   if (result != ARNM_SUCCESS) return result;
   result = geo_word_vec_init(&collector->words, GEO_WORD_VEC_BUCKET_LOG2, 0, NULL);
   if (result != ARNM_SUCCESS) return result;
-  return geo_start_vec_init(&collector->starts, GEO_START_VEC_BUCKET_LOG2, 0, NULL);
+  result = geo_start_vec_init(&collector->starts, GEO_START_VEC_BUCKET_LOG2, 0, NULL);
+  if (result != ARNM_SUCCESS) return result;
+  return geo_batch_vec_init(&collector->batches, GEO_BATCH_VEC_BUCKET_LOG2, 0, NULL);
 }
 
 void doc_collector_free(DocCollector *collector) {
@@ -59,14 +61,28 @@ void doc_collector_free(DocCollector *collector) {
   geo_variant_vec_free(&collector->variants);
   geo_word_vec_free(&collector->words);
   geo_start_vec_free(&collector->starts);
+  geo_batch_vec_free(&collector->batches);
   collector->dropped_words = 0;
 }
 
 arnm_result doc_collector_add_document(
-    DocCollector *collector, const GeoDocument *document, uint32_t *out_number
+    DocCollector *collector, const GeoDocument *document, uint32_t batch, uint32_t *out_number
 ) {
   if (!collector || !document || !out_number) return ARNM_ERROR_NULL_POINTER;
   size_t number = geo_document_vec_size(&collector->documents);
+
+  /* a new batch begins where the first of its documents lands */
+  size_t batches = geo_batch_vec_size(&collector->batches);
+  const GeoBatchStart *open = batches ? geo_batch_vec_get(&collector->batches, batches - 1) : NULL;
+  if (open && batch < open->batch) return ARNM_ERROR_INVALID_PARAM;
+  if (!open || batch != open->batch) {
+    GeoBatchStart start = {.batch = batch, .record = (uint32_t)number};
+    arnm_result pushed = note_limit(
+        collector, geo_batch_vec_push_ptr(&collector->batches, &start), "geo_batch_vec",
+        &collector->batches
+    );
+    if (pushed != ARNM_SUCCESS) return pushed;
+  }
 
   /* the words of this document begin where the words so far end */
   arnm_result result = note_limit(
@@ -141,10 +157,25 @@ typedef struct MergeKey {
   uint32_t city;
   uint32_t postcode;
   uint32_t type;
+  uint32_t batch;  /**< Batch the record arrived in — its place in the dump. */
   uint32_t record; /**< Where the record sits in the flattened array. */
 } MergeKey;
 
-/** Order by the key, then by record so a group's members stay in their old order. */
+/**
+ * @brief Order by the key, then by where the record stood in the dump.
+ *
+ *  Records alike in all four fields are joined one after another, and the join
+ *  is greedy — the first founds a cluster, the next is measured against where
+ *  the cluster stands by then, a tie keeps the record held first.  So their
+ *  order decides the documents, and it has to be one the dump fixes rather than
+ *  one the threads happened into.
+ *
+ *  The batch says that across threads.  Within a batch, @c record does: a batch
+ *  belongs to exactly one thread, whose records are copied into the flat array
+ *  in the order the thread met them, which is the order of the batch's lines.
+ *  Together the two are the dump's own order, and a build with one thread and a
+ *  build with ten line the records up alike.
+ */
 static int compare_merge_key(const void *lhs, const void *rhs) {
   const MergeKey *a = lhs;
   const MergeKey *b = rhs;
@@ -152,6 +183,7 @@ static int compare_merge_key(const void *lhs, const void *rhs) {
   if (a->city != b->city) return a->city < b->city ? -1 : 1;
   if (a->postcode != b->postcode) return a->postcode < b->postcode ? -1 : 1;
   if (a->type != b->type) return a->type < b->type ? -1 : 1;
+  if (a->batch != b->batch) return a->batch < b->batch ? -1 : 1;
   return a->record < b->record ? -1 : (a->record > b->record ? 1 : 0);
 }
 
@@ -210,11 +242,22 @@ typedef struct VariantSlot {
   uint32_t city_rank;
 } VariantSlot;
 
-/** By language first, then by document — the order the file is searched in. */
+/**
+ * @brief By language first, then by document — the order the file is searched in.
+ *
+ *  Readings of one document in one language come from its several segments, and
+ *  the join below keeps the first name and the first town among them.  Which is
+ *  first may not be up to the threads that gathered them, nor up to qsort, which
+ *  promises no order among equals.  So they are ordered by what they say: the
+ *  spelling that sorts first wins, and a reading without a name or a town sorts
+ *  last, because GEO_RANK_NONE is the largest rank there is.
+ */
 static int compare_variant_slot(const void *left, const void *right) {
   const VariantSlot *a = left, *b = right;
   if (a->language != b->language) return a->language < b->language ? -1 : 1;
   if (a->document != b->document) return a->document < b->document ? -1 : 1;
+  if (a->name_rank != b->name_rank) return a->name_rank < b->name_rank ? -1 : 1;
+  if (a->city_rank != b->city_rank) return a->city_rank < b->city_rank ? -1 : 1;
   return 0;
 }
 
@@ -306,13 +349,29 @@ arnm_result doc_collector_merge(
     geo_document_vec_free(vec); /* the records live in the flat array now */
   }
 
-  /* --- sort the records so that equal places stand together --- */
+  /* --- sort the records so that equal places stand together, and equal ones
+         in the order the dump gave them --- */
   for (size_t r = 0; r < record_count; ++r) {
     keys[r].name = records[r].name_rank;
     keys[r].city = records[r].city_rank;
     keys[r].postcode = records[r].postcode_rank;
     keys[r].type = records[r].type;
     keys[r].record = (uint32_t)r;
+    keys[r].batch = 0;
+  }
+  for (size_t c = 0; c < collector_count; ++c) {
+    /* a thread's batches cover its records from the first one on, in order */
+    const arnm_bvec *batches = &collectors[c]->batches;
+    size_t batch_count = geo_batch_vec_size(batches);
+    size_t local_count = (c + 1 < collector_count ? base[c + 1] : written) - base[c];
+    for (size_t b = 0; b < batch_count; ++b) {
+      const GeoBatchStart *start = geo_batch_vec_get(batches, b);
+      size_t end = b + 1 < batch_count ? geo_batch_vec_get(batches, b + 1)->record : local_count;
+      for (size_t local = start->record; local < end && local < local_count; ++local) {
+        keys[base[c] + local].batch = start->batch;
+      }
+    }
+    geo_batch_vec_free(&collectors[c]->batches);
   }
   qsort(keys, record_count, sizeof(*keys), compare_merge_key);
 
