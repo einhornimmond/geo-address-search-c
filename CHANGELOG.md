@@ -66,7 +66,6 @@ summarise what the commits show rather than what was noted at the time.
     country name changes rank through the search.
   - **An index built before this has no country words** and answers as it always did;
     rebuild it to find what is written with its country.
-  - **The place cache moves to layout 4:** a document record carries its country code.
 
 - **The same dump builds the same index, whatever the thread count.** Two builds of the
   German dump with the same binary and four threads came out different — 1 605 497 and
@@ -159,9 +158,14 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Changed
 
-- **The place cache moves to layout 3:** a document record carries the batch it arrived in,
-  four bytes each, so that a pass replayed from the cache joins its documents in dump order
-  too. A cache of layout 2 is refused and written anew on the next build.
+- **The place cache moves to layout 4.** A document record carries the batch it arrived in,
+  four bytes, so that a pass replayed from the cache joins its documents in dump order too,
+  and the two letters of its country code, so that the replay writes the country words as
+  well. The layout is part of the stamp a cache is sealed with and of every file header, so
+  a cache of layout 2 — or 3, left by a build between releases — does not answer for the
+  dump: the build removes it before measuring the room and writes layout 4 where the room
+  suffices. Where it does not, the build walks the dump three times without a cache; a cache
+  directory that cannot be made or written into stops the build, as it always did.
 - **Joining the documents holds four more bytes per segment** while it sorts them — on the
   2026 planet dump with its 64 M segments about 250 MB, for the length of the join.
 - `doc_collector_add_document()` takes the batch as a third argument, `place_cache_write()`

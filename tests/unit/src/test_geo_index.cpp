@@ -848,6 +848,37 @@ TEST(GeoIndexCountry, ACountryInsideANameTypedInFullIsPartOfThatName) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexCountry, AQueryNamingNoCountryKeepsItsFifteenthWord) {
+  // the slot a named country takes is kept free only where one was named: two
+  // places share fourteen words, and only the fifteenth tells them apart
+  const std::vector<std::string> words = {
+      "alpha", "bravo",   "charlie", "delta", "echo", "foxtrot",  "golf",  "hotel",
+      "india", "juliett", "kilo",    "lima",  "mike", "november", "oscar",
+  };
+  std::string fourteen, fifteen;
+  for (size_t w = 0; w < words.size(); ++w) {
+    if (w) fifteen += " ";
+    fifteen += words[w];
+    if (w + 1 < words.size()) fourteen = fifteen;
+  }
+  std::vector<testsupport::MiniPlace> places = TwoCountries();
+  places.push_back(
+      Placed(fifteen, "Bonn", "53111", 50.73, 7.09, PHOTON_PLACE_TYPE_STREET, 1000, "de")
+  );
+  places.push_back(
+      Placed(fourteen, "Bonn", "53111", 50.74, 7.10, PHOTON_PLACE_TYPE_STREET, 2000, "de")
+  );
+  TempPath path{"countryfifteen"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places, {"de", "en"}));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, fifteen + " ", hits, 8), 1u) << "the fifteenth word narrows too";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), fifteen);
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexCountry, AnIndexWithoutCountryWordsAnswersAsBefore) {
   // the same places, built as an index from before the country words: nothing
   // names a country there, and the query meets nothing, as it always did

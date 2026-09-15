@@ -1171,8 +1171,11 @@ static size_t query_words(
       if (groups[g].source == token->group) { group = &groups[g]; }
     }
     if (!group) {
-      /* two slots are kept free, so the ring and the country always fit */
-      if (group_count + 2 >= GEO_QUERY_GROUP_MAX) {
+      /* one slot is kept free, so the ring around the searcher always fits, and
+         a second only where a country was named — a query without one keeps
+         every word it always kept */
+      size_t reserved = country ? 2u : 1u;
+      if (group_count + reserved >= GEO_QUERY_GROUP_MAX) {
         for (size_t r = 0; r < reading_count; ++r) { roaring_bitmap_free(readings[r]); }
         break;
       }

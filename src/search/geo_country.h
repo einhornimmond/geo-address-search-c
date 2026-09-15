@@ -43,10 +43,11 @@
  *  The code is taken as the dump writes it — ISO 3166-1 alpha-2, in either case —
  *  and written in lower case: `DE` and `de` give `#de`.
  *
- *  @param[out] buffer  At least @ref GEO_COUNTRY_TOKEN_SIZE bytes; not terminated.
+ *  @param[out] buffer  At least @ref GEO_COUNTRY_TOKEN_SIZE bytes, or NULL; not
+ *                      terminated.
  *  @param[in]  code    NUL-terminated code, or NULL.
- *  @return @ref GEO_COUNTRY_TOKEN_SIZE, or 0 — nothing written — when @p code is
- *          NULL or not exactly two ASCII letters.
+ *  @return @ref GEO_COUNTRY_TOKEN_SIZE, or 0 — nothing written — when @p buffer
+ *          is NULL, or @p code is NULL or not exactly two ASCII letters.
  */
 size_t geo_country_token(char *buffer, const char *code);
 
