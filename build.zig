@@ -281,6 +281,29 @@ pub fn build(b: *std.Build) !void {
     client_step.dependOn(&b.addInstallArtifact(lib, .{}).step);
 
     // =====================================================================
+    //  Evaluation: how often the search answers what a query meant
+    // =====================================================================
+    //
+    // Built on request only and linked against the client library alone, so it asks
+    // the index exactly the way an embedder does.  See tests/eval/eval.c.
+
+    const eval_exe = b.addExecutable(.{ .name = "geo_eval", .root_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+    }) });
+    eval_exe.want_lto = lto;
+    eval_exe.linkLibC();
+    eval_exe.linkLibrary(lib);
+    eval_exe.addIncludePath(b.path("src"));
+    eval_exe.addCSourceFiles(.{
+        .root = b.path("tests/eval"),
+        .files = &.{"eval.c"},
+        .flags = c_flags,
+    });
+    const eval_step = b.step("eval", "Build the search evaluation tool (tests/eval)");
+    eval_step.dependOn(&b.addInstallArtifact(eval_exe, .{}).step);
+
+    // =====================================================================
     //  Unit tests: one executable per unit of src/, built only on request
     // =====================================================================
 

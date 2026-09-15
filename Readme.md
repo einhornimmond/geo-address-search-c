@@ -394,6 +394,91 @@ doxygen            # API documentation
 Comments follow the two-layer standard from [AGENTS.md](AGENTS.md): a precise technical
 specification, plus a `@whisper` line where one fits.
 
+### Measuring search quality
+
+A ranking change is checked against a fixed set of queries rather than against the few that
+come to mind. `tests/eval/` holds two query files and the tool that asks them:
+
+```sh
+zig build eval --release=fast
+zig-out/bin/geo_eval planet.gdx tests/eval/queries.tsv tests/eval/regression.tsv
+zig-out/bin/geo_eval planet.gdx tests/eval/queries.tsv --failures        # what went wrong
+zig-out/bin/geo_eval planet.gdx tests/eval/*.tsv --ranks after.tsv       # diff against a run before
+```
+
+Every query is asked as the map in production asks it: the last word read as a beginning as
+well, and the centre of the map as the position — near the place, or in a large city at least
+150 km away. The report gives, per category, how often the expected place was the first
+answer, among the first three, among the first ten, the mean reciprocal rank, and how often a
+query *passed* — found within the number of answers its test allows, one where it names none.
+Names, streets and towns are compared loosely, as geocoder-tester's `--loose-compare` does:
+case, accents and punctuation aside.
+
+- **`queries.tsv`** — 589 queries drawn from the German dump by
+  [`make_queries.py`](tests/eval/make_queries.py) with a fixed seed: 50 addresses, 30 streets,
+  45 towns in three sizes and 20 quarters, each asked several ways — in full, abbreviated,
+  without postcode, with the quarter instead of the town, still being typed, and with two
+  letters swapped. The expected answer is the dump's own entry, so the file does not write
+  down what an index happens to answer. Regenerate it only on purpose; a new draw makes the
+  numbers before and after incomparable.
+- **`regression.tsv`** — queries that once went wrong, kept by hand: a city typed while the
+  map shows another region, a city filed as a county, Mitte asked in Berlin.
+
+A place the index does not hold at all — a street renamed between the dump the queries came
+from and the one the index was built from — is reported as *absent* and left out of the
+rates; `--absent` lists them.
+
+Measured on the 2026 planet index at the commit that added the tool:
+
+| group | queries | absent | top 1 | top 3 | top 10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| address | 303 | 0 | 87.8 % | 88.1 % | 88.8 % |
+| street | 86 | 0 | 93.0 % | 100 % | 100 % |
+| town | 160 | 0 | 60.6 % | 66.9 % | 69.4 % |
+| district | 40 | 2 | 81.6 % | 100 % | 100 % |
+| regression | 21 | 0 | 95.2 % | 95.2 % | 95.2 % |
+| **all** | **610** | **2** | **81.2 %** | **85.2 %** | **86.2 %** |
+
+Addresses in full, abbreviated, without postcode, by quarter and while typing all come first
+every time; the address group loses its points on the swapped letters alone (26 %). Towns lose
+theirs on a name still being typed from afar (43 %) and on swapped letters (0 %).
+
+#### Other geocoders' suites
+
+The tests [geocoder-tester](https://github.com/geocoders/geocoder-tester) holds for Photon and
+Nominatim, and the search features of
+[Nominatim's own BDD tests](https://github.com/osm-search/Nominatim/tree/master/test/bdd/features/api/search),
+are asked of the index too. Neither is copied into this repository: a submodule would arrive
+empty in every `zig fetch`, Nominatim is 160 MB for seven files, and it is GPL-3.0.
+[`tests/eval/external/fetch.sh`](tests/eval/external/fetch.sh) fetches both at pinned commits
+into `download/`, converts them into `build/`, and git ignores both:
+
+```sh
+tests/eval/external/fetch.sh
+zig-out/bin/geo_eval planet.gdx tests/eval/external/build/geocoder-tester-germany.tsv \
+                                tests/eval/external/build/nominatim.tsv --failures
+```
+
+The converters carry over what a test expects — name, house number, street, town, postcode,
+a coordinate with its tolerance — and pass over what the index cannot answer, saying how
+often and why: OSM ids and categories, reverse geocoding, points of interest, restricting
+parameters like a bounded viewbox, and checks on output formats. Of Nominatim's 191 search
+scenarios 21 remain, of geocoder-tester's tests 12 732, most of them French addresses; the
+YAML tests among them need PyYAML.
+
+Measured at the same commit, Germany and Nominatim's Liechtenstein:
+
+| suite | queries | absent | pass | top 3 | top 10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| geocoder-tester, Germany | 318 | 24 | 78.2 % | 84.0 % | 87.8 % |
+| Nominatim | 21 | 4 | 70.6 % | 70.6 % | 76.5 % |
+
+What they found that the drawn queries did not: a house number whose letter stands apart —
+`Osterstr. 42 A` — finds nothing at all; a street still being typed in front of its town —
+`Hafenga Ulm` — is not read as a beginning; and cities stand 1.7 to 2.6 km from where the
+suites expect them (Kassel, Würzburg, Erlangen, Fürth), the centre of their boundary rather
+than their place node.
+
 ## Releases
 
 Version 1.2.1. What each release changed, and what it asks of a build that had the one
