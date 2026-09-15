@@ -434,14 +434,14 @@ rates; `--absent` lists them.
 
 Measured on the 2026 planet index at the commit that added the tool:
 
-| group | queries | top 1 | top 3 | top 10 |
-| --- | ---: | ---: | ---: | ---: |
-| address | 303 | 87.8 % | 88.1 % | 88.8 % |
-| street | 86 | 93.0 % | 100 % | 100 % |
-| town | 160 | 60.6 % | 66.9 % | 69.4 % |
-| district | 38 | 81.6 % | 100 % | 100 % |
-| regression | 21 | 95.2 % | 95.2 % | 95.2 % |
-| **all** | **608** | **81.2 %** | **85.2 %** | **86.2 %** |
+| group | queries | absent | top 1 | top 3 | top 10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| address | 303 | 0 | 87.8 % | 88.1 % | 88.8 % |
+| street | 86 | 0 | 93.0 % | 100 % | 100 % |
+| town | 160 | 0 | 60.6 % | 66.9 % | 69.4 % |
+| district | 40 | 2 | 81.6 % | 100 % | 100 % |
+| regression | 21 | 0 | 95.2 % | 95.2 % | 95.2 % |
+| **all** | **610** | **2** | **81.2 %** | **85.2 %** | **86.2 %** |
 
 Addresses in full, abbreviated, without postcode, by quarter and while typing all come first
 every time; the address group loses its points on the swapped letters alone (26 %). Towns lose
