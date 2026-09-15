@@ -407,6 +407,13 @@ arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place
     put_i32(&builder, place->lon_e7);
     put_f64(&builder, place->importance);
     put_u32(&builder, batch);
+    /* the code is two letters or nothing; two zero bytes say nothing */
+    char code[2] = {0, 0};
+    if (place->country_code && place->country_code[0] && place->country_code[1] &&
+        !place->country_code[2]) {
+      memcpy(code, place->country_code, 2);
+    }
+    put_bytes(&builder, code, 2);
     put_string(&builder, place->own_name);
     put_string(&builder, place->city);
     put_string(&builder, place->postcode);
@@ -621,6 +628,12 @@ bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out, uint32_t *batc
   if (reader->kind == PLACE_CACHE_DOCUMENTS) {
     out->importance = take_f64(&cursor);
     arrived = take_u32(&cursor);
+    const char *code = take(&cursor, 2);
+    if (code && code[0] && code[1]) {
+      memcpy(reader->country_code, code, 2);
+      reader->country_code[2] = '\0';
+      out->country_code = reader->country_code;
+    }
     out->own_name = take_string(&cursor);
     out->city = take_string(&cursor);
     out->postcode = take_string(&cursor);

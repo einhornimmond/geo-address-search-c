@@ -26,3 +26,15 @@ regression.address	Domstraße 3 Würzbrug	1	49.791300	9.953400	Domstraße	3	49.7
 regression.address	Schulstraße 3 Würzburg	1	49.791300	9.953400	Schulstraße	3	49.7200992	9.9638234	150	not the Schulstraße in Hausen bei Würzburg
 regression.street	Marienpl	1	48.137400	11.575500	Marienplatz		48.1371077	11.5760006	3000	still being typed
 regression.city_typing	Würzb	1	52.520000	13.405000	Würzburg		49.7780356	9.9434769	8000	a beginning names no town yet — known gap
+regression.country_named	Marienplatz München Deutschland	1	48.137400	11.575500	Marienplatz		48.1371077	11.5760006	3000	no place carries its country's name
+regression.country_named	Domstraße 3, 97070 Würzburg, Deutschland	1	52.520000	13.405000	Domstraße	3	49.7933475	9.9289164	150	an address pasted with its country
+regression.country_named	Berlin Germany	1	48.137400	11.575500	Berlin		52.5173885	13.3951309	8000	the country in another language of the index
+regression.country_named	Berlin Deutschland	1	48.137400	11.575500	Berlin		52.5173885	13.3951309	8000	not CEMEX Deutschland AG in Bernau
+regression.country_named	Austrasse 11, Vaduz, Liechtenstein	1			Austrasse	11	47.1313376	9.5230802	150	Nominatim's test, with the country behind it
+regression.country_named	Wien Österreich	1	48.137400	11.575500	Wien		48.2083537	16.3725042	8000	not a Kleingartenverein in Wien
+regression.country_named	Zürich Schweiz	1	48.137400	11.575500	Zürich		47.3744489	8.5410422	8000	not Coca-Cola HBC Schweiz
+regression.country_named	Paris France	1	52.520000	13.405000	Paris		48.8534951	2.3483915	8000	the French Paris, not one in Texas
+regression.country_alone	Deutschland	1	52.520000	13.405000	Deutschland		51.1638175	10.4478313	150000	the country itself, named alone
+regression.country_in_name	28 Rue de Madagascar Le Creusot	1			Rue de Madagascar	28				a street named after a country, not Antananarivo
+regression.country_in_name	11 Avenue Albert 1er de Belgique Grenoble	1			Avenue Albert 1er de Belgique	11				not an Avenue Albert in Brussels
+regression.country_in_name	West Jordan	1	52.520000	13.405000	West Jordan		40.6096698	-111.9391031	8000	a city in Utah, not West Amman

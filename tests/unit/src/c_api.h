@@ -52,6 +52,7 @@ extern "C" {
 #include "parser/place_cache.h"
 #include "search/doc_collector.h"
 #include "search/geo_cell.h"
+#include "search/geo_country.h"
 #include "search/geo_index.h"
 #include "search/house_collector.h"
 #include "search/name_collector.h"

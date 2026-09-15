@@ -19,6 +19,7 @@ const c_flags = &.{
 const client_sources = [_][]const u8{
     "search/client.c",
     "search/geo_cell.c",
+    "search/geo_country.c",
     "search/geo_index.c",
     "search/prefix_tree.c",
     "search/text_tokenize.c",

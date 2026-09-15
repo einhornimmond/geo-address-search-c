@@ -191,6 +191,17 @@ GeoStatus geo_client_language(
  *  dropped and the query asked again without it, so a wrong one costs a place
  *  its position, never its presence.
  *
+ *  A country named beside other words — `Domstraße 3, Würzburg, Deutschland`,
+ *  `Hauptstraße Österreich` — narrows to the places in that country in the same
+ *  way, by its name in any language the index was built with.  No place in the
+ *  data carries its country's name, so without this such a query would find
+ *  nothing.  A name that holds the country's word among others and is typed in
+ *  full — `Rue de Madagascar`, `West Jordan` — keeps it as a plain word.  Where
+ *  the country leaves nothing standing — `Atlanta Georgia`, the state and not
+ *  the country — the word is asked as a plain word again.  An
+ *  index built before the country words existed holds none, and there the name
+ *  is a plain word as it always was.
+ *
  *  Safe to call from several threads on the same client.
  *
  *  @param[in]  client       Opened client; must not be NULL.

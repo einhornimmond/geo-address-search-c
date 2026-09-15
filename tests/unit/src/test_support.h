@@ -94,6 +94,9 @@ struct MiniPlace {
     std::string city;
   };
   std::vector<Reading> readings;
+  /** ISO code of the country the place lies in, as the dump writes it; empty for
+   *  none.  A place of kind PHOTON_PLACE_TYPE_COUNTRY is that country itself. */
+  std::string country;
 };
 
 /**
@@ -173,6 +176,16 @@ inline bool BuildMiniIndex(
       size_t cell_size = geo_cell_token(cell, geo_cell_of(p.lat_e7, p.lon_e7));
       name_collector_add(&words, cell, cell_size);
       ++total_terms;
+    }
+    /* so does the country, and the mark of a country, as the builder writes them */
+    {
+      char country[GEO_COUNTRY_TOKEN_SIZE];
+      if (geo_country_token(country, p.country.c_str())) {
+        name_collector_add(&words, country, sizeof(country));
+        if (p.type == PHOTON_PLACE_TYPE_COUNTRY) {
+          name_collector_add(&words, GEO_COUNTRY_PLACE_TOKEN, GEO_COUNTRY_PLACE_TOKEN_SIZE);
+        }
+      }
     }
     add_folded(p.name);
     add_folded(p.city);
@@ -256,6 +269,21 @@ inline bool BuildMiniIndex(
       size_t rank = 0;
       if (name_set_rank(&word_set, cell, cell_size, &rank)) {
         if (doc_collector_add_posting(&docs, (uint32_t)rank) != ARNM_SUCCESS) goto done;
+      }
+    }
+    {
+      char country[GEO_COUNTRY_TOKEN_SIZE];
+      if (geo_country_token(country, p.country.c_str())) {
+        size_t rank = 0;
+        if (name_set_rank(&word_set, country, sizeof(country), &rank)) {
+          if (doc_collector_add_posting(&docs, (uint32_t)rank) != ARNM_SUCCESS) goto done;
+        }
+        if (p.type == PHOTON_PLACE_TYPE_COUNTRY &&
+            name_set_rank(
+                &word_set, GEO_COUNTRY_PLACE_TOKEN, GEO_COUNTRY_PLACE_TOKEN_SIZE, &rank
+            )) {
+          if (doc_collector_add_posting(&docs, (uint32_t)rank) != ARNM_SUCCESS) goto done;
+        }
       }
     }
   }
