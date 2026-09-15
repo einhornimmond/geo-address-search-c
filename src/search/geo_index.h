@@ -402,6 +402,18 @@ const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t 
  *  words are asked alone; only if those find nothing either does every number
  *  take its turn as a word.
  *
+ *  A house number is compared as people write it.  A single letter, or *bis*,
+ *  *ter* or *quater*, right behind a number is its suffix and is held back
+ *  with it — *Osterstraße 42 A* — and two numbers with one dash or slash
+ *  between them are one number: *Anderter Straße 1-3*, *Hauptstraße 12/1*.
+ *  Case, spaces, and which dash or slash was used do not count, so *1A* finds
+ *  the door the dump writes *1 A*.  A plain number finds the range written
+ *  with a dash that holds it, on its side of the street — *Anderter Straße 3*
+ *  finds *1-3* — and ranks like the door itself; a slash makes no range, as
+ *  it numbers the houses behind a house.  Where a street has no door of the
+ *  suffix asked for, the plain number in front of it answers: *Lister Meile
+ *  29D* finds the 29, ranked behind a street that does have a 29D.
+ *
  *  The candidates are gathered by weight before they are ordered, and only a
  *  bounded sample of them — a place too light to reach that sample cannot be
  *  lifted by anything the query says about it afterwards.  That is why the code

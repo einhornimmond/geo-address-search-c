@@ -177,7 +177,11 @@ GeoStatus geo_client_language(
  *
  *  The query is free text: words in any order, upper or lower case, with or
  *  without diacritics, German abbreviations spelled out or not.  A number is
- *  read as a house number first and as a word only if that finds nothing.
+ *  read as a house number first and as a word only if that finds nothing.  A
+ *  letter written apart from it — `42 A`, `12 bis` — belongs to the number, and
+ *  where a street has no door of that suffix the plain number is found instead.
+ *  A range or a house behind a house — `1-3`, `12/1` — is one number, and a
+ *  plain number finds the range written with a dash that holds it.
  *
  *  Results are ordered by how far they answer what the query said about *where*
  *  — a postcode it named counts for more than a town — then, among places that

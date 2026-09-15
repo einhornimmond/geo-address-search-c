@@ -40,6 +40,39 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **A house number is found the way people write it.** A letter written apart from its
+  number was asked as a word of its own, and since no place carries the word *a*,
+  `Osterstr. 42 A Hannover` and `Lister Meile 29 D Hannover` found nothing at all. A number
+  was also compared byte for byte, so `1A` never met the door the dump writes `1 A`, and
+  `Lister Meile 29D`, a door that was never mapped, answered with the bare street. Ranges and
+  the houses behind a house — `Anderter Straße 1-3`, `Hauptstraße 12/1`, about 1 % of the
+  German addresses — were cut into two numbers of which neither was a door, and whoever
+  typed one number of a range found only the street.
+  - **A single letter, or *bis*, *ter* or *quater*, right behind a number is its suffix**
+    and is held back with the number instead of narrowing the search. Where every number
+    is finally asked as a word, the letter is asked as one too.
+  - **Two numbers with one dash or slash between them are one house number:** `1-3`,
+    `1 - 3` and `1/3` are compared alike, while a space alone joins nothing, so
+    `Hauptstraße 5 53111` stays a door and a postal code. `TextToken` carries a `joint` for
+    it, what stood in front of the word, and `text_tokenize()` fills it in.
+  - **A plain number finds the range written with a dash that holds it,** on its side of the
+    street: `Anderter Straße 3` finds `1-3`, `Kirchweg 24` does not find `23-25`. It ranks like
+    the door itself. A slash makes no range — `2/4` beside `2/3` and `2/12` on one street is
+    a house behind the 2.
+  - **Case and spaces inside a written number do not count:** `42A`, `42a` and `42 A` are
+    one door, `12bis` and `12 bis` another.
+  - **A suffix no door carries falls back to the plain number** in front of it, and such a
+    door ranks behind one that carries the number as it was asked for: `36B Avenue du
+    Général Leclerc` puts the 36B in Le Bouscat before the 36 in Bordeaux.
+  - **Measured on the planet** over the 13 377 queries of the regression file, the drawn
+    queries and the external suites: no query ranks worse. geocoder-tester's German suite
+    passes 80.0 % instead of 78.2 %; 123 addresses such as `31BIS Avenue Victor Hugo` or
+    `Anderter Straße 1-3`, counted as absent before because the search could not name their
+    door, come first, and 46 more rank higher. Overall 73.6 % pass instead of 72.8 %. On 200
+    ranges drawn from the German dump, 188 come first as written instead of none, and 183
+    instead of 28 when only their first number is typed; on 200 numbers with a slash, 176
+    instead of none. No format change and no rebuild.
+
 - **An address followed by its country is found.** The dump names the country of an entry
   by its code alone, never in the address, so no place carried the word *Deutschland*.
   Every word of a query has to meet, and that one met no street and no town:
