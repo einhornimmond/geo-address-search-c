@@ -690,6 +690,179 @@ TEST(GeoIndexNear, ALightPlaceBeyondTheRingDoesNotPushAsideWhatIsNear) {
   geo_index_close(&index);
 }
 
+// ---------------------------------------------------------------------------
+//  A country named beside the town
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A place of @p kind with a country, and nothing else the tests below do not need. */
+testsupport::MiniPlace Placed(
+    const std::string &name,
+    const std::string &city,
+    const std::string &postcode,
+    double lat,
+    double lon,
+    uint8_t kind,
+    uint16_t importance,
+    const std::string &country
+) {
+  testsupport::MiniPlace place;
+  place.name = name;
+  place.city = city;
+  place.postcode = postcode;
+  place.lat_e7 = E7(lat);
+  place.lon_e7 = E7(lon);
+  place.type = kind;
+  place.importance = importance;
+  place.country = country;
+  return place;
+}
+
+/** Two countries, a street of one name in each, and a square in Munich. */
+std::vector<testsupport::MiniPlace> TwoCountries() {
+  testsupport::MiniPlace germany =
+      Placed("Deutschland", "", "", 51.08, 10.42, PHOTON_PLACE_TYPE_COUNTRY, 60000, "de");
+  germany.readings = {{"en", "Germany", ""}};
+  testsupport::MiniPlace austria =
+      Placed("Österreich", "", "", 47.59, 14.12, PHOTON_PLACE_TYPE_COUNTRY, 59000, "at");
+  austria.readings = {{"en", "Austria", ""}};
+  return {
+      germany,
+      austria,
+      Placed(
+          "Marienplatz", "München", "80331", 48.1374, 11.5755, PHOTON_PLACE_TYPE_STREET, 30000, "de"
+      ),
+      Placed("Hauptstraße", "Bonn", "53111", 50.7350, 7.0980, PHOTON_PLACE_TYPE_STREET, 3500, "de"),
+      // the heavier Hauptstraße is the Austrian one: weight alone would answer with it
+      Placed("Hauptstraße", "Wien", "1010", 48.2083, 16.3725, PHOTON_PLACE_TYPE_STREET, 9000, "at"),
+  };
+}
+
+} // namespace
+
+TEST(GeoIndexCountry, AnAddressFollowedByItsCountryIsStillFound) {
+  TempPath path{"countryaddress"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), TwoCountries(), {"de", "en"}));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // no place carries the word Deutschland, so every word meeting found nothing
+  ASSERT_EQ(Query(index, "Marienplatz München Deutschland ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Marienplatz");
+  // the country in another language of the index names it as well
+  ASSERT_EQ(Query(index, "Marienplatz München Germany ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Marienplatz");
+  // and read as a beginning, the way a map asks, it still does
+  ASSERT_EQ(Query(index, "Marienplatz München Deutschland", hits, 8, true), 1u);
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexCountry, TheCountryNarrowsToThePlacesInIt) {
+  TempPath path{"countrynarrows"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), TwoCountries(), {"de", "en"}));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Hauptstraße Deutschland ", hits, 8), 1u)
+      << "the Austrian Hauptstraße is left out, however heavy it is";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Bonn");
+  ASSERT_EQ(Query(index, "Hauptstraße Österreich ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].city_rank), "Wien");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexCountry, TheCountryAloneIsAPlaceLikeAnyOther) {
+  TempPath path{"countryalone"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), TwoCountries(), {"de", "en"}));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_GE(Query(index, "Deutschland ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Deutschland");
+  EXPECT_EQ(index.documents[hits[0].document].type, PHOTON_PLACE_TYPE_COUNTRY);
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexCountry, AWordThatNamesNoPlaceOfThatCountryIsAWordAgain) {
+  // Atlanta, Georgia: the state, not the country.  Narrowed to the country,
+  // nothing is left, and the word is asked as a word the way it always was.
+  testsupport::MiniPlace country =
+      Placed("Georgia", "", "", 42.3, 43.4, PHOTON_PLACE_TYPE_COUNTRY, 50000, "ge");
+  testsupport::MiniPlace atlanta =
+      Placed("Atlanta", "Atlanta", "30303", 33.749, -84.388, PHOTON_PLACE_TYPE_CITY, 50000, "us");
+  atlanta.aliases = {"Georgia"}; // the state its address block names
+  TempPath path{"countrystate"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), {country, atlanta}));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Atlanta Georgia ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Atlanta");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexCountry, ACountryInsideANameTypedInFullIsPartOfThatName) {
+  // Rue de Madagascar in Le Creusot, and West Jordan in Utah: the word names a
+  // country, and a heavier place in that country would answer to the rest
+  testsupport::MiniPlace madagascar =
+      Placed("Madagascar", "", "", -18.9, 47.5, PHOTON_PLACE_TYPE_COUNTRY, 50000, "mg");
+  testsupport::MiniPlace jordan =
+      Placed("Jordan", "", "", 31.2, 36.5, PHOTON_PLACE_TYPE_COUNTRY, 50000, "jo");
+  TempPath path{"countryinname"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(),
+      {
+          madagascar,
+          jordan,
+          Placed(
+              "Rue de la Réunion", "Antananarivo", "101", -18.91, 47.52, PHOTON_PLACE_TYPE_STREET,
+              9000, "mg"
+          ),
+          Placed(
+              "Rue de Madagascar", "Le Creusot", "71200", 46.80, 4.45, PHOTON_PLACE_TYPE_STREET,
+              3000, "fr"
+          ),
+          Placed("West Amman", "Amman", "", 31.95, 35.85, PHOTON_PLACE_TYPE_DISTRICT, 30000, "jo"),
+          Placed(
+              "West Jordan", "West Jordan", "84088", 40.61, -111.94, PHOTON_PLACE_TYPE_CITY, 20000,
+              "us"
+          ),
+      }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_GE(Query(index, "Rue de Madagascar ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Rue de Madagascar");
+  ASSERT_GE(Query(index, "West Jordan ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "West Jordan");
+  // where no name holds every word typed, the country narrows as before
+  ASSERT_EQ(Query(index, "Rue de la Madagascar ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Rue de la Réunion");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexCountry, AnIndexWithoutCountryWordsAnswersAsBefore) {
+  // the same places, built as an index from before the country words: nothing
+  // names a country there, and the query meets nothing, as it always did
+  std::vector<testsupport::MiniPlace> places = TwoCountries();
+  for (testsupport::MiniPlace &place : places) place.country.clear();
+  TempPath path{"countryless"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places, {"de", "en"}));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  EXPECT_EQ(Query(index, "Marienplatz München Deutschland ", hits, 8), 0u);
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
   // and lies nearer to the searcher than the street that is called that today

@@ -45,7 +45,7 @@
  *
  *  Only what @c collect_document and @c collect_house read.  A house record
  *  carries four texts and a point; a document record adds its own name, its
- *  weight, its kind, the search texts and the batch it arrived in.  Everything
+ *  weight, its kind, the search texts, its country code and the batch it arrived in.  Everything
  *  else the dump offers — the thirty translated names of every ancestor, the
  *  object ids, the categories — went into the vocabulary in the first pass and
  *  is never asked for again.
@@ -73,8 +73,9 @@
 #define PLACE_CACHE_MAGIC "GRDPCACH"
 
 /** Raise this when a record gains, loses or reorders a field.
- *  3: a document record carries the batch its entry arrived in. */
-#define PLACE_CACHE_LAYOUT 3u
+ *  3: a document record carries the batch its entry arrived in.
+ *  4: … and the country code of its entry. */
+#define PLACE_CACHE_LAYOUT 4u
 
 /** Most parser threads a build may use, and so most files a cache may hold.
  *  Removal reaches this far whatever this run was asked for — otherwise a cache
@@ -99,12 +100,15 @@ typedef struct PlaceCacheWriter {
 
 /** Reading end of one file. */
 typedef struct PlaceCacheReader {
-  FILE *file;           /**< Open for reading, positioned past the header. */
-  PlaceCacheKind kind;  /**< Which half this file holds. */
-  char *buffer;    /**< The record just read; the strings point into it. */
-  size_t capacity; /**< Room in @c buffer. */
-  uint64_t count;  /**< Records read so far. */
-  uint64_t bytes;  /**< Bytes read so far, header included. */
+  FILE *file;          /**< Open for reading, positioned past the header. */
+  PlaceCacheKind kind; /**< Which half this file holds. */
+  char *buffer;        /**< The record just read; the strings point into it. */
+  size_t capacity;     /**< Room in @c buffer. */
+  uint64_t count;      /**< Records read so far. */
+  uint64_t bytes;      /**< Bytes read so far, header included. */
+  /** The country code of the document just read, terminated; the entry's
+   *  @c country_code points here, because the record keeps it without a NUL. */
+  char country_code[3];
   /** Set when the walk stopped at something other than the end of the file.
    *  A caller that ignores it builds an index out of half a cache. */
   bool broken;

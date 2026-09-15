@@ -40,6 +40,34 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **An address followed by its country is found.** The dump names the country of an entry
+  by its code alone, never in the address, so no place carried the word *Deutschland*.
+  Every word of a query has to meet, and that one met no street and no town:
+  `Marienplatz München Deutschland`, `Domstraße 3, 97070 Würzburg, Deutschland` and
+  `Berlin Germany` found nothing at all, and `Berlin Deutschland` answered with *CEMEX
+  Deutschland AG* in Bernau — the kind of text pasted from a letterhead.
+  - **The build writes the country as a word nobody types:** `#de` on every document of
+    an entry with that code, and `#*` beside it on the country itself, the way a position
+    is written as a cell word. On the German dump that is 1.6 M postings and 336 bytes of
+    file; the vocabulary pass counts the word only where a thread meets a new country, so
+    the thread check a planet build passes at eight threads is not moved.
+  - **The search recognises a country named in full** — a country document answers to
+    the word, and one of its spellings, default or in a language of the index, stands in
+    the query whole — and narrows through the country word instead of through the name.
+    Named alone, the country is found as the place it is. The words are asked plainly
+    first, and a place found that way whose own name or town holds the country's word
+    among others typed in full keeps it a plain word: `28 Rue de Madagascar`, `West Jordan`
+    and `11 Avenue Albert 1er de Belgique Grenoble` had turned to Antananarivo, Amman and
+    Brussels without that. Where the country leaves nothing standing, the plain answer
+    stands: `Atlanta Georgia` names the state.
+  - **Measured on the planet** against the external suites and the regression file (13 372
+    queries): the eight queries naming a country pass where one did, `6 Silum,
+    Liechtenstein` and `london united kingdom` come first, and no query without a
+    country name changes rank through the search.
+  - **An index built before this has no country words** and answers as it always did;
+    rebuild it to find what is written with its country.
+  - **The place cache moves to layout 4:** a document record carries its country code.
+
 - **The same dump builds the same index, whatever the thread count.** Two builds of the
   German dump with the same binary and four threads came out different — 1 605 497 and
   1 605 499 documents, 21 986 296 and 21 986 325 postings — while two builds with one thread

@@ -454,6 +454,17 @@ typedef struct GeoQueryOptions {
  *  where @p stats is not NULL, and the cardinalities that fill their sums are
  *  asked for nowhere else — a query passing NULL runs exactly as it did before.
  *
+ *  ### What a country does
+ *
+ *  A word that names a country in full — see @ref geo_country — narrows like the
+ *  ring does, through the country word every place of that country carries,
+ *  instead of through itself: no place carries its country's name, and
+ *  *Marienplatz München Deutschland* would otherwise meet nothing.  The country
+ *  counts only beside other words, and only where no place the plain words find
+ *  carries it inside a longer name typed in full — *Rue de Madagascar*, *West
+ *  Jordan* — which is why such a query is asked plainly first.  Where the
+ *  country leaves nothing standing, the plain answer stands.
+ *
  *  ### What a position does
  *
  *  It narrows before it sorts.  The cells around the searcher are words like

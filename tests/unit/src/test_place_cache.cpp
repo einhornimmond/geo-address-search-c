@@ -210,6 +210,34 @@ TEST(PlaceCache, ADocumentKeepsTheBatchItArrivedIn) {
   place_cache_reader_close(&reader);
 }
 
+TEST(PlaceCache, ADocumentKeepsItsCountry) {
+  // the second pass writes the country as a search word, so a pass replayed
+  // from the cache has to know it as well as a pass over the dump does
+  TempDir directory{"country"};
+  PlaceCacheWriter writer{};
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
+  PhotonPlace street = Street("Hauptstraße", "Bonn", "53111");
+  street.country_code = "de";
+  PhotonPlace nowhere = Street("Feldweg", "Bonn", "53111");
+  nowhere.country_code = nullptr;
+  ASSERT_EQ(place_cache_write(&writer, &street, 0), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &nowhere, 0), ARNM_SUCCESS);
+  place_cache_writer_close(&writer);
+
+  PlaceCacheReader reader{};
+  PhotonPlace back{};
+  ASSERT_EQ(
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
+  );
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
+  ASSERT_NE(back.country_code, nullptr);
+  EXPECT_STREQ(back.country_code, "de");
+  EXPECT_EQ(Value(back.own_name), "Hauptstraße") << "and the fields behind it are still in step";
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
+  EXPECT_EQ(back.country_code, nullptr) << "an entry without a code comes back without one";
+  place_cache_reader_close(&reader);
+}
+
 TEST(PlaceCache, AbsentAndEmptyStayApart) {
   TempDir directory{"absent"};
   PlaceCacheWriter writer{};

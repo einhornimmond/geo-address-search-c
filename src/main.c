@@ -22,6 +22,7 @@
 #include "parser/place_cache.h"
 #include "search/client.h"
 #include "search/geo_cell.h"
+#include "search/geo_country.h"
 #include "search/geo_index.h"
 #include "search/house_collector.h"
 #include "search/name_collector.h"
@@ -145,6 +146,8 @@ typedef struct ParserThreadArgs {
   HouseCollector houses;            /**< Third pass: the numbers this thread met. */
   arnm_result house_result;         /**< First failure while collecting houses. */
   JsonStats stats;
+  /** The country word this thread last gave the vocabulary; see collect_vocabulary(). */
+  char vocabulary_country[GEO_COUNTRY_TOKEN_SIZE];
 } ParserThreadArgs;
 
 /** Look a written form up; absent text and unknown text both mean "no rank". */
@@ -190,6 +193,20 @@ static size_t place_cell_token(char *buffer, const PhotonPlace *place) {
   return geo_cell_token(buffer, geo_cell_of(place->lat_e7, place->lon_e7));
 }
 
+/**
+ * @brief The word that says which country a place lies in, or nothing.
+ *
+ *  Only a document gets one, like the cell word, and only where the dump gave a
+ *  code of two letters.  See @ref geo_country.
+ *
+ *  @param[out] buffer  At least @ref GEO_COUNTRY_TOKEN_SIZE bytes.
+ *  @return Bytes written, or 0.
+ */
+static size_t place_country_token(char *buffer, const PhotonPlace *place) {
+  if (!place_becomes_document(place)) return 0;
+  return geo_country_token(buffer, place->country_code);
+}
+
 /** First pass: every text of the entry joins the vocabulary. */
 static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place) {
   for (uint8_t i = 0; i < place->search_count; ++i) {
@@ -210,6 +227,30 @@ static void collect_vocabulary(ParserThreadArgs *args, const PhotonPlace *place)
     arnm_result result = name_collector_add(&args->words, cell, cell_size);
     if (result != ARNM_SUCCESS) {
       fatal(ERROR_MEMORY, "Failed to keep cell word (arnm_result %d).", (int)result);
+    }
+  }
+
+  /* The country joins as well — but only when it is not the one this thread
+     gave last.  The vocabulary needs each word once, and every word handed over
+     here is counted as an occurrence: the count decides whether the second pass
+     has threads enough, and the planet at eight threads stands within a
+     million of that line.  The dump is sorted by country, so a thread meets a
+     new one a few hundred times, not once per place. */
+  char country[GEO_COUNTRY_TOKEN_SIZE];
+  if (place_country_token(country, place)) {
+    if (memcmp(country, args->vocabulary_country, sizeof(country)) != 0) {
+      memcpy(args->vocabulary_country, country, sizeof(country));
+      arnm_result result = name_collector_add(&args->words, country, sizeof(country));
+      if (result != ARNM_SUCCESS) {
+        fatal(ERROR_MEMORY, "Failed to keep country word (arnm_result %d).", (int)result);
+      }
+    }
+    if (place->typeEnum == PHOTON_PLACE_TYPE_COUNTRY) {
+      arnm_result result =
+          name_collector_add(&args->words, GEO_COUNTRY_PLACE_TOKEN, GEO_COUNTRY_PLACE_TOKEN_SIZE);
+      if (result != ARNM_SUCCESS) {
+        fatal(ERROR_MEMORY, "Failed to keep country word (arnm_result %d).", (int)result);
+      }
     }
   }
 
@@ -361,6 +402,26 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
       }
     } else {
       ++args->documents.dropped_words; /* the first pass wrote it — this cannot happen */
+    }
+  }
+
+  /* and so does the country it lies in, and, for a country, that it is one */
+  char country[GEO_COUNTRY_TOKEN_SIZE];
+  if (place_country_token(country, place)) {
+    const char *words[2] = {country, GEO_COUNTRY_PLACE_TOKEN};
+    size_t sizes[2] = {sizeof(country), GEO_COUNTRY_PLACE_TOKEN_SIZE};
+    size_t count = place->typeEnum == PHOTON_PLACE_TYPE_COUNTRY ? 2 : 1;
+    for (size_t w = 0; w < count; ++w) {
+      size_t rank = 0;
+      if (!name_set_rank(args->word_set, words[w], sizes[w], &rank)) {
+        ++args->documents.dropped_words; /* the first pass wrote it — this cannot happen */
+        continue;
+      }
+      result = doc_collector_add_posting(&args->documents, (uint32_t)rank);
+      if (result != ARNM_SUCCESS && args->document_result == ARNM_SUCCESS) {
+        args->document_result = result;
+        return;
+      }
     }
   }
 }

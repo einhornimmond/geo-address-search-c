@@ -3,6 +3,7 @@
 #include "search/geo_index.h"
 
 #include "search/geo_cell.h"
+#include "search/geo_country.h"
 #include "types/photon_place_type.h"
 
 #include <fcntl.h>
@@ -1090,6 +1091,11 @@ static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextT
  *  @param[in]     near   Documents around the searcher, or NULL.  Narrows like
  *                        a word of the query and is borrowed, not consumed —
  *                        the same ring serves every reading.
+ *  @param[in]     country  Documents of the country the query names, or NULL.
+ *                        Narrows like @p near, and is borrowed like it.
+ *  @param[in]     skipped  Words of the query, by token group (bit @c group, for
+ *                        groups below 64), that narrow nothing — the words that
+ *                        named @p country.  0 for none.
  *  @param[in,out] stats  Counts of this query, or NULL.  The sums grow with
  *                        every reading; what describes one pass alone is
  *                        overwritten, so the pass that answers is the one
@@ -1102,6 +1108,8 @@ static size_t query_words(
     NumberReading reading,
     bool prefix_last,
     const roaring_bitmap_t *near,
+    const roaring_bitmap_t *country,
+    uint64_t skipped,
     GeoHit *hits,
     size_t limit,
     GeoQueryStats *stats
@@ -1132,6 +1140,8 @@ static size_t query_words(
     const TextToken *token = &tokenizer->tokens[t];
     if (token->part) continue; /* pieces of a compound serve the index, not the query */
     if (!token_narrows(token, reading)) continue;
+    /* a word that named the country narrows through the country, not through itself */
+    if (token->group < 64 && (skipped >> token->group) & 1u) continue;
 
     /* A whole word is read as it stands; the one still being typed is read as
        a beginning as well, so *Marienpl* finds what *Marienplatz* would. */
@@ -1161,8 +1171,8 @@ static size_t query_words(
       if (groups[g].source == token->group) { group = &groups[g]; }
     }
     if (!group) {
-      /* one slot is kept free, so the ring around the searcher always fits */
-      if (group_count + 1 >= GEO_QUERY_GROUP_MAX) {
+      /* two slots are kept free, so the ring and the country always fit */
+      if (group_count + 2 >= GEO_QUERY_GROUP_MAX) {
         for (size_t r = 0; r < reading_count; ++r) { roaring_bitmap_free(readings[r]); }
         break;
       }
@@ -1194,6 +1204,14 @@ static size_t query_words(
     group->reading_count = 1;
     group->weight = roaring_bitmap_get_cardinality(near);
     group->source = UINT16_MAX;
+    group->borrowed = true;
+  }
+  if (country) {
+    QueryGroup *group = &groups[group_count++];
+    group->readings[0] = country;
+    group->reading_count = 1;
+    group->weight = roaring_bitmap_get_cardinality(country);
+    group->source = UINT16_MAX - 1;
     group->borrowed = true;
   }
 
@@ -1696,6 +1714,290 @@ static size_t far_named_places(
   return count;
 }
 
+/* =========================================================================
+ *  A country named in the query
+ * ========================================================================= */
+
+/** A country the query names, and the words that name it. */
+typedef struct QueryCountry {
+  roaring_bitmap_t *documents; /**< Every place in the country; owned, NULL for none. */
+  uint64_t groups;             /**< The naming words, by token group: bit @c group. */
+} QueryCountry;
+
+/**
+ * @brief Which query words does the spelling behind @p rank name in full?
+ *
+ *  The spelling is folded by the same tokenizer the query passed through.  It is
+ *  named in full when every word of it — every token group, the pieces of a
+ *  compound aside — stands among the query's words; a spelling of more than 64
+ *  words is never named.
+ *
+ *  @param[in]     index     Opened index.
+ *  @param[in]     rank      Display rank of the spelling, or GEO_RANK_NONE.
+ *  @param[in]     query     Tokenizer still holding the query.
+ *  @param[in,out] scratch   Tokenizer for the spelling, overwritten.
+ *  @return The query words that name it, by token group; 0 when it is not named
+ *          in full.
+ */
+static uint64_t groups_naming(
+    const GeoIndex *index, uint32_t rank, const TextTokenizer *query, TextTokenizer *scratch
+) {
+  if (rank == GEO_RANK_NONE) return 0;
+  size_t size = 0;
+  const char *text = geo_dictionary_word(&index->display, rank, &size);
+  if (!text || !size) return 0;
+
+  size_t tokens = text_tokenize(scratch, text, size);
+  uint64_t words = 0, met = 0, naming = 0;
+  for (size_t t = 0; t < tokens; ++t) {
+    const TextToken *token = &scratch->tokens[t];
+    if (token->group >= 64) return 0;
+    uint64_t bit = UINT64_C(1) << token->group;
+    if (!token->part) words |= bit;
+    for (size_t q = 0; q < query->token_count; ++q) {
+      const TextToken *asked = &query->tokens[q];
+      if (asked->part || asked->group >= 64) continue;
+      if (asked->size == token->size && memcmp(asked->data, token->data, token->size) == 0) {
+        met |= bit;
+        naming |= UINT64_C(1) << asked->group;
+      }
+    }
+  }
+  return words && (words & ~met) == 0 ? naming : 0;
+}
+
+/**
+ * @brief Does the query name a country beside other words — `Marienplatz München
+ *        Deutschland`?
+ *
+ *  A word names a country when a country document — one carrying
+ *  @ref GEO_COUNTRY_PLACE_TOKEN — answers to it, and one of that document's
+ *  spellings, in the default reading or in any language of the index, stands in
+ *  the query in full: *Deutschland*, *Germany*, *Vereinigte Staaten*.  Of several
+ *  countries named, the one named with the most words is taken.
+ *
+ *  A query that is nothing but the country's name does not count — it asks for
+ *  the country, and the country is found by its name like any place.  Nor does
+ *  an index built before the country words existed: it has no
+ *  @ref GEO_COUNTRY_PLACE_TOKEN, and nothing is named.
+ *
+ *  @param[in]  index      Opened index.
+ *  @param[in]  tokenizer  Holding the query; left as it is.
+ *  @param[out] out        Receives the country's places and its words; zeroed
+ *                         when none is named.
+ *  @return Whether a country is named beside other words.
+ *
+ *  @whisper A border named in passing narrows the map without being a place itself
+ */
+static bool query_country(
+    const GeoIndex *index, const TextTokenizer *tokenizer, QueryCountry *out
+) {
+  memset(out, 0, sizeof(*out));
+  size_t marker = 0;
+  if (!geo_dictionary_find(
+          &index->words, GEO_COUNTRY_PLACE_TOKEN, GEO_COUNTRY_PLACE_TOKEN_SIZE, &marker
+      )) {
+    return false;
+  }
+  const roaring_bitmap_t *countries = geo_index_word_documents(index, marker);
+  if (!countries) return false;
+
+  uint64_t asked = 0;
+  for (size_t t = 0; t < tokenizer->token_count; ++t) {
+    if (!tokenizer->tokens[t].part && tokenizer->tokens[t].group < 64) {
+      asked |= UINT64_C(1) << tokenizer->tokens[t].group;
+    }
+  }
+
+  TextTokenizer scratch;
+  text_tokenizer_init(&scratch);
+  scratch.repetition_filter = 0;
+  uint32_t named = GEO_RANK_NONE;
+  uint64_t naming = 0;
+
+  for (size_t t = 0; t < tokenizer->token_count; ++t) {
+    const TextToken *token = &tokenizer->tokens[t];
+    if (token->part || token_has_digit(token)) continue;
+    size_t rank = 0;
+    if (!geo_dictionary_find(&index->words, token->data, token->size, &rank)) continue;
+    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
+    if (!documents) continue;
+    roaring_bitmap_t *candidates = roaring_bitmap_and(documents, countries);
+    roaring_bitmap_free(documents);
+    if (!candidates) continue;
+
+    roaring_uint32_iterator_t walk;
+    roaring_iterator_init(candidates, &walk);
+    for (; walk.has_value; roaring_uint32_iterator_advance(&walk)) {
+      uint32_t document = walk.current_value;
+      if (document >= index->document_count) continue;
+      uint64_t best =
+          groups_naming(index, index->documents[document].name_rank, tokenizer, &scratch);
+      for (size_t l = 0; l < index->language_count; ++l) {
+        const GeoVariant *variant = geo_index_variant(index, (int)l, document);
+        if (!variant) continue;
+        uint64_t groups = groups_naming(index, variant->name_rank, tokenizer, &scratch);
+        if (__builtin_popcountll(groups) > __builtin_popcountll(best)) best = groups;
+      }
+      if (__builtin_popcountll(best) > __builtin_popcountll(naming)) {
+        naming = best;
+        named = document;
+      }
+    }
+    roaring_bitmap_free(candidates);
+  }
+  roaring_bitmap_free(countries);
+
+  /* nothing but the country's name: that asks for the country itself */
+  if (named == GEO_RANK_NONE || (asked & ~naming) == 0) return false;
+
+  /* The country's own code word is the one of the `#xx` words its document
+     carries.  They stand side by side in the dictionary, a few hundred of them,
+     and are walked only for a query that named a country. */
+  const char mark[1] = {GEO_COUNTRY_MARK};
+  size_t first = prefix_bound(&index->words, mark, 1, false);
+  size_t last = prefix_bound(&index->words, mark, 1, true);
+  for (size_t rank = first; rank < last; ++rank) {
+    size_t size = 0;
+    geo_dictionary_word(&index->words, rank, &size);
+    if (size != GEO_COUNTRY_TOKEN_SIZE) continue;
+    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
+    if (!documents) continue;
+    if (roaring_bitmap_contains(documents, named)) {
+      out->documents = roaring_bitmap_copy(documents);
+      roaring_bitmap_free(documents);
+      break;
+    }
+    roaring_bitmap_free(documents);
+  }
+  if (!out->documents) return false;
+  out->groups = naming;
+  return true;
+}
+
+/** What the readings answered with, and how they were asked when they did. */
+typedef struct ReadingsAnswer {
+  NumberReading answered; /**< The reading that answered, or the last one asked. */
+  bool numbered;          /**< Its numbers were held back as house numbers. */
+  bool near_used;         /**< The ring still narrowed when it answered. */
+} ReadingsAnswer;
+
+/**
+ * @brief Ask the three readings in turn, first inside the ring and then without it.
+ *
+ *  Each reading is asked only when the one before found nothing; why they come
+ *  in this order is told where geo_index_query_options() asks for them.
+ *
+ *  @param[in]     numbers_present  The query holds a word with a digit.
+ *  @param[in]     near     Documents around the searcher, or NULL; borrowed.
+ *  @param[in]     country  Documents of the country named, or NULL; borrowed.
+ *  @param[in]     skipped  The words that named @p country, by token group.
+ *  @param[out]    pool     Receives the answer.
+ *  @param[in,out] stats    Counts of this query, or NULL.
+ *  @param[out]    out      How the answer was found.
+ *  @return Number of results written into @p pool; 0 when every reading failed.
+ */
+static size_t ask_readings(
+    const GeoIndex *index,
+    const TextTokenizer *tokenizer,
+    bool prefix_last,
+    bool numbers_present,
+    const roaring_bitmap_t *near,
+    const roaring_bitmap_t *country,
+    uint64_t skipped,
+    GeoHit *pool,
+    size_t pool_limit,
+    GeoQueryStats *stats,
+    ReadingsAnswer *out
+) {
+  size_t count = 0;
+  out->answered = NUMBERS_AS_WORDS;
+  out->numbered = numbers_present;
+  out->near_used = near != NULL;
+  /* a position let go of by an earlier call is taken up again by this one */
+  if (stats && near) stats->position_dropped = 0;
+  for (int attempt = 0; attempt < 2 && !count; ++attempt) {
+    /* The position is the first thing let go of.  A search that finds nothing
+       nearby was asking about somewhere else — that is a plain reading of the
+       words, while returning nothing at all is not.  Whoever named a town or a
+       postcode said so outright, and those readings come after. */
+    if (attempt) {
+      if (!near) break; /* there was nothing to let go of; the chain already ran */
+      out->near_used = false;
+      if (stats) stats->position_dropped = 1;
+    }
+    const roaring_bitmap_t *carried_near = out->near_used ? near : NULL;
+    out->numbered = numbers_present;
+
+    if (out->numbered) {
+      out->answered = NUMBERS_BUT_CODES;
+      count = query_words(
+          index, tokenizer, NUMBERS_BUT_CODES, prefix_last, carried_near, country, skipped, pool,
+          pool_limit, stats
+      );
+      if (!count) {
+        out->answered = NUMBERS_AS_HOUSES;
+        count = query_words(
+            index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, carried_near, country, skipped, pool,
+            pool_limit, stats
+        );
+      }
+    }
+    if (!count) {
+      out->numbered = false;
+      out->answered = NUMBERS_AS_WORDS;
+      count = query_words(
+          index, tokenizer, NUMBERS_AS_WORDS, prefix_last, carried_near, country, skipped, pool,
+          pool_limit, stats
+      );
+    }
+  }
+  return count;
+}
+
+/**
+ * @brief Do the words that named a country stand inside a longer name one of
+ *        @p hits carries — its own, or its town's?
+ *
+ *  *28 Rue de Madagascar* names Madagascar, and *West Jordan* names Jordan, and
+ *  neither asks about a country: the word belongs to a name typed in full, with
+ *  more words of it beside the country's.  A name that is nothing but the
+ *  country's words does not count — *CEMEX Deutschland AG* is not typed in
+ *  full by *Berlin Deutschland*, and a café called *Deutschland* is no reason
+ *  to forget the country.
+ *
+ *  @param[in] index      Opened index.
+ *  @param[in] hits       Places the query found without the country.
+ *  @param[in] count      Number of @p hits.
+ *  @param[in] tokenizer  Holding the query; left as it is.
+ *  @param[in] groups     The words that named the country, by token group.
+ *  @return Whether one of the places carries them inside a name of its own.
+ *
+ *  @whisper A border can lend its name to a street far away from it
+ */
+static bool country_in_a_name(
+    const GeoIndex *index,
+    const GeoHit *hits,
+    size_t count,
+    const TextTokenizer *tokenizer,
+    uint64_t groups
+) {
+  if (!count || !groups) return false;
+  TextTokenizer scratch;
+  text_tokenizer_init(&scratch);
+  scratch.repetition_filter = 0;
+  for (size_t h = 0; h < count; ++h) {
+    if (hits[h].document >= index->document_count) continue;
+    const GeoDocument *record = &index->documents[hits[h].document];
+    const uint32_t ranks[] = {record->name_rank, record->city_rank};
+    for (size_t r = 0; r < sizeof(ranks) / sizeof(ranks[0]); ++r) {
+      uint64_t naming = groups_naming(index, ranks[r], tokenizer, &scratch);
+      if ((naming & groups) == groups && (naming & ~groups) != 0) return true;
+    }
+  }
+  return false;
+}
+
 size_t geo_index_query(
     const GeoIndex *index,
     TextTokenizer *tokenizer,
@@ -1743,7 +2045,12 @@ size_t geo_index_query_options(
       numbers_present = true;
     }
   }
-  bool numbered = numbers_present;
+
+  /* --- a country named beside other words narrows by where a place lies, not by
+         what it is called: no place in the dump carries its country's name, so
+         *Marienplatz München Deutschland* would otherwise meet nothing at all. --- */
+  QueryCountry country;
+  bool has_country = query_country(index, tokenizer, &country);
 
   /* --- more candidates than were asked for, so the ranking has something to
          choose from.  The place someone means is not always among the heaviest
@@ -1793,44 +2100,45 @@ size_t geo_index_query_options(
     if (!near && stats) stats->position_dropped = 1;
   }
 
-  size_t count = 0;
-  bool near_used = near != NULL;
-  NumberReading answered = NUMBERS_AS_WORDS;
-  for (int attempt = 0; attempt < 2 && !count; ++attempt) {
-    /* The position is the first thing let go of.  A search that finds nothing
-       nearby was asking about somewhere else — that is a plain reading of the
-       words, while returning nothing at all is not.  Whoever named a town or a
-       postcode said so outright, and those readings come after. */
-    if (attempt) {
-      if (!near) break; /* there was nothing to let go of; the chain already ran */
-      near_used = false;
-      if (stats) stats->position_dropped = 1;
-    }
-    const roaring_bitmap_t *carried_near = near_used ? near : NULL;
-    numbered = numbers_present;
-
-    if (numbered) {
-      answered = NUMBERS_BUT_CODES;
-      count = query_words(
-          index, tokenizer, NUMBERS_BUT_CODES, prefix_last, carried_near, pool, pool_limit, stats
-      );
-      if (!count) {
-        answered = NUMBERS_AS_HOUSES;
-        count = query_words(
-            index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, carried_near, pool, pool_limit, stats
-        );
-      }
-    }
-    if (!count) {
-      numbered = false;
-      answered = NUMBERS_AS_WORDS;
-      count = query_words(
-          index, tokenizer, NUMBERS_AS_WORDS, prefix_last, carried_near, pool, pool_limit, stats
+  /* --- A word that names a country may just as well be part of a longer name
+         typed in full: *Rue de Madagascar*, *West Jordan*, *Avenue Albert 1er
+         de Belgique*.  So the words are asked plainly first, and the country
+         narrows only where no place found that way carries the naming words
+         inside a name of its own or of its town.  Should the country then
+         narrow the answer to nothing — *Atlanta Georgia* names a state, not the
+         country — the plain answer is asked for again, since the pass that
+         answers is the one the counts describe. --- */
+  ReadingsAnswer answer;
+  size_t count = ask_readings(
+      index, tokenizer, prefix_last, numbers_present, near, NULL, 0, pool, pool_limit, stats,
+      &answer
+  );
+  bool country_used = false;
+  if (has_country && !country_in_a_name(index, pool, count, tokenizer, country.groups)) {
+    ReadingsAnswer narrowed;
+    size_t found = ask_readings(
+        index, tokenizer, prefix_last, numbers_present, near, country.documents, country.groups,
+        pool, pool_limit, stats, &narrowed
+    );
+    if (found) {
+      count = found;
+      answer = narrowed;
+      country_used = true;
+    } else if (count) {
+      count = ask_readings(
+          index, tokenizer, prefix_last, numbers_present, near, NULL, 0, pool, pool_limit, stats,
+          &answer
       );
     }
   }
+  bool numbered = answer.numbered;
+  bool near_used = answer.near_used;
+  NumberReading answered = answer.answered;
   if (near) roaring_bitmap_free(near);
-  if (!count) return 0;
+  if (!count) {
+    if (has_country) roaring_bitmap_free(country.documents);
+    return 0;
+  }
 
   /* --- The ring narrowed before weight could cut, and that is also its blind
          spot: a place the query names outright is never a candidate when it
@@ -1846,12 +2154,16 @@ size_t geo_index_query_options(
     /* the counts describe the pass that answered, and this one only looks */
     uint32_t groups = stats ? stats->groups : 0;
     uint64_t narrowed = stats ? stats->narrowed : 0;
-    far_count = query_words(index, tokenizer, answered, prefix_last, NULL, far, pool_limit, stats);
+    far_count = query_words(
+        index, tokenizer, answered, prefix_last, NULL, country_used ? country.documents : NULL,
+        country_used ? country.groups : 0, far, pool_limit, stats
+    );
     if (stats) {
       stats->groups = groups;
       stats->narrowed = narrowed;
     }
   }
+  if (has_country) roaring_bitmap_free(country.documents);
 
   /* --- and now the number finds its door --- */
   if (numbered) {
