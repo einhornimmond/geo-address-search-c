@@ -401,7 +401,12 @@ static const struct {
 
 /** Append one word unless it is already there. */
 static void token_add(
-    TextTokenizer *tokenizer, const char *data, size_t size, uint16_t group, uint8_t part
+    TextTokenizer *tokenizer,
+    const char *data,
+    size_t size,
+    uint16_t group,
+    uint8_t part,
+    uint8_t joint
 ) {
   if (!size) return;
   for (size_t i = 0; i < tokenizer->token_count; ++i) {
@@ -417,6 +422,7 @@ static void token_add(
   tokenizer->tokens[tokenizer->token_count].size = size;
   tokenizer->tokens[tokenizer->token_count].group = group;
   tokenizer->tokens[tokenizer->token_count].part = part;
+  tokenizer->tokens[tokenizer->token_count].joint = joint;
   ++tokenizer->token_count;
 }
 
@@ -435,7 +441,9 @@ static const char *buffer_put(TextTokenizer *tokenizer, const char *text, size_t
 /**
  * @brief Close one folded word: expand it, keep it, and let a compound fall apart.
  */
-static void word_finish(TextTokenizer *tokenizer, const char *word, size_t size, uint16_t group) {
+static void word_finish(
+    TextTokenizer *tokenizer, const char *word, size_t size, uint16_t group, uint8_t joint
+) {
   if (!size) return;
 
   /* --- an abbreviation stands for its full word, and only for that --- */
@@ -468,23 +476,37 @@ static void word_finish(TextTokenizer *tokenizer, const char *word, size_t size,
     break;
   }
 
-  token_add(tokenizer, word, size, group, 0);
+  token_add(tokenizer, word, size, group, 0, joint);
 
   /* --- a compound also names its parts --- */
   for (size_t i = 0; i < sizeof(COMPOUND_TAILS) / sizeof(COMPOUND_TAILS[0]); ++i) {
     size_t tail = COMPOUND_TAILS[i].size;
     if (size <= tail + COMPOUND_HEAD_MIN - 1) continue;
     if (memcmp(word + size - tail, COMPOUND_TAILS[i].word, tail) != 0) continue;
-    token_add(tokenizer, word, size - tail, group, 1);
-    token_add(tokenizer, word + size - tail, tail, group, 1);
+    token_add(tokenizer, word, size - tail, group, 1, joint);
+    token_add(tokenizer, word + size - tail, tail, group, 1, joint);
     break;
   }
+}
+
+/** What stands between two words once @p code has been passed as well. */
+static uint8_t joint_after(uint8_t joint, uint32_t code) {
+  if (code == ' ' || code == '\t' || code == 0xA0 || code == 0x202F) return joint;
+  uint8_t mark = TEXT_JOINT_OTHER;
+  if (code == '-' || (code >= 0x2010 && code <= 0x2014) || code == 0x2212) {
+    mark = TEXT_JOINT_DASH;
+  } else if (code == '/') {
+    mark = TEXT_JOINT_SLASH;
+  }
+  return joint == TEXT_JOINT_NONE ? mark : TEXT_JOINT_OTHER;
 }
 
 /** Fold the whole input once and cut it into words. */
 static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, int german) {
   int special = 0;
   size_t word_start = tokenizer->used;
+  /* what has stood since the last word, and what stood before the one being written */
+  uint8_t joint = TEXT_JOINT_NONE, word_joint = TEXT_JOINT_NONE;
   /* both readings walk the same input and break at the same places, so the
      n-th word of one is the n-th word of the other */
   uint16_t group = 0;
@@ -520,9 +542,14 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
 
     if (FOLD_SEPARATOR == kind || !written) {
       if (tokenizer->used > word_start) {
-        word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group);
+        word_finish(
+            tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group,
+            word_joint
+        );
         ++group;
+        joint = TEXT_JOINT_NONE;
       }
+      joint = joint_after(joint, code);
       word_start = tokenizer->used;
       base = 0;
       continue;
@@ -531,12 +558,15 @@ static int fold_pass(TextTokenizer *tokenizer, const char *text, size_t size, in
       ++tokenizer->dropped;
       break;
     }
+    if (tokenizer->used == word_start) word_joint = joint;
     memcpy(tokenizer->buffer + tokenizer->used, folded, written);
     tokenizer->used += written;
     /* only a lone letter can carry a mark; a digraph has already said its piece */
     base = 1 == written ? folded[0] : 0;
   }
-  word_finish(tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group);
+  word_finish(
+      tokenizer, tokenizer->buffer + word_start, tokenizer->used - word_start, group, word_joint
+  );
   return special;
 }
 

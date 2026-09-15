@@ -894,6 +894,323 @@ TEST(GeoIndexCountry, AnIndexWithoutCountryWordsAnswersAsBefore) {
   geo_index_close(&index);
 }
 
+// ---------------------------------------------------------------------------
+//  A house number as people write it
+// ---------------------------------------------------------------------------
+
+namespace {
+
+testsupport::MiniPlace Street(
+    const std::string &name,
+    const std::string &city,
+    const std::string &postcode,
+    double lat,
+    double lon,
+    uint16_t importance,
+    std::vector<std::string> houses
+) {
+  testsupport::MiniPlace place =
+      Placed(name, city, postcode, lat, lon, PHOTON_PLACE_TYPE_STREET, importance, "");
+  place.houses = std::move(houses);
+  return place;
+}
+
+/** Streets whose doors are written the ways the dump writes them. */
+std::vector<testsupport::MiniPlace> Doors() {
+  return {
+      Street("Osterstraße", "Hannover", "30159", 52.373, 9.745, 3000, {"40", "42A"}),
+      Street("Lister Meile", "Hannover", "30161", 52.380, 9.745, 3000, {"29", "29a"}),
+      Street("Bruchshöfenstraße", "Nordstemmen", "31171", 52.160, 9.786, 2000, {"1 A"}),
+      Street("Rue de la Paix", "Paris", "75002", 48.869, 2.331, 5000, {"12bis", "12"}),
+      // the heavier street carries only the plain number
+      Street("Avenue Leclerc", "Bordeaux", "33200", 44.850, -0.600, 9000, {"36"}),
+      Street("Avenue Leclerc", "Le Bouscat", "33110", 44.865, -0.598, 2000, {"36B"}),
+      Street("Anderter Straße", "Hannover", "30629", 52.370, 9.830, 3000, {"1-3", "5", "8"}),
+      Street("Kirchweg", "Hannover", "30655", 52.400, 9.800, 3000, {"23 - 25", "40/42"}),
+      // Baden-Württemberg numbers the house behind the 12 as 12/1
+      Street("Hauptstraße", "Stuttgart", "70173", 48.776, 9.180, 3000, {"12", "12/1"}),
+      Street("Lerchenweg", "Riedlingen", "88499", 48.155, 9.472, 3000, {"2/3", "2/6", "7/9"}),
+  };
+}
+
+/** The spelling of the door @p hit found, or "" when it found none. */
+std::string Door(const GeoIndex &index, const GeoHit &hit) {
+  if (hit.house == GEO_RANK_NONE) return std::string();
+  return DisplayWord(index, index.houses[hit.house].number_rank);
+}
+
+} // namespace
+
+TEST(GeoIndexHouse, ALetterWrittenApartFromItsNumberBelongsToTheNumber) {
+  TempPath path{"houseletter"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // the letter names no place, and asked as a word it narrowed the street away
+  for (const char *query :
+       {"Osterstraße 42 A Hannover ", "Osterstr. 42 a Hannover ", "Osterstraße 42A Hannover ",
+        "Osterstraße 42 A"}) {
+    ASSERT_GE(Query(index, query, hits, 8, true), 1u) << query;
+    EXPECT_EQ(Door(index, hits[0]), "42A") << query;
+  }
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ASpaceInsideAWrittenNumberDoesNotMatter) {
+  TempPath path{"housespace"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  for (const char *query :
+       {"Bruchshöfenstraße 1A Nordstemmen ", "Bruchshöfenstraße 1 a Nordstemmen "}) {
+    ASSERT_GE(Query(index, query, hits, 8), 1u) << query;
+    EXPECT_EQ(Door(index, hits[0]), "1 A") << query;
+  }
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ASuffixNoDoorCarriesFallsBackToThePlainNumber) {
+  TempPath path{"housefallback"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  for (const char *query : {"Lister Meile 29D Hannover ", "Lister Meile 29 D Hannover "}) {
+    ASSERT_GE(Query(index, query, hits, 8), 1u) << query;
+    EXPECT_EQ(Door(index, hits[0]), "29") << query;
+  }
+  // a suffix that is there is still found as it was asked for
+  ASSERT_GE(Query(index, "Lister Meile 29 A Hannover ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "29a");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, TheDoorAskedForStandsBeforeThePlainNumber) {
+  TempPath path{"houseexact"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "36B Avenue Leclerc ", hits, 8), 2u);
+  EXPECT_EQ(Door(index, hits[0]), "36B") << "not the 36 of the heavier street";
+  EXPECT_EQ(Door(index, hits[1]), "36");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, AFrenchSuffixBelongsToTheNumber) {
+  TempPath path{"housebis"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  for (const char *query : {"12 bis Rue de la Paix ", "12BIS Rue de la Paix "}) {
+    ASSERT_GE(Query(index, query, hits, 8), 1u) << query;
+    EXPECT_EQ(Door(index, hits[0]), "12bis") << query;
+  }
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ARangeIsFoundAsItIsWritten) {
+  TempPath path{"houserange"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  for (const char *query :
+       {"Anderter Straße 1-3 Hannover ", "Anderter Straße 1 - 3 Hannover ", "Anderter Straße 1/3 ",
+        "Kirchweg 23-25 ", "Kirchweg 40-42 "}) {
+    ASSERT_GE(Query(index, query, hits, 8), 1u) << query;
+    EXPECT_NE(Door(index, hits[0]), "") << query;
+  }
+  ASSERT_GE(Query(index, "Anderter Straße 1-3 ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "1-3");
+  ASSERT_GE(Query(index, "Kirchweg 23-25 ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "23 - 25");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ADoorBehindAnotherIsNotTheOneInFront) {
+  TempPath path{"housebehind"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_GE(Query(index, "Hauptstraße 12/1 Stuttgart ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "12/1");
+  ASSERT_GE(Query(index, "Hauptstraße 12 Stuttgart ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "12");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ANumberInsideARangeFindsTheRange) {
+  TempPath path{"houseinrange"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // whoever lives in the house numbered 1-3 types one of its numbers
+  for (const char *query : {"Anderter Straße 1 ", "Anderter Straße 3 "}) {
+    ASSERT_GE(Query(index, query, hits, 8), 1u) << query;
+    EXPECT_EQ(Door(index, hits[0]), "1-3") << query;
+  }
+  ASSERT_GE(Query(index, "Kirchweg 25 ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "23 - 25");
+  // 23 to 25 are the odd side of the street; the 24 lies across the road
+  ASSERT_GE(Query(index, "Kirchweg 24 ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "");
+  // a door behind another is no range
+  ASSERT_GE(Query(index, "Hauptstraße 5 Stuttgart ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ASlashNumbersTheHousesBehindAHouseAndMakesNoRange) {
+  TempPath path{"houseslash"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // 2/3 and 2/6 are two houses behind the 2, and neither of them is the 2
+  ASSERT_GE(Query(index, "Lerchenweg 2 Riedlingen ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "");
+  ASSERT_GE(Query(index, "Lerchenweg 9 Riedlingen ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "");
+  ASSERT_GE(Query(index, "Lerchenweg 2/6 Riedlingen ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "2/6");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouse, ANumberAndAPostcodeSideBySideStayApart) {
+  TempPath path{"housecode"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Doors()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // read as one number, 3-30629 would be no door at all
+  ASSERT_GE(Query(index, "Anderter Straße 3 30629 ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "1-3");
+  ASSERT_GE(Query(index, "Anderter Straße 8, 30629 ", hits, 8), 1u);
+  EXPECT_EQ(Door(index, hits[0]), "8");
+  geo_index_close(&index);
+}
+
+// ---------------------------------------------------------------------------
+//  A house number the street does not carry
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A street running north, 1 000 m long, with its houses every 20 m. */
+testsupport::MiniPlace Gasse(
+    const std::string &name, std::vector<std::pair<std::string, int>> doors
+) {
+  // the street's own point is its middle, 500 m up
+  testsupport::MiniPlace street = Street(name, "Würzburg", "97070", 49.7945, 9.9300, 3000, {});
+  for (const auto &door : doors) {
+    street.houses.push_back(door.first);
+    // 20 m of latitude are 1 800 in degrees × 10⁷
+    street.house_points.push_back({E7(49.7900) + door.second * 1800, E7(9.9300)});
+  }
+  return street;
+}
+
+} // namespace
+
+TEST(GeoIndexHouseEstimate, AMissingNumberLiesBetweenItsNeighbours) {
+  TempPath path{"estimatebetween"};
+  ASSERT_TRUE(
+      BuildMiniIndex(path.c_str(), {Gasse("Schulgasse", {{"15", 0}, {"19", 2}, {"16", 5}})})
+  );
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Schulgasse 17 ", hits, 8), 1u);
+  EXPECT_EQ(hits[0].house, GEO_RANK_NONE) << "the number is still not found";
+  ASSERT_EQ(hits[0].estimated, 1u);
+  EXPECT_EQ(hits[0].lat_e7, E7(49.7900) + 1800) << "halfway between the 15 and the 19";
+  EXPECT_EQ(hits[0].lon_e7, E7(9.9300));
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouseEstimate, ADoorOfTheSameNumberStandsInForIt) {
+  TempPath path{"estimatesuffix"};
+  ASSERT_TRUE(
+      BuildMiniIndex(path.c_str(), {Gasse("Schulgasse", {{"15", 0}, {"17a", 1}, {"21", 3}})})
+  );
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Schulgasse 17 ", hits, 8), 1u);
+  ASSERT_EQ(hits[0].estimated, 1u);
+  EXPECT_EQ(hits[0].lat_e7, E7(49.7900) + 1800);
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouseEstimate, NothingIsGuessedWhereTheNeighboursSayLittle) {
+  TempPath path{"estimatenone"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(), {
+                        // only the other side of the street near the 17
+                        Gasse("Schulgasse", {{"14", 0}, {"18", 2}}),
+                        // one neighbour, and nothing above it
+                        Gasse("Kirchgasse", {{"15", 0}}),
+                        // more than twenty numbers apart
+                        Gasse("Domgasse", {{"1", 0}, {"41", 2}}),
+                        // close in number, but 400 m apart: a street of two pieces
+                        Gasse("Hofgasse", {{"15", 0}, {"19", 20}}),
+                    }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  for (const char *query : {"Schulgasse 17 ", "Kirchgasse 17 ", "Domgasse 17 ", "Hofgasse 17 "}) {
+    ASSERT_EQ(Query(index, query, hits, 8), 1u) << query;
+    EXPECT_EQ(hits[0].estimated, 0u) << query;
+  }
+  // and a query that asked for no number asks for no estimate
+  ASSERT_EQ(Query(index, "Domgasse ", hits, 8), 1u);
+  EXPECT_EQ(hits[0].estimated, 0u);
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexHouseEstimate, AHouseLeftOutIsEstimatedFromTheOthers) {
+  TempPath path{"estimatepassed"};
+  ASSERT_TRUE(
+      BuildMiniIndex(path.c_str(), {Gasse("Schulgasse", {{"15", 0}, {"17", 1}, {"19", 2}})})
+  );
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Schulgasse 17 ", hits, 8), 1u);
+  ASSERT_NE(hits[0].house, GEO_RANK_NONE);
+  EXPECT_EQ(hits[0].estimated, 0u) << "a number found needs no estimate";
+
+  int32_t lat = 0, lon = 0;
+  EXPECT_TRUE(geo_index_house_estimate(&index, hits[0].document, 17, hits[0].house, &lat, &lon));
+  EXPECT_EQ(lat, E7(49.7900) + 1800);
+  EXPECT_FALSE(geo_index_house_estimate(&index, hits[0].document, 0, GEO_RANK_NONE, &lat, &lon));
+  EXPECT_FALSE(
+      geo_index_house_estimate(&index, index.document_count, 17, GEO_RANK_NONE, &lat, &lon)
+  );
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
   // and lies nearer to the searcher than the street that is called that today

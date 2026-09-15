@@ -82,7 +82,18 @@ typedef struct GeoClient GeoClient;
  *  worth.  It reports whether the *place* carried a centroid; where a house
  *  number was found, the point is the house's own instead.  So @c has_point 0
  *  with a @c number is still a real position — the house's — while
- *  @c has_point 0 without one means 0/0 and nothing at all.
+ *  @c has_point 0 without one means 0/0 and nothing at all, unless the point
+ *  was estimated as below.
+ *
+ *  Where a number was asked for and the street does not carry it, the answer
+ *  stays the street — @c number NULL, as always — but its point is moved
+ *  between the neighbouring numbers on the same side of the street, where
+ *  those stand at most 20 numbers and about 300 m apart: *Schulstraße 17*
+ *  lies between the 15 and the 19 instead of in the middle of the street.
+ *  Measured on German houses of the planet left out one at a time, such a
+ *  point lies 6 m from the house in the median and within 29 m for nine in ten,
+ *  where the middle of the street lies 86 m off.  Where the neighbours say too
+ *  little, the point is the street's own as before.
  */
 typedef struct GeoAddress {
   const char *name;      /**< Street or place as written, or NULL. */
@@ -177,7 +188,11 @@ GeoStatus geo_client_language(
  *
  *  The query is free text: words in any order, upper or lower case, with or
  *  without diacritics, German abbreviations spelled out or not.  A number is
- *  read as a house number first and as a word only if that finds nothing.
+ *  read as a house number first and as a word only if that finds nothing.  A
+ *  letter written apart from it — `42 A`, `12 bis` — belongs to the number, and
+ *  where a street has no door of that suffix the plain number is found instead.
+ *  A range or a house behind a house — `1-3`, `12/1` — is one number, and a
+ *  plain number finds the range written with a dash that holds it.
  *
  *  Results are ordered by how far they answer what the query said about *where*
  *  — a postcode it named counts for more than a town — then, among places that

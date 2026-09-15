@@ -1042,22 +1042,252 @@ typedef enum NumberReading {
   NUMBERS_BUT_CODES
 } NumberReading;
 
-/** May this token take part in narrowing the answer down, under @p reading? */
-static bool token_narrows(const TextToken *token, NumberReading reading) {
+/**
+ * @brief Could this word finish a house number written apart from it — the *A*
+ *        of *42 A*, the *bis* of *12 bis*?
+ *
+ *  A single letter, or one of the French suffixes *bis*, *ter* and *quater*.
+ *  Whether it does depends on what stands before it; see house_suffix_of().
+ */
+static bool token_is_suffix_shape(const TextToken *token) {
+  if (token->part) return false;
+  if (token->size == 1) return token->data[0] >= 'a' && token->data[0] <= 'z';
+  return (token->size == 3 && memcmp(token->data, "bis", 3) == 0) ||
+         (token->size == 3 && memcmp(token->data, "ter", 3) == 0) ||
+         (token->size == 6 && memcmp(token->data, "quater", 6) == 0);
+}
+
+/** The whole word right behind the one at @p t in the input, or NULL. */
+static const TextToken *word_after(const TextTokenizer *tokenizer, size_t t) {
+  for (size_t n = 0; n < tokenizer->token_count; ++n) {
+    const TextToken *next = &tokenizer->tokens[n];
+    if (!next->part && next->group == tokenizer->tokens[t].group + 1) return next;
+  }
+  return NULL;
+}
+
+/**
+ * @brief The word that finishes the house number at @p t, or NULL.
+ *
+ *  The very next word of the input, when it has the shape of a suffix — see
+ *  token_is_suffix_shape() — and nothing but a space or a dash stands between.
+ *  *Osterstraße 42 A* writes the number of one door as two words, and the
+ *  tokenizer, which ends a word at every space, cannot know that.
+ */
+static const TextToken *house_suffix_of(const TextTokenizer *tokenizer, size_t t) {
+  const TextToken *number = &tokenizer->tokens[t];
+  if (number->part || !token_has_digit(number)) return NULL;
+  const TextToken *next = word_after(tokenizer, t);
+  if (!next || token_has_digit(next) || !token_is_suffix_shape(next)) return NULL;
+  return next->joint == TEXT_JOINT_NONE || next->joint == TEXT_JOINT_DASH ? next : NULL;
+}
+
+/**
+ * @brief The number that closes the house number at @p t, or NULL.
+ *
+ *  The very next word, when it carries a digit and a single dash or slash
+ *  stands between: *Anderter Straße 1-3*, *Hauptstraße 12/1*.  A space alone
+ *  does not join — *Hauptstraße 5 53111* is a door and a postal code.
+ */
+static const TextToken *house_second_of(const TextTokenizer *tokenizer, size_t t) {
+  const TextToken *number = &tokenizer->tokens[t];
+  if (number->part || !token_has_digit(number)) return NULL;
+  const TextToken *next = word_after(tokenizer, t);
+  if (!next || !token_has_digit(next)) return NULL;
+  return next->joint == TEXT_JOINT_DASH || next->joint == TEXT_JOINT_SLASH ? next : NULL;
+}
+
+/** Is the word at @p t the suffix, or the closing number, of the house number before it? */
+static bool token_ends_a_house(const TextTokenizer *tokenizer, size_t t) {
+  const TextToken *token = &tokenizer->tokens[t];
+  if (token->part || token->joint == TEXT_JOINT_OTHER) return false;
+  for (size_t n = 0; n < tokenizer->token_count; ++n) {
+    if (house_suffix_of(tokenizer, n) == token || house_second_of(tokenizer, n) == token) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief May the word at @p t take part in narrowing the answer down, under
+ *        @p reading?
+ *
+ *  Wherever a number is held back as a house number, so is the suffix written
+ *  apart from it: *A* in *Osterstraße 42 A* names no place, and asked as a word
+ *  it narrows the street away.
+ */
+static bool token_narrows(const TextTokenizer *tokenizer, size_t t, NumberReading reading) {
+  const TextToken *token = &tokenizer->tokens[t];
   if (reading == NUMBERS_AS_WORDS) return true;
-  if (!token_has_digit(token)) return true;
+  if (!token_has_digit(token)) return !token_ends_a_house(tokenizer, t);
   return reading == NUMBERS_BUT_CODES && token_is_code(token);
 }
 
-/** Compare a written house number with a folded one, letters case aside. */
-static bool number_equal(const char *written, size_t written_size, const TextToken *token) {
-  if (written_size != token->size) return false;
-  for (size_t i = 0; i < written_size; ++i) {
-    char a = written[i];
-    if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-    if (a != token->data[i]) return false;
+/** Longest house number a query asks for, in folded bytes; longer ones are never found. */
+#define GEO_HOUSE_ASKED_MAX 32
+
+/** Widest range a written house number may span and still hold a number asked for. */
+#define GEO_HOUSE_RANGE_MAX 100
+
+/**
+ * @brief One house number as the query asks for it.
+ *
+ *  Folded, without spaces, and with `-` for every dash or slash inside it:
+ *  *42a* whether it was typed *42a*, *42A* or *42 A*; *1-3* for *1 - 3*, and
+ *  *12-1* for *12/1*.  @c digits is the length of the plain number in front of
+ *  whatever follows it — 2 for *29d* and for *12-1*, 0 for a plain *29* — and is
+ *  what is looked for once the street turns out to have no such door.
+ */
+typedef struct HouseAsked {
+  char text[GEO_HOUSE_ASKED_MAX];
+  size_t size;
+  size_t digits;
+} HouseAsked;
+
+/**
+ * @brief Spell the house number at @p t, its suffix or closing number joined on.
+ *
+ *  @return false when the word is no house number, or only closes the one
+ *          before it — the *3* of *1-3* is not a door of its own.
+ */
+static bool house_asked_of(const TextTokenizer *tokenizer, size_t t, HouseAsked *out) {
+  const TextToken *number = &tokenizer->tokens[t];
+  if (number->part || !token_has_digit(number)) return false;
+  if (token_ends_a_house(tokenizer, t)) return false;
+  const TextToken *suffix = house_suffix_of(tokenizer, t);
+  const TextToken *second = suffix ? NULL : house_second_of(tokenizer, t);
+
+  size_t size = number->size;
+  if (suffix) size += suffix->size;
+  if (second) size += 1 + second->size;
+  if (size > sizeof(out->text)) return false;
+  memcpy(out->text, number->data, number->size);
+  if (suffix) memcpy(out->text + number->size, suffix->data, suffix->size);
+  if (second) {
+    out->text[number->size] = '-';
+    memcpy(out->text + number->size + 1, second->data, second->size);
   }
+  out->size = size;
+
+  size_t digits = 0;
+  while (digits < size && out->text[digits] >= '0' && out->text[digits] <= '9') ++digits;
+  out->digits = digits < size ? digits : 0;
   return true;
+}
+
+/**
+ * @brief The next byte of a written house number as it is compared.
+ *
+ *  Spaces are passed over, upper case is lowered, and every dash or slash —
+ *  the en dash `–` as well — reads as `-`.
+ *
+ *  @param[in,out] at  Position in @p written, moved past what was read.
+ *  @return The byte, or 0 at the end.
+ */
+static char number_next(const char *written, size_t size, size_t *at) {
+  while (*at < size) {
+    unsigned char c = (unsigned char)written[*at];
+    if (c == ' ') {
+      ++*at;
+      continue;
+    }
+    /* U+2010 … U+2014, the hyphens and dashes, are E2 80 90 … E2 80 94 */
+    if (c == 0xE2 && *at + 2 < size && (unsigned char)written[*at + 1] == 0x80 &&
+        (unsigned char)written[*at + 2] >= 0x90 && (unsigned char)written[*at + 2] <= 0x94) {
+      *at += 3;
+      return '-';
+    }
+    ++*at;
+    if (c == '/') return '-';
+    if (c >= 'A' && c <= 'Z') return (char)(c - 'A' + 'a');
+    return (char)c;
+  }
+  return 0;
+}
+
+/**
+ * @brief Compare a written house number with an asked one, the way people
+ *        write it aside.
+ *
+ *  The dump writes one door as *42A*, *42a* or *42 A*, and one range as *1-3*,
+ *  *1 - 3* or *1/3*, whichever the mapper chose, and a searcher cannot know
+ *  which.  See number_next() for what does not count.
+ */
+static bool number_equal(
+    const char *written, size_t written_size, const char *asked, size_t asked_size
+) {
+  size_t at = 0;
+  for (size_t a = 0; a < asked_size; ++a) {
+    if (number_next(written, written_size, &at) != asked[a]) return false;
+  }
+  return number_next(written, written_size, &at) == 0;
+}
+
+/** Read a run of digits at @p at as a number; false when there is none or it is too long. */
+static bool number_value(const char *written, size_t size, size_t *at, char *next, uint32_t *out) {
+  uint32_t value = 0;
+  size_t digits = 0;
+  char c = number_next(written, size, at);
+  while (c >= '0' && c <= '9') {
+    if (++digits > 6) return false;
+    value = value * 10u + (uint32_t)(c - '0');
+    c = number_next(written, size, at);
+  }
+  *next = c;
+  *out = value;
+  return digits > 0;
+}
+
+/**
+ * @brief Does the range a house number is written as hold @p value?
+ *
+ *  *1-4* holds 1 to 4 — but a range whose ends lie on the same side of the
+ *  street holds only the numbers of that side, so *23-25* holds 23 and 25 and
+ *  not the 24 across the road.  A letter behind either end is passed over.
+ *
+ *  A slash makes no range.  In the south-west it numbers the houses behind a
+ *  house — *12/1* is the first behind the 12 — and one street of the German
+ *  dump carries *2/3*, *2/4*, *2/6* and *2/12* side by side, so even *2/4* is a
+ *  door of its own and not the 2, 3 and 4.
+ */
+static bool number_range_holds(const char *written, size_t size, uint32_t value) {
+  if (memchr(written, '/', size)) return false;
+  size_t at = 0;
+  char next = 0;
+  uint32_t from = 0, to = 0;
+  if (!number_value(written, size, &at, &next, &from)) return false;
+  while (next >= 'a' && next <= 'z') next = number_next(written, size, &at);
+  if (next != '-') return false;
+  if (!number_value(written, size, &at, &next, &to)) return false;
+  while (next >= 'a' && next <= 'z') next = number_next(written, size, &at);
+  if (next != 0 || to <= from || to - from > GEO_HOUSE_RANGE_MAX) return false;
+  if (value < from || value > to) return false;
+  return (from % 2u) != (to % 2u) || (value % 2u) == (from % 2u);
+}
+
+/** How a house number is looked for on a street. */
+typedef enum HouseMatch {
+  HOUSE_AS_ASKED,    /**< The number exactly as it was asked for. */
+  HOUSE_IN_RANGE,    /**< A range that holds the plain number asked for. */
+  HOUSE_PLAIN_NUMBER /**< The plain number in front of the suffix asked for. */
+} HouseMatch;
+
+/** Does the written house number answer @p asked, looked for as @p how says? */
+static bool house_answers(
+    const char *written, size_t written_size, const HouseAsked *asked, HouseMatch how
+) {
+  if (how == HOUSE_AS_ASKED) return number_equal(written, written_size, asked->text, asked->size);
+  if (how == HOUSE_PLAIN_NUMBER) {
+    return asked->digits && number_equal(written, written_size, asked->text, asked->digits);
+  }
+  if (asked->digits || asked->size > 6) return false;
+  uint32_t value = 0;
+  for (size_t i = 0; i < asked->size; ++i) {
+    if (asked->text[i] < '0' || asked->text[i] > '9') return false;
+    value = value * 10u + (uint32_t)(asked->text[i] - '0');
+  }
+  return number_range_holds(written, written_size, value);
 }
 
 /**
@@ -1069,7 +1299,9 @@ static bool number_equal(const char *written, size_t written_size, const TextTok
  *
  *  @return Index into the index's houses, or GEO_RANK_NONE.
  */
-static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextToken *number) {
+static uint32_t find_house(
+    const GeoIndex *index, uint32_t document, const HouseAsked *asked, HouseMatch how
+) {
   size_t count = 0;
   const GeoHouse *houses = geo_index_houses(index, document, &count);
   if (!houses) return GEO_RANK_NONE;
@@ -1078,11 +1310,82 @@ static uint32_t find_house(const GeoIndex *index, uint32_t document, const TextT
     size_t written_size = 0;
     const char *written =
         geo_dictionary_word(&index->display, houses[i].number_rank, &written_size);
-    if (written && number_equal(written, written_size, number)) {
+    if (written && house_answers(written, written_size, asked, how)) {
       return (uint32_t)((houses - index->houses) + i);
     }
   }
   return GEO_RANK_NONE;
+}
+
+/**
+ * @brief Does the house at @p house carry a number of @p asked — as it was
+ *        asked for, or inside its range — rather than only its plain number?
+ */
+static bool house_is_asked(
+    const GeoIndex *index, uint32_t house, const HouseAsked *asked, size_t asked_count
+) {
+  size_t written_size = 0;
+  const char *written =
+      geo_dictionary_word(&index->display, index->houses[house].number_rank, &written_size);
+  if (!written) return false;
+  for (size_t a = 0; a < asked_count; ++a) {
+    if (house_answers(written, written_size, &asked[a], HOUSE_AS_ASKED) ||
+        house_answers(written, written_size, &asked[a], HOUSE_IN_RANGE)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool geo_index_house_estimate(
+    const GeoIndex *index,
+    size_t document,
+    uint32_t number,
+    uint32_t passed_over,
+    int32_t *lat_e7,
+    int32_t *lon_e7
+) {
+  if (!number || !lat_e7 || !lon_e7) return false;
+  size_t count = 0;
+  const GeoHouse *houses = geo_index_houses(index, document, &count);
+  if (!houses) return false;
+
+  const GeoHouse *below = NULL, *above = NULL;
+  uint32_t low = 0, high = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if ((size_t)(houses - index->houses) + i == passed_over) continue;
+    size_t size = 0;
+    const char *written = geo_dictionary_word(&index->display, houses[i].number_rank, &size);
+    size_t at = 0;
+    char next = 0;
+    uint32_t value = 0;
+    if (!written || !number_value(written, size, &at, &next, &value)) continue;
+    if (value % 2u != number % 2u) continue; /* the other side of the street */
+    if (value <= number && (!below || value > low)) {
+      below = &houses[i];
+      low = value;
+    }
+    if (value >= number && (!above || value < high)) {
+      above = &houses[i];
+      high = value;
+    }
+  }
+  if (!below || !above || high - low > GEO_HOUSE_ESTIMATE_GAP) return false;
+
+  int64_t north = (int64_t)above->lat_e7 - below->lat_e7;
+  int64_t east = ((int64_t)above->lon_e7 - below->lon_e7) * longitude_shrink(below->lat_e7) / 16;
+  int64_t span = GEO_HOUSE_ESTIMATE_SPAN_E7;
+  if (north * north + east * east > span * span) return false;
+
+  if (high == low) {
+    *lat_e7 = below->lat_e7;
+    *lon_e7 = below->lon_e7;
+    return true;
+  }
+  int64_t step = number - low, steps = high - low;
+  *lat_e7 = (int32_t)(below->lat_e7 + ((int64_t)above->lat_e7 - below->lat_e7) * step / steps);
+  *lon_e7 = (int32_t)(below->lon_e7 + ((int64_t)above->lon_e7 - below->lon_e7) * step / steps);
+  return true;
 }
 
 /**
@@ -1127,7 +1430,7 @@ static size_t query_words(
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
     const TextToken *token = &tokenizer->tokens[t];
     if (token->part) continue;
-    if (!token_narrows(token, reading)) continue;
+    if (!token_narrows(tokenizer, t, reading)) continue;
     if (!any || token->group > typing) {
       typing = token->group;
       any = true;
@@ -1139,7 +1442,7 @@ static size_t query_words(
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
     const TextToken *token = &tokenizer->tokens[t];
     if (token->part) continue; /* pieces of a compound serve the index, not the query */
-    if (!token_narrows(token, reading)) continue;
+    if (!token_narrows(tokenizer, t, reading)) continue;
     /* a word that named the country narrows through the country, not through itself */
     if (token->group < 64 && (skipped >> token->group) & 1u) continue;
 
@@ -1570,6 +1873,8 @@ static unsigned agreement_of(
 typedef struct HitRank {
   uint8_t agreement; /**< What the query said about *where*, 0 …
                           GEO_AGREEMENT_POSTCODE + GEO_AGREEMENT_CITY. */
+  uint8_t door;      /**< The house found: 2 the number as asked or a range holding
+                          it, 1 only the plain number in front of its suffix, 0 none. */
   uint8_t named;     /**< The place still goes by what was typed; 0 for everyone
                           when no position was given. */
   uint8_t band;      /**< How near the searcher stands, 0 = nearest; 0 for everyone
@@ -1616,9 +1921,7 @@ static bool ranks_before(
   if (left_rank.agreement != right_rank.agreement) {
     return left_rank.agreement > right_rank.agreement;
   }
-  bool left_house = left->house != GEO_RANK_NONE;
-  bool right_house = right->house != GEO_RANK_NONE;
-  if (left_house != right_house) return left_house;
+  if (left_rank.door != right_rank.door) return left_rank.door > right_rank.door;
   if (left_rank.named != right_rank.named) return left_rank.named > right_rank.named;
   if (left_rank.band != right_rank.band) return left_rank.band < right_rank.band;
   return left->importance > right->importance;
@@ -2168,17 +2471,29 @@ size_t geo_index_query_options(
   }
   if (has_country) roaring_bitmap_free(country.documents);
 
-  /* --- and now the number finds its door --- */
+  /* --- and now the number finds its door.  The number as it was asked for
+         first; only where the street has no such door does the plain number
+         answer — *Lister Meile 29D* asks for a door that was never mapped,
+         and the 29 beside it is the nearest thing there is, while the bare
+         street says nothing about where to go.  A plain number asked for
+         finds the range that holds it the same way: whoever lives at
+         *Anderter Straße 1-3* types *Anderter Straße 1*. --- */
+  HouseAsked asked[TEXT_TOKEN_MAX];
+  size_t asked_count = 0;
   if (numbered) {
+    for (size_t t = 0; t < tokenizer->token_count; ++t) {
+      if (house_asked_of(tokenizer, t, &asked[asked_count])) ++asked_count;
+    }
     for (size_t h = 0; h < count + far_count; ++h) {
       GeoHit *hit = h < count ? &pool[h] : &far[h - count];
-      for (size_t t = 0; t < tokenizer->token_count; ++t) {
-        const TextToken *token = &tokenizer->tokens[t];
-        if (token->part || !token_has_digit(token)) continue;
-        uint32_t house = find_house(index, hit->document, token);
-        if (house != GEO_RANK_NONE) {
-          hit->house = house;
-          break;
+      static const HouseMatch ORDER[] = {HOUSE_AS_ASKED, HOUSE_IN_RANGE, HOUSE_PLAIN_NUMBER};
+      for (size_t o = 0; o < 3 && hit->house == GEO_RANK_NONE; ++o) {
+        for (size_t a = 0; a < asked_count; ++a) {
+          uint32_t house = find_house(index, hit->document, &asked[a], ORDER[o]);
+          if (house != GEO_RANK_NONE) {
+            hit->house = house;
+            break;
+          }
         }
       }
     }
@@ -2206,6 +2521,12 @@ size_t geo_index_query_options(
     if (h < near_count) {
       ranks[h].agreement = (uint8_t)agreement_of(index, pool[h].document, &kept, tokenizer);
     }
+    /* the door asked for, or the range that holds it, stands before the plain
+       number that stood in for a suffix */
+    ranks[h].door = 0;
+    if (pool[h].house != GEO_RANK_NONE) {
+      ranks[h].door = house_is_asked(index, pool[h].house, asked, asked_count) ? 2u : 1u;
+    }
     /* Nearness is weighed even where the ring found nothing and was dropped:
        the question "which of these is closest" still has an answer, and the
        band is the only key that can give it.  Its guard travels with it — see
@@ -2223,6 +2544,30 @@ size_t geo_index_query_options(
 
   if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;
+
+  /* --- a street that has not the number asked for is still a street with
+         houses on it, and where the neighbours of that number stand close
+         together the point is laid between them rather than left in the
+         middle of the street.  Only for the answers handed out, and only the
+         point: the number stays unfound, so the ranking and what an answer
+         says are the same as without it. --- */
+  for (size_t h = 0; h < count && asked_count; ++h) {
+    if (pool[h].house != GEO_RANK_NONE) continue;
+    for (size_t a = 0; a < asked_count; ++a) {
+      uint32_t number = 0;
+      size_t digits = asked[a].digits ? asked[a].digits : asked[a].size;
+      if (digits > 6) continue;
+      for (size_t i = 0; i < digits && asked[a].text[i] >= '0' && asked[a].text[i] <= '9'; ++i) {
+        number = number * 10u + (uint32_t)(asked[a].text[i] - '0');
+      }
+      if (geo_index_house_estimate(
+              index, pool[h].document, number, GEO_RANK_NONE, &pool[h].lat_e7, &pool[h].lon_e7
+          )) {
+        pool[h].estimated = 1;
+        break;
+      }
+    }
+  }
   memcpy(hits, pool, count * sizeof(*hits));
   if (stats) stats->results = count;
   return count;

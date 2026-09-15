@@ -153,6 +153,9 @@ static void fill_address(
     borrow_text(index, house->number_rank, &address->number, &address->number_size);
     lat = house->lat_e7;
     lon = house->lon_e7;
+  } else if (hit->estimated) { /* not found, but its neighbours on the street were */
+    lat = hit->lat_e7;
+    lon = hit->lon_e7;
   }
 
   address->latitude = lat / 1.0e7;

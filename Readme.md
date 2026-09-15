@@ -143,6 +143,30 @@ A number in the query is a house number before it is a word: `Superstraße 8` lo
 the street without the 8 and resolves the number there. Only if that finds nothing may
 the number appear as a word — otherwise `Straße des 17. Juni` would fail.
 
+A house number is compared the way people write it: `42A`, `42a` and `42 A` find the same
+door, and so do `12bis` and `12 bis`. A letter that stands apart belongs to the number in
+front of it instead of narrowing the search as a word of its own. Where a street has no door
+with the suffix asked for, the plain number answers — `Lister Meile 29D` finds the 29 — and
+stands behind a street that does have the door asked for.
+
+A range is one house number too, however it is spaced: `Anderter Straße 1-3` and `1 - 3` find
+the same door, and whoever lives there and types only `Anderter Straße 3` finds it as well,
+since a plain number finds the range that holds it on its side of the street — `23-25` holds
+23 and 25, not the 24 across the road. A slash joins two numbers the same way, `Hauptstraße
+12/1`, but makes no range: in the south-west it numbers the houses behind a house, and one
+street of the German dump carries `2/3`, `2/4`, `2/6` and `2/12` side by side. The splitting
+keeps what stood between two words so that this works — a space alone joins nothing, and
+`Hauptstraße 5 53111` stays a door and a postal code.
+
+OpenStreetMap misses doors. Where a street is found but not the number asked for, the answer
+stays the street without a number, as before, but its point moves from the middle of the
+street to where the number would stand: between the nearest numbers below and above it on the
+same side, if those stand at most 20 numbers and about 300 m apart. Measured by leaving out
+50 852 German houses of the planet index one at a time, 77 % could be estimated, 6 m from the
+house in the median and within 29 m for nine in ten — the middle of the street lies 86 m off
+in the median and more than 366 m for one in ten. The ranking does not change, and neither
+does what an answer says.
+
 ### Autocomplete
 
 The **last** word counts as still being typed and is read as a beginning as well:
@@ -478,7 +502,7 @@ Measured at the same commit, Germany and Nominatim's Liechtenstein:
 | Nominatim | 21 | 4 | 70.6 % | 70.6 % | 76.5 % |
 
 What they found that the drawn queries did not: a house number whose letter stands apart —
-`Osterstr. 42 A` — finds nothing at all; a street still being typed in front of its town —
+`Osterstr. 42 A` — found nothing at all (fixed since); a street still being typed in front of its town —
 `Hafenga Ulm` — is not read as a beginning; and cities stand 1.7 to 2.6 km from where the
 suites expect them (Kassel, Würzburg, Erlangen, Fürth), the centre of their boundary rather
 than their place node.

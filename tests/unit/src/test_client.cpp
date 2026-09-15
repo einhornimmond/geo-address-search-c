@@ -99,6 +99,37 @@ TEST_F(ClientTest, AHouseNumberComesBackWithItsOwnPoint) {
   EXPECT_EQ(Name(found[0]), "Marienplatz");
 }
 
+TEST(ClientHouse, AMissingNumberKeepsItsNameButMovesThePoint) {
+  // the street's middle lies 500 m north of its houses 15 and 19
+  testsupport::MiniPlace street;
+  street.name = "Schulgasse";
+  street.city = "Würzburg";
+  street.postcode = "97070";
+  street.lat_e7 = 497945000;
+  street.lon_e7 = 99300000;
+  street.houses = {"15", "19"};
+  street.house_points = {{497900000, 99300000}, {497903600, 99300000}};
+  TempPath path{"clientestimate"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), {street}));
+  GeoClient *client = nullptr;
+  ASSERT_EQ(geo_client_open(&client, path.c_str()), GEO_OK);
+
+  GeoAddress found[4];
+  const std::string query = "Schulgasse 17 ";
+  ASSERT_EQ(geo_client_search(client, query.c_str(), query.size(), false, found, 4), 1u);
+  EXPECT_EQ(found[0].number, nullptr) << "the 17 is not claimed to exist";
+  EXPECT_EQ(Name(found[0]), "Schulgasse");
+  EXPECT_NEAR(found[0].latitude, 49.79018, 1e-7) << "between the 15 and the 19";
+  EXPECT_NEAR(found[0].longitude, 9.93, 1e-7);
+
+  const std::string street_only = "Schulgasse ";
+  ASSERT_EQ(
+      geo_client_search(client, street_only.c_str(), street_only.size(), false, found, 4), 1u
+  );
+  EXPECT_NEAR(found[0].latitude, 49.7945, 1e-7) << "no number asked, the street's own point";
+  geo_client_close(client);
+}
+
 TEST_F(ClientTest, ThePostcodeDecidesBetweenTwoStreetsOfTheSameName) {
   GeoAddress found[8];
   ASSERT_EQ(Search("Berliner Straße 10715 ", found, 8), 1u);

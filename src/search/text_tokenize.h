@@ -74,12 +74,29 @@ enum {
   TEXT_RECENT_BYTES = 64
 };
 
+/**
+ * @brief What stood between a word and the one before it.
+ *
+ *  Folding forgets the punctuation a word was cut at, and mostly rightly so —
+ *  but *Anderter Straße 1-3* is one house number written as two words, while
+ *  *Hauptstraße 5 53111* is a house number and a postal code.  Spaces count as
+ *  nothing; everything else that is not a dash or a slash, or more than one
+ *  mark, is @ref TEXT_JOINT_OTHER.
+ */
+typedef enum TextJoint {
+  TEXT_JOINT_NONE = 0,    /**< Nothing but spaces, or the input began here. */
+  TEXT_JOINT_DASH = '-',  /**< One hyphen or dash, spaces around it or not. */
+  TEXT_JOINT_SLASH = '/', /**< One slash, spaces around it or not. */
+  TEXT_JOINT_OTHER = '.'  /**< A comma, a dot, or anything else. */
+} TextJoint;
+
 /** One folded word, pointing into the tokenizer's buffer. */
 typedef struct TextToken {
   const char *data; /**< Folded bytes, not NUL-terminated. */
   size_t size;      /**< Byte length. */
   uint16_t group;   /**< Which word of the input this came from. */
   uint8_t part;     /**< Set when this is a piece of a compound, not the word itself. */
+  uint8_t joint;    /**< A @ref TextJoint: what stood before the word it came from. */
 } TextToken;
 
 /** An input the filter remembers verbatim. */

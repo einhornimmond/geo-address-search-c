@@ -212,6 +212,48 @@ TEST_F(TextTokenizeTest, CountersFollowTheInputs) {
 //  The repetition filter, which is a different tokenizer in the same struct
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+//  What stood between two words
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** The joint of every whole word, in the order the words were typed. */
+std::string Joints(TextTokenizer *tok, const std::string &text) {
+  std::string out;
+  size_t n = text_tokenize(tok, text.c_str(), text.size());
+  for (size_t i = 0; i < n; ++i) {
+    if (tok->tokens[i].part) continue;
+    out += tok->tokens[i].joint == TEXT_JOINT_NONE ? '_' : (char)tok->tokens[i].joint;
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_F(TextTokenizeTest, AWordRemembersTheDashOrSlashInFrontOfIt) {
+  // a range and a door behind another are one house number written as two words
+  EXPECT_EQ(Joints(&tok, "Anderter Straße 1-3"), "___-");
+  EXPECT_EQ(Joints(&tok, "Anderter Straße 1 - 3"), "___-");
+  EXPECT_EQ(Joints(&tok, "Hauptstraße 12/1"), "__/");
+  EXPECT_EQ(Joints(&tok, "Hauptstraße 12 \xe2\x80\x93 14"), "__-") << "an en dash is a dash";
+}
+
+TEST_F(TextTokenizeTest, ASpaceJoinsNothingAndACommaSeparates) {
+  EXPECT_EQ(Joints(&tok, "Hauptstraße 5 53111"), "___") << "a door and a postal code";
+  EXPECT_EQ(Joints(&tok, "Hauptstraße 5, 53111"), "__.");
+  EXPECT_EQ(Joints(&tok, "Hauptstraße 5 -/ 7"), "__.") << "more than one mark is no joint";
+}
+
+TEST_F(TextTokenizeTest, EveryReadingOfAWordCarriesItsJoint) {
+  // the German and the plain reading of Müller, and the pieces of the compound
+  const std::string text = "12-Müllerstraße";
+  size_t n = text_tokenize(&tok, text.c_str(), text.size());
+  ASSERT_GT(n, 2u);
+  for (size_t i = 1; i < n; ++i) EXPECT_EQ(tok.tokens[i].joint, TEXT_JOINT_DASH) << i;
+  EXPECT_EQ(tok.tokens[0].joint, TEXT_JOINT_NONE);
+}
+
 TEST(TextTokenizeFilter, SwallowsAnInputItJustSaw) {
   TextTokenizer tok;
   text_tokenizer_init(&tok); // filter on
