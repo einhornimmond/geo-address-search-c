@@ -198,12 +198,12 @@ static size_t split_fields(char *line, char **fields, size_t max) {
   return count;
 }
 
-/** Parse a number field; an empty field is not a number. */
+/** Parse a number field; an empty field is not a number, and neither are nan and infinity. */
 static bool parse_double(const char *text, double *out) {
   if (!text || !*text) return false;
   char *end = NULL;
   *out = strtod(text, &end);
-  return end && *end == '\0';
+  return end && *end == '\0' && isfinite(*out);
 }
 
 /** Learn where the known columns stand from a header line; unknown ones are passed over. */
@@ -243,7 +243,8 @@ static int parse_line(char *line, EvalLayout *layout, EvalQuery *query) {
   query->category = field_of(fields, count, layout, COLUMN_CATEGORY);
   query->text = field_of(fields, count, layout, COLUMN_QUERY);
   const char *prefix = field_of(fields, count, layout, COLUMN_PREFIX);
-  query->prefix = !*prefix || strcmp(prefix, "1") == 0;
+  if (*prefix && strcmp(prefix, "0") != 0 && strcmp(prefix, "1") != 0) return -1;
+  query->prefix = strcmp(prefix, "0") != 0; /* empty is the default: a beginning as well */
 
   bool has_lat = parse_double(field_of(fields, count, layout, COLUMN_LAT), &query->lat);
   bool has_lon = parse_double(field_of(fields, count, layout, COLUMN_LON), &query->lon);
@@ -850,7 +851,15 @@ int main(int argc, char **argv) {
   }
 
   free(times.values);
-  if (ranks) fclose(ranks);
+  if (ranks) {
+    /* A full disk shows only here: fprintf buffers, and the last of it is written by fclose. */
+    bool failed = ferror(ranks) != 0;
+    if (fclose(ranks) != 0) failed = true;
+    if (failed) {
+      fprintf(stderr, "cannot write '%s'\n", ranks_path);
+      result = 1;
+    }
+  }
   geo_client_close(client);
   return result;
 }
