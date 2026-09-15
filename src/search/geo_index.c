@@ -1337,6 +1337,57 @@ static bool house_is_asked(
   return false;
 }
 
+bool geo_index_house_estimate(
+    const GeoIndex *index,
+    size_t document,
+    uint32_t number,
+    uint32_t passed_over,
+    int32_t *lat_e7,
+    int32_t *lon_e7
+) {
+  if (!number || !lat_e7 || !lon_e7) return false;
+  size_t count = 0;
+  const GeoHouse *houses = geo_index_houses(index, document, &count);
+  if (!houses) return false;
+
+  const GeoHouse *below = NULL, *above = NULL;
+  uint32_t low = 0, high = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if ((size_t)(houses - index->houses) + i == passed_over) continue;
+    size_t size = 0;
+    const char *written = geo_dictionary_word(&index->display, houses[i].number_rank, &size);
+    size_t at = 0;
+    char next = 0;
+    uint32_t value = 0;
+    if (!written || !number_value(written, size, &at, &next, &value)) continue;
+    if (value % 2u != number % 2u) continue; /* the other side of the street */
+    if (value <= number && (!below || value > low)) {
+      below = &houses[i];
+      low = value;
+    }
+    if (value >= number && (!above || value < high)) {
+      above = &houses[i];
+      high = value;
+    }
+  }
+  if (!below || !above || high - low > GEO_HOUSE_ESTIMATE_GAP) return false;
+
+  int64_t north = (int64_t)above->lat_e7 - below->lat_e7;
+  int64_t east = ((int64_t)above->lon_e7 - below->lon_e7) * longitude_shrink(below->lat_e7) / 16;
+  int64_t span = GEO_HOUSE_ESTIMATE_SPAN_E7;
+  if (north * north + east * east > span * span) return false;
+
+  if (high == low) {
+    *lat_e7 = below->lat_e7;
+    *lon_e7 = below->lon_e7;
+    return true;
+  }
+  int64_t step = number - low, steps = high - low;
+  *lat_e7 = (int32_t)(below->lat_e7 + ((int64_t)above->lat_e7 - below->lat_e7) * step / steps);
+  *lon_e7 = (int32_t)(below->lon_e7 + ((int64_t)above->lon_e7 - below->lon_e7) * step / steps);
+  return true;
+}
+
 /**
  * @brief Answer the query's words, reading its numbers as @p reading says.
  *
@@ -2493,6 +2544,30 @@ size_t geo_index_query_options(
 
   if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;
+
+  /* --- a street that has not the number asked for is still a street with
+         houses on it, and where the neighbours of that number stand close
+         together the point is laid between them rather than left in the
+         middle of the street.  Only for the answers handed out, and only the
+         point: the number stays unfound, so the ranking and what an answer
+         says are the same as without it. --- */
+  for (size_t h = 0; h < count && asked_count; ++h) {
+    if (pool[h].house != GEO_RANK_NONE) continue;
+    for (size_t a = 0; a < asked_count; ++a) {
+      uint32_t number = 0;
+      size_t digits = asked[a].digits ? asked[a].digits : asked[a].size;
+      if (digits > 6) continue;
+      for (size_t i = 0; i < digits && asked[a].text[i] >= '0' && asked[a].text[i] <= '9'; ++i) {
+        number = number * 10u + (uint32_t)(asked[a].text[i] - '0');
+      }
+      if (geo_index_house_estimate(
+              index, pool[h].document, number, GEO_RANK_NONE, &pool[h].lat_e7, &pool[h].lon_e7
+          )) {
+        pool[h].estimated = 1;
+        break;
+      }
+    }
+  }
   memcpy(hits, pool, count * sizeof(*hits));
   if (stats) stats->results = count;
   return count;

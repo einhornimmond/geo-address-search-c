@@ -158,6 +158,15 @@ street of the German dump carries `2/3`, `2/4`, `2/6` and `2/12` side by side. T
 keeps what stood between two words so that this works — a space alone joins nothing, and
 `Hauptstraße 5 53111` stays a door and a postal code.
 
+OpenStreetMap misses doors. Where a street is found but not the number asked for, the answer
+stays the street without a number, as before, but its point moves from the middle of the
+street to where the number would stand: between the nearest numbers below and above it on the
+same side, if those stand at most 20 numbers and about 300 m apart. Measured by leaving out
+50 852 German houses of the planet index one at a time, 77 % could be estimated, 6 m from the
+house in the median and within 29 m for nine in ten — the middle of the street lies 86 m off
+in the median and more than 366 m for one in ten. The ranking does not change, and neither
+does what an answer says.
+
 ### Autocomplete
 
 The **last** word counts as still being typed and is read as a beginning as well:

@@ -351,6 +351,11 @@ typedef struct GeoHit {
   uint32_t matched;    /**< Query words this document carries. */
   uint32_t house;      /**< The house number found on it, or GEO_RANK_NONE. */
   uint16_t importance; /**< The document's weight, copied for sorting. */
+  uint8_t estimated;   /**< Set where the number asked for is missing on this street
+                            and @c lat_e7 / @c lon_e7 lie between its neighbours —
+                            see geo_index_house_estimate(). */
+  int32_t lat_e7;      /**< Estimated latitude × 10⁷; meaningful only with @c estimated. */
+  int32_t lon_e7;      /**< Estimated longitude × 10⁷, likewise. */
 } GeoHit;
 
 /**
@@ -375,6 +380,51 @@ enum {
  *  @return The first house, ordered by the rank of its number, or NULL.
  */
 const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t *out_count);
+
+/** Widest step between the two neighbours an estimate may lie between, in house numbers. */
+#define GEO_HOUSE_ESTIMATE_GAP 20
+
+/** Farthest apart those two neighbours may stand, in degrees × 10⁷ — about 300 m. */
+#define GEO_HOUSE_ESTIMATE_SPAN_E7 27000
+
+/**
+ * @brief Estimate where a house number the street does not carry would stand.
+ *
+ *  OpenStreetMap misses doors, and a search that finds the street but not the
+ *  number would otherwise put its point in the middle of the street — a
+ *  kilometre off on a long one.  The nearest numbers below and above on the
+ *  same side of the street, odd with odd and even with even, stand in for it,
+ *  and the point is laid between them in proportion: 17 between a 15 and a 19
+ *  lies halfway.  A door whose plain number is the one asked for — *17a* for
+ *  *17* — is taken as it stands.
+ *
+ *  Nothing is estimated where a neighbour is missing on either side, where the
+ *  two lie more than @ref GEO_HOUSE_ESTIMATE_GAP numbers apart, or farther than
+ *  @ref GEO_HOUSE_ESTIMATE_SPAN_E7 from each other: a street merged from pieces
+ *  in different places, or numbered across a bend, would put the point
+ *  somewhere no house stands.  A written number is read by its first digits —
+ *  *12a* and *12/1* as 12, *1-3* as 1.
+ *
+ *  @param[in]  index        Opened index; must not be NULL.
+ *  @param[in]  document     The street.
+ *  @param[in]  number       The house number asked for, above 0.
+ *  @param[in]  passed_over  A house to leave out as if it were missing, or
+ *                           GEO_RANK_NONE — which is how the estimate is measured
+ *                           against houses whose place is known.
+ *  @param[out] lat_e7       Receives the latitude × 10⁷.
+ *  @param[out] lon_e7       Receives the longitude × 10⁷.
+ *  @return Whether a point was estimated; nothing is written otherwise.
+ *
+ *  @whisper Between two doors that are known, the one that is not can be guessed
+ */
+bool geo_index_house_estimate(
+    const GeoIndex *index,
+    size_t document,
+    uint32_t number,
+    uint32_t passed_over,
+    int32_t *lat_e7,
+    int32_t *lon_e7
+);
 
 /**
  * @brief Answer a query with the places that carry all of its words.
@@ -412,7 +462,10 @@ const GeoHouse *geo_index_houses(const GeoIndex *index, size_t document, size_t 
  *  finds *1-3* — and ranks like the door itself; a slash makes no range, as
  *  it numbers the houses behind a house.  Where a street has no door of the
  *  suffix asked for, the plain number in front of it answers: *Lister Meile
- *  29D* finds the 29, ranked behind a street that does have a 29D.
+ *  29D* finds the 29, ranked behind a street that does have a 29D.  A number
+ *  the street does not carry at all leaves the hit as it is, but lays an
+ *  estimated point between its neighbours into it — see
+ *  geo_index_house_estimate().
  *
  *  The candidates are gathered by weight before they are ordered, and only a
  *  bounded sample of them — a place too light to reach that sample cannot be

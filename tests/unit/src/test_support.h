@@ -97,6 +97,10 @@ struct MiniPlace {
   /** ISO code of the country the place lies in, as the dump writes it; empty for
    *  none.  A place of kind PHOTON_PLACE_TYPE_COUNTRY is that country itself. */
   std::string country;
+  /** Where each of @c houses stands, in the same order, as latitude and longitude
+   *  × 10⁷.  Left empty, or shorter, every house without one stands on the
+   *  place's own point. */
+  std::vector<std::pair<int32_t, int32_t>> house_points;
 };
 
 /**
@@ -306,11 +310,13 @@ inline bool BuildMiniIndex(
         rank_of(&display_set, p.postcode), p.lat_e7, p.lon_e7, 1, &relaxed
     );
     if (document == GEO_RANK_NONE || document >= doc_set.document_count) continue;
-    for (const std::string &written : p.houses) {
-      uint32_t number = rank_of(&display_set, written);
+    for (size_t h = 0; h < p.houses.size(); ++h) {
+      uint32_t number = rank_of(&display_set, p.houses[h]);
       if (number == GEO_RANK_NONE) continue;
+      int32_t lat = h < p.house_points.size() ? p.house_points[h].first : p.lat_e7;
+      int32_t lon = h < p.house_points.size() ? p.house_points[h].second : p.lon_e7;
       if (house_collector_add(
-              &houses, document, &doc_set.documents[document], number, p.lat_e7, p.lon_e7, 1
+              &houses, document, &doc_set.documents[document], number, lat, lon, 1
           ) != ARNM_SUCCESS) {
         goto done;
       }

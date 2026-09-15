@@ -82,7 +82,18 @@ typedef struct GeoClient GeoClient;
  *  worth.  It reports whether the *place* carried a centroid; where a house
  *  number was found, the point is the house's own instead.  So @c has_point 0
  *  with a @c number is still a real position — the house's — while
- *  @c has_point 0 without one means 0/0 and nothing at all.
+ *  @c has_point 0 without one means 0/0 and nothing at all, unless the point
+ *  was estimated as below.
+ *
+ *  Where a number was asked for and the street does not carry it, the answer
+ *  stays the street — @c number NULL, as always — but its point is moved
+ *  between the neighbouring numbers on the same side of the street, where
+ *  those stand at most 20 numbers and about 300 m apart: *Schulstraße 17*
+ *  lies between the 15 and the 19 instead of in the middle of the street.
+ *  Measured on German houses of the planet left out one at a time, such a
+ *  point lies 6 m from the house in the median and within 29 m for nine in ten,
+ *  where the middle of the street lies 86 m off.  Where the neighbours say too
+ *  little, the point is the street's own as before.
  */
 typedef struct GeoAddress {
   const char *name;      /**< Street or place as written, or NULL. */

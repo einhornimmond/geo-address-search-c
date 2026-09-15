@@ -64,11 +64,21 @@ summarise what the commits show rather than what was noted at the time.
   - **A suffix no door carries falls back to the plain number** in front of it, and such a
     door ranks behind one that carries the number as it was asked for: `36B Avenue du
     Général Leclerc` puts the 36B in Le Bouscat before the 36 in Bordeaux.
-  - **Measured on the planet** over the 13 377 queries of the regression file, the drawn
+  - **A number the street does not carry moves the point, not the answer.** The street
+    comes back without a number as before, but its point lies between the nearest numbers
+    below and above on the same side of the street, where those are at most 20 numbers and
+    about 300 m apart, instead of in the middle of the street. Left out one at a time,
+    50 852 German houses of the planet were estimated for 77 %, 6 m off in the median and
+    within 29 m for nine in ten, where the middle of the street lies 86 m off in the median.
+    geocoder-tester's French addresses confirm it where OpenStreetMap lacks the door: 13
+    more land within their 100 m. `geo_index_house_estimate()` is the estimate, `GeoHit`
+    carries its point, and `client.h` describes the point in `GeoAddress`; no field of
+    `GeoAddress` was added.
+  - **Measured on the planet** over the 13 380 queries of the regression file, the drawn
     queries and the external suites: no query ranks worse. geocoder-tester's German suite
-    passes 80.0 % instead of 78.2 %; 123 addresses such as `31BIS Avenue Victor Hugo` or
+    passes 80.0 % instead of 78.2 %; 126 addresses such as `31BIS Avenue Victor Hugo` or
     `Anderter Straße 1-3`, counted as absent before because the search could not name their
-    door, come first, and 46 more rank higher. Overall 73.6 % pass instead of 72.8 %. On 200
+    door, come first, and 59 more rank higher. Overall 73.8 % pass instead of 72.8 %. On 200
     ranges drawn from the German dump, 188 come first as written instead of none, and 183
     instead of 28 when only their first number is typed; on 200 numbers with a slash, 176
     instead of none. No format change and no rebuild.
