@@ -7,3 +7,6 @@ perf.map
 .env
 .codewhale
 doc
+__pycache__
+tests/eval/external/build
+tests/eval/external/download

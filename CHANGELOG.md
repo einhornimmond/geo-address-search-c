@@ -19,6 +19,25 @@ summarise what the commits show rather than what was noted at the time.
 
 ## Unreleased
 
+### Added
+
+- **`zig build eval` and `tests/eval/`: a fixed set of queries to measure the search
+  against.** 589 queries drawn from the German dump with a fixed seed plus 21 regression
+  queries kept by hand, each asked with a map position and the last word read as a beginning,
+  as production asks. `geo_eval` reports how often the expected place comes first, among the
+  first three and among the first ten, per category, prints what went wrong with
+  `--failures`, and writes per-query ranks for diffing two runs with `--ranks`. Baseline
+  numbers are in the Readme, under *Measuring search quality*.
+- **`tests/eval/external/`: geocoder-tester's suites and Nominatim's search features, asked
+  of the index.** `fetch.sh` downloads both at pinned commits — nothing of them is committed —
+  and two converters turn them into query files: 12 732 queries from geocoder-tester, 21 from
+  the 191 scenarios of Nominatim's BDD search features, with every test they pass over counted
+  by reason. `geo_eval` reads query files by their header now, so a file carries only the
+  columns it needs, and learned what those suites expect: street, town and postcode besides
+  name and number, alternatives separated by `|`, a coordinate only where one is given, a
+  language, a per-test limit reported as the *pass* rate, loose comparison of texts, and
+  `--absent` to list the places the index does not hold.
+
 ### Fixed
 
 - **The same dump builds the same index, whatever the thread count.** Two builds of the
