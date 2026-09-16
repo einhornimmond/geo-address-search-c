@@ -452,6 +452,24 @@ TEST(DocCollectorMerge, ACountyOfTheTownsNameFarAwayStaysApart) {
   doc_set_free(&set);
 }
 
+TEST(DocCollectorMerge, TheDatelineDoesNotKeepATownFromItsLand) {
+  // a town just east of the 180th meridian and its boundary just west of it,
+  // 180 m apart the short way and nearly the whole world apart the long way
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, -16.8000, -179.9990, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 5000),
+           {1}},
+          {Place(10, -16.8000, 179.9993, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_ADMIN_AREA, 9000),
+           {2}},
+      }
+  );
+  ASSERT_EQ(set.document_count, 1u);
+  EXPECT_EQ(set.documents[0].lon_e7, (int32_t)(-179.9990 * 1e7)) << "standing where the town is";
+  doc_set_free(&set);
+}
+
 TEST(DocCollectorMerge, ABoundaryJoinsTheNearerOfTwoTowns) {
   DocSet set{};
   MergeAll(

@@ -235,11 +235,16 @@ static bool same_place(const MergeKey *a, const MergeKey *b) {
  *  Görlitz, the Landkreis Meißen — lies eight kilometres and more away. */
 #define MERGE_TOWN_REACH_M 5000.0
 
-/** Metres between two records' points, on a sphere the size of the Earth. */
+/** Metres between two records' points, on a sphere the size of the Earth, the
+ *  shorter way round it — two points either side of the 180th meridian lie a few
+ *  hundred metres apart, not most of the world. */
 static double gap_m(const GeoDocument *a, const GeoDocument *b) {
   double lat = (a->lat_e7 + (double)b->lat_e7) / 2.0e7 * (3.141592653589793 / 180.0);
   double north = (a->lat_e7 - (double)b->lat_e7) / 1.0e7 * 111195.0;
-  double east = (a->lon_e7 - (double)b->lon_e7) / 1.0e7 * 111195.0 * cos(lat);
+  double degrees_east = (a->lon_e7 - (double)b->lon_e7) / 1.0e7;
+  if (degrees_east > 180.0) degrees_east -= 360.0;
+  if (degrees_east < -180.0) degrees_east += 360.0;
+  double east = degrees_east * 111195.0 * cos(lat);
   return sqrt(north * north + east * east);
 }
 
