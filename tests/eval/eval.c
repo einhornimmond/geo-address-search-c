@@ -385,7 +385,8 @@ static bool is_one_of(const char *text, size_t size, const char *alternatives) {
   }
 }
 
-/** Does every word of @p few stand among the words of @p many, both folded already? */
+/** Does every word of @p few stand among the words of @p many, both folded already?
+ *  Vacuously so where @p few holds no word — see town_is_one_of() for the guard. */
 static bool words_within(const char *few, const char *many) {
   for (const char *word = few; *word;) {
     size_t length = strcspn(word, " ");
@@ -421,13 +422,18 @@ static bool words_within(const char *few, const char *many) {
 static bool town_is_one_of(const char *text, size_t size, const char *alternatives) {
   if (!text || !size) return false;
   char folded[512], wanted[512];
-  fold_loose(text, size, folded, sizeof(folded));
+  size_t folded_size = fold_loose(text, size, folded, sizeof(folded));
   const char *start = alternatives;
   for (;;) {
     const char *bar = strchr(start, '|');
     size_t length = bar ? (size_t)(bar - start) : strlen(start);
-    fold_loose(start, length, wanted, sizeof(wanted));
-    if (words_within(wanted, folded) || words_within(folded, wanted)) return true;
+    size_t wanted_size = fold_loose(start, length, wanted, sizeof(wanted));
+    /* no words stand in every town — an empty alternative, or a name that folds
+       to nothing but punctuation, holds against nothing at all */
+    if (folded_size && wanted_size &&
+        (words_within(wanted, folded) || words_within(folded, wanted))) {
+      return true;
+    }
     if (!bar) return false;
     start = bar + 1;
   }
