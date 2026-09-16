@@ -40,6 +40,33 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **A town stands where the town is.** OpenStreetMap describes most towns twice — the point
+  tagged `place=city`, `town` or `village`, and the boundary of the land the town governs —
+  and the dump hands on both under one name. The boundary is the heavier of the two and its
+  centroid is the middle of the land, so `Würzburg` answered with a point 1.9 km from the
+  market square, `Erlangen`, `Fürth` and `Straubing` with theirs, and `Heusenstamm`,
+  `Hungen`, `Den Haag` and `Halle (Westf.)` came back twice, once as the town and once as its
+  municipality. The index has to be rebuilt to benefit.
+  - **The parser reads `osm_key` and `osm_value`** and gives each entry a role: a settlement
+    (`place=city`, `town`, `village`), the land a town governs (`boundary=administrative`,
+    `place=municipality`), or neither. `GeoDocument.flags` carries it as
+    `GEO_DOCUMENT_SETTLEMENT` and `GEO_DOCUMENT_ADMIN_AREA`; an index built before carries
+    neither bit, and the file format is unchanged.
+  - **Before the documents are merged, a boundary joins the nearest settlement of its name
+    within 5 km**: it takes the settlement's point, town and kind — and its postal code where
+    the settlement has one, since the boundary of Paris carries all twenty and its point none
+    — and the merge makes the two one document, as heavy as the heavier, answering to the
+    words of both. Measured on the German dump, a municipality's centroid lies 0.6 to 2.5 km
+    from its town, while a county sharing its town's name lies eight kilometres and more out
+    — the Landkreise Görlitz and Meißen stay places of their own. The Landkreis Zwickau, 2.8 km
+    from the town, joins it.
+  - **Measured on the planet**, 45 965 documents fewer (34 604 821). Over 13 382 queries, 20
+    rank higher and none lower: geocoder-tester's German suite passes 85.7 % instead of
+    80.3 %, first place 84.0 % instead of 78.7 % — `Würzburg`, `Erlangen`, `Fürth` and
+    `Straubing` come first where they stood outside the first ten. Across 901 German queries
+    the answers repeating a line fall from 114 to 73 asked from nowhere, and from 37 to 25
+    asked with a position.
+
 - **A place is answered once, and a place without a name comes last.** The dump files a town
   as a town and again as a district, and the nameless address blocks of a postal code as a
   place each. `Kirchheim bei München` therefore answered with four identical lines — an empty
@@ -241,13 +268,14 @@ summarise what the commits show rather than what was noted at the time.
     change, 30 of them from a miss to a hit; the rest had been counted as *absent* and are
     now counted as the misses they are.
 
-- **The place cache moves to layout 4.** A document record carries the batch it arrived in,
+- **The place cache moves to layout 5.** A document record carries the batch it arrived in,
   four bytes, so that a pass replayed from the cache joins its documents in dump order too,
-  and the two letters of its country code, so that the replay writes the country words as
-  well. The layout is part of the stamp a cache is sealed with and of every file header, so
-  a cache of layout 2 — or 3, left by a build between releases — does not answer for the
-  dump: the build removes it before measuring the room and writes layout 4 where the room
-  suffices. Where it does not, the build walks the dump three times without a cache; a cache
+  the two letters of its country code, so that the replay writes the country words as well,
+  and one byte for the role its entry plays, so that the replay joins a town's boundary into
+  the town as a pass over the dump does. The layout is part of the stamp a cache is sealed
+  with and of every file header, so a cache of layout 2 — or 3 or 4, left by a build between
+  releases — does not answer for the dump: the build removes it before measuring the room and
+  writes layout 5 where the room suffices. Where it does not, the build walks the dump three times without a cache; a cache
   directory that cannot be made or written into stops the build, as it always did.
 - **Joining the documents holds four more bytes per segment** while it sorts them — on the
   2026 planet dump with its 64 M segments about 250 MB, for the length of the join.

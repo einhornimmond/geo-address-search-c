@@ -238,6 +238,35 @@ TEST(PlaceCache, ADocumentKeepsItsCountry) {
   place_cache_reader_close(&reader);
 }
 
+TEST(PlaceCache, ADocumentKeepsItsRole) {
+  // the merge joins a town's boundary into the town by this, and a build
+  // replayed from the cache has to join the same records as one over the dump
+  TempDir directory{"role"};
+  PlaceCacheWriter writer{};
+  ASSERT_EQ(place_cache_writer_open(&writer, directory.c_str(), 0), ARNM_SUCCESS);
+  PhotonPlace town = Street("Würzburg", "", "");
+  town.typeEnum = PHOTON_PLACE_TYPE_CITY;
+  town.role = PHOTON_PLACE_ROLE_SETTLEMENT;
+  PhotonPlace land = Street("Würzburg", "", "");
+  land.typeEnum = PHOTON_PLACE_TYPE_COUNTY;
+  land.role = PHOTON_PLACE_ROLE_ADMIN_AREA;
+  ASSERT_EQ(place_cache_write(&writer, &town, 0), ARNM_SUCCESS);
+  ASSERT_EQ(place_cache_write(&writer, &land, 0), ARNM_SUCCESS);
+  place_cache_writer_close(&writer);
+
+  PlaceCacheReader reader{};
+  PhotonPlace back{};
+  ASSERT_EQ(
+      place_cache_reader_open(&reader, directory.c_str(), 0, PLACE_CACHE_DOCUMENTS), ARNM_SUCCESS
+  );
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
+  EXPECT_EQ(back.role, PHOTON_PLACE_ROLE_SETTLEMENT);
+  EXPECT_EQ(Value(back.own_name), "Würzburg") << "and the fields behind it are still in step";
+  ASSERT_TRUE(place_cache_read(&reader, &back, nullptr));
+  EXPECT_EQ(back.role, PHOTON_PLACE_ROLE_ADMIN_AREA);
+  place_cache_reader_close(&reader);
+}
+
 TEST(PlaceCache, AbsentAndEmptyStayApart) {
   TempDir directory{"absent"};
   PlaceCacheWriter writer{};

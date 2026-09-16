@@ -71,6 +71,17 @@ typedef struct GeoDocument {
 /** Set when the document carries a usable coordinate. */
 #define GEO_DOCUMENT_HAS_POINT 0x01u
 
+/** Set on a record the dump drew from the point a town is known by —
+ *  `place=city`, `town` or `village`; see PhotonPlaceRole.  Written into the
+ *  file with the rest of the flags, and 0 in an index built before it. */
+#define GEO_DOCUMENT_SETTLEMENT 0x02u
+
+/** Set on a record the dump drew from the boundary of the land a town governs —
+ *  `boundary=administrative` or `place=municipality`.  Such a record is joined
+ *  into the settlement of its name nearby while the documents are merged, so
+ *  what survives into a file carries it only where no settlement stood near. */
+#define GEO_DOCUMENT_ADMIN_AREA 0x04u
+
 /**
  * @brief One place as one language writes it, in the file.
  *
@@ -426,6 +437,21 @@ uint32_t doc_set_find_street(
  *  document, and their centres average into the middle of the whole street.
  *  Records without a name never merge — namelessness is not a thing they have
  *  in common.
+ *
+ *  ### Why a town's boundary joins the town
+ *
+ *  A town arrives twice as often as not: as the point tagged `place=city`,
+ *  `town` or `village` where the town is, and as the boundary of the land it
+ *  governs — see @ref GEO_DOCUMENT_ADMIN_AREA.  The two share a name and little
+ *  else: the boundary is heavier, files a county-level city under another kind,
+ *  and its centroid lies in the middle of the land, 1.9 km from Würzburg's
+ *  market square.  So before anything is merged, a boundary takes the place,
+ *  town and kind of the nearest settlement of its name within 5 km — and its
+ *  postal code where the settlement has one — and the two become one document
+ *  that stands where the town is, weighs what the heavier weighed and answers
+ *  to the words of both.  A county that
+ *  merely shares its town's name — the Landkreis Görlitz, eleven kilometres out
+ *  — stays apart.
  *
  *  ### How the postings survive it
  *

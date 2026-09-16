@@ -414,6 +414,7 @@ arnm_result place_cache_write(PlaceCacheWriter *writer, const PhotonPlace *place
       memcpy(code, place->country_code, 2);
     }
     put_bytes(&builder, code, 2);
+    put_u8(&builder, place->role);
     put_string(&builder, place->own_name);
     put_string(&builder, place->city);
     put_string(&builder, place->postcode);
@@ -634,6 +635,7 @@ bool place_cache_read(PlaceCacheReader *reader, PhotonPlace *out, uint32_t *batc
       reader->country_code[2] = '\0';
       out->country_code = reader->country_code;
     }
+    out->role = take_u8(&cursor);
     out->own_name = take_string(&cursor);
     out->city = take_string(&cursor);
     out->postcode = take_string(&cursor);

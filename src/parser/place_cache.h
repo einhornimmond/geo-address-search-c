@@ -45,7 +45,8 @@
  *
  *  Only what @c collect_document and @c collect_house read.  A house record
  *  carries four texts and a point; a document record adds its own name, its
- *  weight, its kind, the search texts, its country code and the batch it arrived in.  Everything
+ *  weight, its kind, the search texts, its country code, its role and the batch it
+ *  arrived in.  Everything
  *  else the dump offers — the thirty translated names of every ancestor, the
  *  object ids, the categories — went into the vocabulary in the first pass and
  *  is never asked for again.
@@ -74,8 +75,9 @@
 
 /** Raise this when a record gains, loses or reorders a field.
  *  3: a document record carries the batch its entry arrived in.
- *  4: … and the country code of its entry. */
-#define PLACE_CACHE_LAYOUT 4u
+ *  4: … and the country code of its entry.
+ *  5: … and the role its entry plays, a settlement or the land it governs. */
+#define PLACE_CACHE_LAYOUT 5u
 
 /** Most parser threads a build may use, and so most files a cache may hold.
  *  Removal reaches this far whatever this run was asked for — otherwise a cache

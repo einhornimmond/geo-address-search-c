@@ -125,6 +125,25 @@ int photon_languages_index(const PhotonLanguages *languages, const char *tag);
 enum { PHOTON_PLACE_SEARCH_MAX = 128 };
 
 /**
+ * @brief What an entry is on the ground, as far as telling a town from the land
+ *        it governs goes.
+ *
+ *  A town comes out of OpenStreetMap twice as often as not: once as the point
+ *  that carries its name — `place=city`, `town`, `village` — and once as the
+ *  boundary of its municipality — `boundary=administrative`, or
+ *  `place=municipality` where the boundary is tagged as a place.  Both carry the
+ *  same name, and the boundary's centroid lies in the middle of its land, which
+ *  in Würzburg is 1.9 km from the market square.  The build joins the two — see
+ *  doc_collector_merge() — and needs to know which of them is which.
+ */
+typedef enum PhotonPlaceRole {
+  PHOTON_PLACE_ROLE_NONE = 0,       /**< Neither, or not said. */
+  PHOTON_PLACE_ROLE_SETTLEMENT = 1, /**< `place=city`, `town` or `village`: where the town is. */
+  PHOTON_PLACE_ROLE_ADMIN_AREA = 2  /**< `boundary=administrative` or `place=municipality`:
+                                         the land it governs. */
+} PhotonPlaceRole;
+
+/**
  * @brief One Photon Place content entry, split into answer and index.
  *
  *  Every string points into the parsed JSON document and is valid only
@@ -152,6 +171,7 @@ typedef struct PhotonPlace {
   int32_t lon_e7;           /**< Longitude × 10⁷; meaningless unless @c has_point. */
   int32_t lat_e7;           /**< Latitude × 10⁷; meaningless unless @c has_point. */
   int has_point;            /**< A centroid was present. */
+  uint8_t role;             /**< A @ref PhotonPlaceRole, from `osm_key` and `osm_value`. */
   uint8_t search_count;     /**< How many of @c search are filled. */
   uint8_t search_dropped;   /**< How many did not fit; 0 in sane data. */
   uint8_t variant_count;    /**< How many of @c variants are filled. */
