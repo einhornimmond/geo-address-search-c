@@ -37,6 +37,15 @@ it. The dump files a holiday camp with a number under `other` and a shipwreck wi
 under `house`. What carries no number and belongs to no level of the address hierarchy is
 a pond or a cycleway, and stays out.
 
+A town is one place, too, however often the dump names it. OpenStreetMap describes most
+towns twice — the point tagged `place=city`, `town` or `village` where the town is, and the
+boundary of the land it governs — and the boundary's centroid is the middle of that land:
+Würzburg's lies 1.9 km from its market square. So the build joins a boundary
+(`boundary=administrative`, `place=municipality`) into the nearest settlement of the same
+name within 5 km: one document, at the settlement's point, as heavy as the heavier of the two,
+found by the words of both. A county that only shares its town's name lies farther out and
+stays a place of its own.
+
 ## Usage
 
 ```sh
@@ -473,7 +482,7 @@ A place the index does not hold at all — a street renamed between the dump the
 from and the one the index was built from — is reported as *absent* and left out of the
 rates; `--absent` lists them.
 
-Measured on the 2026 planet index, rebuilt with the country words:
+Measured on the 2026 planet index, rebuilt with each town joined to its boundary:
 
 | group | queries | absent | top 1 | top 3 | top 10 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -481,8 +490,8 @@ Measured on the 2026 planet index, rebuilt with the country words:
 | street | 86 | 0 | 93.0 % | 100 % | 100 % |
 | town | 160 | 0 | 60.6 % | 66.9 % | 69.4 % |
 | district | 40 | 2 | 81.6 % | 100 % | 100 % |
-| regression | 40 | 0 | 97.5 % | 97.5 % | 97.5 % |
-| **all** | **629** | **2** | **81.8 %** | **85.6 %** | **86.6 %** |
+| regression | 44 | 0 | 97.7 % | 97.7 % | 97.7 % |
+| **all** | **633** | **2** | **81.9 %** | **85.7 %** | **86.7 %** |
 
 Addresses in full, abbreviated, without postcode, by quarter and while typing all come first
 every time; the address group loses its points on the swapped letters alone (26 %). Towns lose
@@ -516,7 +525,7 @@ Measured on the same index, France, Germany and Nominatim's Liechtenstein:
 | suite | queries | absent | pass | top 3 | top 10 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | geocoder-tester, France | 11 886 | 5 238 | 74.2 % | 76.8 % | 78.0 % |
-| geocoder-tester, Germany | 318 | 18 | 80.3 % | 86.3 % | 89.7 % |
+| geocoder-tester, Germany | 318 | 18 | 85.7 % | 89.0 % | 91.3 % |
 | Nominatim | 21 | 4 | 76.5 % | 76.5 % | 82.4 % |
 
 Nearly half the French tests are absent: they come from the BAN address database, which
@@ -525,9 +534,9 @@ knows more house numbers than OpenStreetMap does.
 What they found that the drawn queries did not: a house number whose letter stands apart —
 `Osterstr. 42 A` — found nothing at all, and a range or a house behind a house — `1-3`,
 `12/1` — was cut into two numbers (both fixed since); a street still being typed in front of
-its town — `Hafenga Ulm` — is not read as a beginning; and cities stand 1.7 to 2.6 km from
-where the suites expect them (Kassel, Würzburg, Erlangen, Fürth), the centre of their
-boundary rather than their place node.
+its town — `Hafenga Ulm` — is not read as a beginning; and cities stood 1.7 to 2.6 km from
+where the suites expect them (Würzburg, Erlangen, Fürth), the centre of their boundary rather
+than their place node (fixed since).
 
 ## Releases
 

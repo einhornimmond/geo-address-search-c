@@ -4,6 +4,7 @@
 
 #include "parser/json_parse.h" /* for PhotonPlaceType — a document keeps the kind it came from */
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,6 +228,104 @@ static bool same_place(const MergeKey *a, const MergeKey *b) {
          a->type == b->type;
 }
 
+/** Farthest the boundary of a town's land may stand from the settlement of its
+ *  name and still be that settlement's, in metres.  Measured on the German dump,
+ *  a municipality's centroid lies 0.6 to 2.5 km from the town it governs in
+ *  nearly every case, while a county that shares its town's name — the Landkreis
+ *  Görlitz, the Landkreis Meißen — lies eight kilometres and more away. */
+#define MERGE_TOWN_REACH_M 5000.0
+
+/** Metres between two records' points, on a sphere the size of the Earth, the
+ *  shorter way round it — two points either side of the 180th meridian lie a few
+ *  hundred metres apart, not most of the world. */
+static double gap_m(const GeoDocument *a, const GeoDocument *b) {
+  double lat = (a->lat_e7 + (double)b->lat_e7) / 2.0e7 * (3.141592653589793 / 180.0);
+  double north = (a->lat_e7 - (double)b->lat_e7) / 1.0e7 * 111195.0;
+  double degrees_east = (a->lon_e7 - (double)b->lon_e7) / 1.0e7;
+  if (degrees_east > 180.0) degrees_east -= 360.0;
+  if (degrees_east < -180.0) degrees_east += 360.0;
+  double east = degrees_east * 111195.0 * cos(lat);
+  return sqrt(north * north + east * east);
+}
+
+/**
+ * @brief Join the boundary of a town's land into the point the town is known by.
+ *
+ *  OpenStreetMap describes a town twice as often as not: a point tagged
+ *  `place=city`, `town` or `village` where the town is, and the boundary of the
+ *  municipality it governs.  Both reach the dump under the same name, and the
+ *  boundary's centroid is the middle of its land — for Würzburg a point 1.9 km
+ *  from the market square, for Heusenstamm 1.8 km.  Kept apart, the heavier of
+ *  the two is the boundary, and a search answers with the wrong point, or with
+ *  the town twice.
+ *
+ *  So a record drawn from a boundary takes the place, the town and the kind of
+ *  the nearest settlement of its name within
+ *  @ref MERGE_TOWN_REACH_M, and is then merged into it like any record of the
+ *  same place: one document, standing where the town is, as heavy as the
+ *  heavier of the two, answering to the words of both.  The postal code is the
+ *  settlement's where it has one and the boundary's where it has none.  A
+ *  boundary with no such settlement near stays what it was.
+ *
+ *  The keys are sorted by name first, so all records of one name stand side by
+ *  side; ties between two settlements equally near go to the one sorted first,
+ *  which the dump's order fixes.
+ *
+ *  @return How many records were rewritten.  Their keys changed, so the caller
+ *          sorts again where this is not 0.
+ *
+ *  @whisper A town is where its name is spoken, not in the middle of its fields
+ */
+static size_t join_land_to_its_town(GeoDocument *records, MergeKey *keys, size_t record_count) {
+  size_t rewritten = 0;
+  for (size_t i = 0; i < record_count;) {
+    size_t end = i + 1;
+    while (end < record_count && keys[end].name == keys[i].name) { ++end; }
+    if (keys[i].name == GEO_RANK_NONE || end - i < 2) {
+      i = end;
+      continue;
+    }
+    for (size_t a = i; a < end; ++a) {
+      GeoDocument *land = &records[keys[a].record];
+      if (!(land->flags & GEO_DOCUMENT_ADMIN_AREA) || !(land->flags & GEO_DOCUMENT_HAS_POINT)) {
+        continue;
+      }
+      const GeoDocument *town = NULL;
+      double nearest = MERGE_TOWN_REACH_M;
+      for (size_t s = i; s < end; ++s) {
+        const GeoDocument *candidate = &records[keys[s].record];
+        if (!(candidate->flags & GEO_DOCUMENT_SETTLEMENT) ||
+            !(candidate->flags & GEO_DOCUMENT_HAS_POINT)) {
+          continue;
+        }
+        double gap = gap_m(land, candidate);
+        if (gap < nearest || (!town && gap <= nearest)) {
+          nearest = gap;
+          town = candidate;
+        }
+      }
+      if (!town) continue;
+
+      land->lat_e7 = town->lat_e7;
+      land->lon_e7 = town->lon_e7;
+      land->city_rank = town->city_rank;
+      /* The point of a town seldom carries a postal code and its boundary often
+         carries all of them — Paris answers with 75001 to 75020 through its
+         boundary alone.  The merge shows whichever record has one, so the
+         boundary keeps its own where the town brings none. */
+      if (town->postcode_rank != GEO_RANK_NONE) land->postcode_rank = town->postcode_rank;
+      land->type = town->type;
+      land->flags = town->flags;
+      keys[a].city = land->city_rank;
+      keys[a].postcode = land->postcode_rank;
+      keys[a].type = land->type;
+      ++rewritten;
+    }
+    i = end;
+  }
+  return rewritten;
+}
+
 /** Which thread a flattened record came from — the ranges are contiguous. */
 static size_t thread_of(const uint32_t *base, size_t collector_count, uint32_t record) {
   size_t thread = 0;
@@ -374,6 +473,12 @@ arnm_result doc_collector_merge(
     geo_batch_vec_free(&collectors[c]->batches);
   }
   qsort(keys, record_count, sizeof(*keys), compare_merge_key);
+
+  /* --- a town's boundary joins the town before anything is merged, so that the
+         merge below finds the two standing on one spot --- */
+  if (join_land_to_its_town(records, keys, record_count)) {
+    qsort(keys, record_count, sizeof(*keys), compare_merge_key);
+  }
 
   /* --- one document per place: first the segments of one key, then the
          neighbours that describe the same spot under another kind --- */

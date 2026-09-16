@@ -5,7 +5,7 @@
 # planet index for the place meant (Würzburg the city, not the Landkreis), and the
 # radius is as wide as the drawn queries allow for the same kind of place.
 category	query	prefix	lat	lon	expect_name	expect_number	expect_lat	expect_lon	radius_m	context
-regression.city_from_afar	Würzburg	1	52.520000	13.405000	Würzburg		49.7780356	9.9434769	8000	a city filed as a county, typed in Berlin
+regression.city_from_afar	Würzburg	1	52.520000	13.405000	Würzburg		49.7933723	9.9309779	8000	a city filed as a county, typed in Berlin
 regression.city_from_afar	München	1	52.520000	13.405000	München		48.1371079	11.5753822	8000	nearby Münchener Straße must not hide it
 regression.city_from_afar	Hamburg	1	48.137400	11.575500	Hamburg		53.5501721	10.0013165	8000	nearby Hamburger Straße must not hide it
 regression.city_from_afar	Halle	1	52.520000	13.405000	Halle (Saale)		51.4824354	11.9712985	8000	a qualifier behind the name, Hallesches Ufer nearby
@@ -18,14 +18,14 @@ regression.city_from_afar	Dresden 	1	50.937500	6.960300	Dresden		51.0493286	13.7
 regression.city_from_afar	Köln	1	53.551100	9.993700	Köln		50.9383610	6.9599740	8000	typed in Hamburg
 regression.city_from_afar	Den Haag	1	48.137400	11.575500	Den Haag		52.0749456	4.2696802	8000	one word in front of the name
 regression.city_from_afar	Bad Tölz	1	52.520000	13.405000	Bad Tölz		47.7610013	11.5596070	8000	a small town, named in full
-regression.city_itself	Würzburg	1	49.791300	9.953400	Würzburg		49.7780356	9.9434769	8000	standing in the city
+regression.city_itself	Würzburg	1	49.791300	9.953400	Würzburg		49.7933723	9.9309779	8000	standing in the city
 regression.city_itself	Kirchheim bei München	1	48.137400	11.575500	Kirchheim bei München		48.1757480	11.7562190	8000	nameless streets of its postcode used to come first
 regression.district_nearby	Mitte	1	52.520000	13.405000	Mitte		52.5178855	13.4040601	3000	not the region Mitte-Ost in Burkina Faso
 regression.address	Domstraße 3 Würzburg	1	52.520000	13.405000	Domstraße	3	49.7933475	9.9289164	150	an address typed from afar
 regression.address	Domstraße 3 Würzbrug	1	49.791300	9.953400	Domstraße	3	49.7933475	9.9289164	150	a typo in the town, the map already on it
 regression.address	Schulstraße 3 Würzburg	1	49.791300	9.953400	Schulstraße	3	49.7200992	9.9638234	150	not the Schulstraße in Hausen bei Würzburg
 regression.street	Marienpl	1	48.137400	11.575500	Marienplatz		48.1371077	11.5760006	3000	still being typed
-regression.city_typing	Würzb	1	52.520000	13.405000	Würzburg		49.7780356	9.9434769	8000	a beginning names no town yet — known gap
+regression.city_typing	Würzb	1	52.520000	13.405000	Würzburg		49.7933723	9.9309779	8000	a beginning names no town yet — known gap
 regression.country_named	Marienplatz München Deutschland	1	48.137400	11.575500	Marienplatz		48.1371077	11.5760006	3000	no place carries its country's name
 regression.country_named	Domstraße 3, 97070 Würzburg, Deutschland	1	52.520000	13.405000	Domstraße	3	49.7933475	9.9289164	150	an address pasted with its country
 regression.country_named	Berlin Germany	1	48.137400	11.575500	Berlin		52.5173885	13.3951309	8000	the country in another language of the index
@@ -45,3 +45,7 @@ regression.house_range	Woltmershauser Straße 161 Bremen	1	52.520000	13.405000	W
 regression.house_range	Heumadener Straße 76/1 Ostfildern	1	48.776000	9.180000	Heumadener Straße	76/1				the house behind the 76, not the 76
 regression.repeats	Heusenstamm	1	50.054700	8.799300	Heusenstamm		50.0547206	8.7993284	800	one town, written down twice 1.7 km apart: the nearer record answers
 regression.repeats	Kirchheim bei München	1	48.137400	11.575500	Kirchheim bei München		48.1757480	11.7562190	3000	not the nameless address blocks of its postcode
+regression.city_position	Würzburg	1	52.520000	13.405000	Würzburg		49.7933723	9.9309779	800	the market square, not the middle of the city's land 1.9 km off
+regression.city_position	Erlangen	1	52.520000	13.405000	Erlangen		49.5977469	11.0037372	800	the town, not its boundary filed as a county
+regression.city_position	Hungen	1	52.520000	13.405000	Hungen		50.4752473	8.9009917	800	the town, not the municipality around it
+regression.city_position	Den Haag	1	48.137400	11.575500	Den Haag		52.0799838	4.3113461	8000	answered once, not twice

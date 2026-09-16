@@ -27,6 +27,7 @@ struct Parsed {
   double importance = 0.0;
   int32_t lat_e7 = 0, lon_e7 = 0;
   int has_point = 0;
+  uint8_t role = PHOTON_PLACE_ROLE_NONE;
   uint8_t search_dropped = 0;
   /** One entry per language the build asked for beside the default, by tag. */
   struct Reading {
@@ -54,6 +55,7 @@ int Capture(const PhotonPlace *place, void *user) {
   p.lat_e7 = place->lat_e7;
   p.lon_e7 = place->lon_e7;
   p.has_point = place->has_point;
+  p.role = place->role;
   p.search_dropped = place->search_dropped;
   for (uint8_t i = 0; i < place->search_count; ++i) p.search.push_back(Str(place->search[i]));
   for (uint8_t i = 0; i < place->variant_count; ++i) {
@@ -136,6 +138,33 @@ TEST(JsonParseRoles, ReadsAStreetWithAllItsFields) {
   EXPECT_EQ(p.postcode, "80331");
   EXPECT_EQ(p.country, "DE");
   EXPECT_NEAR(p.importance, 0.5, 1e-9);
+}
+
+/** One town entry tagged @p tags — `"osm_key":…,"osm_value":…`, or nothing. */
+std::string TownTaggedAs(const std::string &tags) {
+  return R"({"type":"Place","content":[{"address_type":"city",)" + tags +
+         R"("name":{"name":"Würzburg"},"centroid":[9.93,49.79]}]})";
+}
+
+TEST(JsonParseRoles, TheTagSaysWhetherAnEntryIsATownOrItsLand) {
+  const std::pair<std::string, uint8_t> cases[] = {
+      {R"("osm_key":"place","osm_value":"city",)", PHOTON_PLACE_ROLE_SETTLEMENT},
+      {R"("osm_key":"place","osm_value":"town",)", PHOTON_PLACE_ROLE_SETTLEMENT},
+      {R"("osm_value":"village","osm_key":"place",)", PHOTON_PLACE_ROLE_SETTLEMENT},
+      {R"("osm_key":"boundary","osm_value":"administrative",)", PHOTON_PLACE_ROLE_ADMIN_AREA},
+      {R"("osm_key":"place","osm_value":"municipality",)", PHOTON_PLACE_ROLE_ADMIN_AREA},
+      // a hamlet has no boundary of its own name, a county is not a town's land
+      {R"("osm_key":"place","osm_value":"hamlet",)", PHOTON_PLACE_ROLE_NONE},
+      {R"("osm_key":"place","osm_value":"county",)", PHOTON_PLACE_ROLE_NONE},
+      {R"("osm_key":"boundary","osm_value":"political",)", PHOTON_PLACE_ROLE_NONE},
+      {R"("osm_key":"placed","osm_value":"city",)", PHOTON_PLACE_ROLE_NONE},
+      {"", PHOTON_PLACE_ROLE_NONE},
+  };
+  for (const auto &[tags, role] : cases) {
+    std::vector<Parsed> got = Parse(TownTaggedAs(tags));
+    ASSERT_EQ(got.size(), 1u) << tags;
+    EXPECT_EQ(got[0].role, role) << tags;
+  }
 }
 
 TEST(JsonParseRoles, ReadsTheCentroidAsFixedPoint) {

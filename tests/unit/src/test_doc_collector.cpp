@@ -357,6 +357,161 @@ TEST(DocCollectorMerge, ABatchMayNotGoBackBehindTheOneBeforeIt) {
   doc_collector_free(&collector);
 }
 
+namespace {
+
+/** A town-level record at a point, playing @p role — see GEO_DOCUMENT_SETTLEMENT. */
+GeoDocument Place(
+    uint32_t name, double lat, double lon, uint8_t type, unsigned role, uint16_t weight
+) {
+  GeoDocument d =
+      Doc(name, GEO_RANK_NONE, GEO_RANK_NONE, (int32_t)(lat * 1e7), (int32_t)(lon * 1e7));
+  d.type = type;
+  d.flags = (uint8_t)(GEO_DOCUMENT_HAS_POINT | role);
+  d.importance = weight;
+  return d;
+}
+
+/** Merge @p records, each with the words beside it, in one collector. */
+void MergeAll(
+    DocSet *set, const std::vector<std::pair<GeoDocument, std::vector<uint32_t>>> &records
+) {
+  DocCollector collector{};
+  ASSERT_EQ(doc_collector_init(&collector), ARNM_SUCCESS);
+  for (const auto &[record, words] : records) {
+    uint32_t number = 0;
+    ASSERT_EQ(doc_collector_add_document(&collector, &record, 0, &number), ARNM_SUCCESS);
+    for (uint32_t word : words)
+      ASSERT_EQ(doc_collector_add_posting(&collector, word), ARNM_SUCCESS);
+  }
+  DocCollector *list[1] = {&collector};
+  ASSERT_EQ(doc_collector_merge(set, list, 1, 8, 0), ARNM_SUCCESS);
+  doc_collector_free(&collector);
+}
+
+} // namespace
+
+TEST(DocCollectorMerge, ATownsBoundaryJoinsTheTownItGoverns) {
+  // Würzburg: the city's point on the market square, and the boundary of the
+  // city's land, 1.9 km off and more than three times as heavy
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, 49.7934, 9.9310, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 12000), {1}},
+          {Place(10, 49.7780, 9.9435, PHOTON_PLACE_TYPE_COUNTY, GEO_DOCUMENT_ADMIN_AREA, 44000),
+           {2}},
+      }
+  );
+  ASSERT_EQ(set.document_count, 1u) << "one town, not the town and its land";
+  const GeoDocument &town = set.documents[0];
+  EXPECT_EQ(town.lat_e7, (int32_t)(49.7934 * 1e7)) << "standing where the town is";
+  EXPECT_EQ(town.lon_e7, (int32_t)(9.9310 * 1e7));
+  EXPECT_EQ(town.type, PHOTON_PLACE_TYPE_CITY);
+  EXPECT_EQ(town.importance, 44000) << "as heavy as the heavier of the two";
+  EXPECT_EQ(DocumentsOf(set, 1), (std::set<uint32_t>{0}));
+  EXPECT_EQ(DocumentsOf(set, 2), (std::set<uint32_t>{0})) << "answering to the words of both";
+  doc_set_free(&set);
+}
+
+TEST(DocCollectorMerge, TheBoundarysPostalCodesSurviveATownWithoutOne) {
+  // Paris: the point of the city carries no code, its boundary all twenty
+  GeoDocument town =
+      Place(10, 48.8535, 2.3484, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 30000);
+  GeoDocument land =
+      Place(10, 48.8566, 2.3522, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_ADMIN_AREA, 50000);
+  land.postcode_rank = 7;
+  DocSet set{};
+  MergeAll(&set, {{town, {1}}, {land, {2}}});
+  ASSERT_EQ(set.document_count, 1u);
+  EXPECT_EQ(set.documents[0].postcode_rank, 7u);
+  EXPECT_EQ(set.documents[0].lat_e7, town.lat_e7);
+  doc_set_free(&set);
+
+  // and a town that brings a code of its own keeps it
+  town.postcode_rank = 5;
+  DocSet own{};
+  MergeAll(&own, {{town, {1}}, {land, {2}}});
+  ASSERT_EQ(own.document_count, 1u);
+  EXPECT_EQ(own.documents[0].postcode_rank, 5u);
+  doc_set_free(&own);
+}
+
+TEST(DocCollectorMerge, ACountyOfTheTownsNameFarAwayStaysApart) {
+  // the Landkreis Görlitz is called Görlitz too, and lies 11 km from the town
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, 51.1528, 14.9873, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 40000),
+           {1}},
+          {Place(10, 51.2500, 14.9500, PHOTON_PLACE_TYPE_COUNTY, GEO_DOCUMENT_ADMIN_AREA, 35000),
+           {2}},
+      }
+  );
+  EXPECT_EQ(set.document_count, 2u);
+  doc_set_free(&set);
+}
+
+TEST(DocCollectorMerge, TheDatelineDoesNotKeepATownFromItsLand) {
+  // a town just east of the 180th meridian and its boundary just west of it,
+  // 180 m apart the short way and nearly the whole world apart the long way
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, -16.8000, -179.9990, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 5000),
+           {1}},
+          {Place(10, -16.8000, 179.9993, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_ADMIN_AREA, 9000),
+           {2}},
+      }
+  );
+  ASSERT_EQ(set.document_count, 1u);
+  EXPECT_EQ(set.documents[0].lon_e7, (int32_t)(-179.9990 * 1e7)) << "standing where the town is";
+  doc_set_free(&set);
+}
+
+TEST(DocCollectorMerge, ABoundaryJoinsTheNearerOfTwoTowns) {
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, 50.0000, 8.0000, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 5000), {1}},
+          {Place(10, 50.0300, 8.0000, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 5000), {2}},
+          // 1.1 km from the first, 2.2 km from the second
+          {Place(10, 50.0100, 8.0000, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_ADMIN_AREA, 9000), {3}},
+      }
+  );
+  ASSERT_EQ(set.document_count, 2u);
+  std::set<uint32_t> first = DocumentsOf(set, 1);
+  EXPECT_EQ(DocumentsOf(set, 3), first) << "the land belongs to the town it lies nearer";
+  EXPECT_NE(DocumentsOf(set, 2), first);
+  doc_set_free(&set);
+}
+
+TEST(DocCollectorMerge, ABoundaryWithoutATownNearIsLeftAsItWas) {
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, 49.7780, 9.9435, PHOTON_PLACE_TYPE_COUNTY, GEO_DOCUMENT_ADMIN_AREA, 44000),
+           {1}},
+          // a place of another name, and a village of this name without a role
+          {Place(11, 49.7934, 9.9310, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_SETTLEMENT, 12000), {2}},
+          {Place(10, 49.7900, 9.9400, PHOTON_PLACE_TYPE_CITY, 0, 3000), {3}},
+      }
+  );
+  ASSERT_EQ(set.document_count, 3u);
+  bool land_kept = false;
+  for (size_t d = 0; d < set.document_count; ++d) {
+    const GeoDocument &doc = set.documents[d];
+    if (doc.type == PHOTON_PLACE_TYPE_COUNTY) {
+      land_kept = doc.lat_e7 == (int32_t)(49.7780 * 1e7) && (doc.flags & GEO_DOCUMENT_ADMIN_AREA);
+    }
+  }
+  EXPECT_TRUE(land_kept);
+  doc_set_free(&set);
+}
+
 TEST(DocCollectorMerge, NoCollectorsYieldAnEmptySet) {
   DocSet set{};
   EXPECT_EQ(doc_collector_merge(&set, nullptr, 0, 0, 0), ARNM_SUCCESS);

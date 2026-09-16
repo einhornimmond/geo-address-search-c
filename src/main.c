@@ -330,6 +330,14 @@ static void collect_house(ParserThreadArgs *args, const PhotonPlace *place) {
   if (result != ARNM_SUCCESS && args->house_result == ARNM_SUCCESS) { args->house_result = result; }
 }
 
+/** The flags a document record starts with: its point, and the role its entry plays. */
+static uint8_t document_flags(const PhotonPlace *place) {
+  unsigned flags = place->has_point ? GEO_DOCUMENT_HAS_POINT : 0u;
+  if (place->role == PHOTON_PLACE_ROLE_SETTLEMENT) flags |= GEO_DOCUMENT_SETTLEMENT;
+  if (place->role == PHOTON_PLACE_ROLE_ADMIN_AREA) flags |= GEO_DOCUMENT_ADMIN_AREA;
+  return (uint8_t)flags;
+}
+
 /** Second pass: the entry becomes a document, and its words point at it. */
 static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
   /* an address hangs on its street; a house-level entry without a number is a
@@ -344,7 +352,7 @@ static void collect_document(ParserThreadArgs *args, const PhotonPlace *place) {
       .postcode_rank = display_rank(args->display_set, place->postcode),
       .importance = quantize_importance(place->importance),
       .type = (uint8_t)place->typeEnum,
-      .flags = place->has_point ? GEO_DOCUMENT_HAS_POINT : 0u,
+      .flags = document_flags(place),
   };
 
   uint32_t number = 0;

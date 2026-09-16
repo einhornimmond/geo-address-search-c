@@ -415,17 +415,19 @@ typedef enum EntryField {
   ENTRY_FIELD_IMPORTANCE,
   ENTRY_FIELD_HOUSENUMBER,
   ENTRY_FIELD_ADDRESS_TYPE,
-  ENTRY_FIELD_COUNTRY_CODE
+  ENTRY_FIELD_COUNTRY_CODE,
+  ENTRY_FIELD_OSM_KEY,
+  ENTRY_FIELD_OSM_VALUE
 } EntryField;
 
 /**
  * @brief Recognise a key of the entry itself — the same shape as address_role().
  *
  *  An entry carries a handful of keys this build reads and a handful it does
- *  not (`osm_id`, `osm_key`, `extent`, …).  Asking the object for each of the
+ *  not (`osm_id`, `object_type`, `extent`, …).  Asking the object for each of the
  *  first kind by name would walk it once per question; the walk below asks
  *  every key what it is instead, and a key answers in a switch on its length
- *  and at most one memcmp.  Nine questions become one pass.
+ *  and at most one memcmp.  Eleven questions become one pass.
  */
 static EntryField entry_field(const char *key, size_t key_size) {
   switch (key_size) {
@@ -434,7 +436,14 @@ static EntryField entry_field(const char *key, size_t key_size) {
   case 6:
     return memcmp(key, "street", 6) == 0 ? ENTRY_FIELD_STREET : ENTRY_FIELD_NONE;
   case 7:
-    return memcmp(key, "address", 7) == 0 ? ENTRY_FIELD_ADDRESS : ENTRY_FIELD_NONE;
+    switch (key[0]) {
+    case 'a':
+      return memcmp(key, "address", 7) == 0 ? ENTRY_FIELD_ADDRESS : ENTRY_FIELD_NONE;
+    case 'o':
+      return memcmp(key, "osm_key", 7) == 0 ? ENTRY_FIELD_OSM_KEY : ENTRY_FIELD_NONE;
+    default:
+      return ENTRY_FIELD_NONE;
+    }
   case 8:
     switch (key[0]) {
     case 'p':
@@ -444,6 +453,8 @@ static EntryField entry_field(const char *key, size_t key_size) {
     default:
       return ENTRY_FIELD_NONE;
     }
+  case 9:
+    return memcmp(key, "osm_value", 9) == 0 ? ENTRY_FIELD_OSM_VALUE : ENTRY_FIELD_NONE;
   case 10:
     return memcmp(key, "importance", 10) == 0 ? ENTRY_FIELD_IMPORTANCE : ENTRY_FIELD_NONE;
   case 11:
@@ -460,6 +471,34 @@ static EntryField entry_field(const char *key, size_t key_size) {
   default:
     return ENTRY_FIELD_NONE;
   }
+}
+
+/** Is @p text exactly @p literal, a string literal of @p size bytes? */
+static bool text_is(PhotonString text, const char *literal, size_t size) {
+  return text.data && text.size == size && memcmp(text.data, literal, size) == 0;
+}
+
+/**
+ * @brief The role an entry plays — see @ref PhotonPlaceRole — from its OSM tag.
+ *
+ *  `place=city`, `town` and `village` are where a town is; `boundary=
+ *  administrative` and `place=municipality` are the land it governs.  A hamlet
+ *  or a suburb is neither: it has no boundary of the same name to be told
+ *  apart from.
+ */
+static PhotonPlaceRole role_of(PhotonString osm_key, PhotonString osm_value) {
+  if (text_is(osm_key, "place", 5)) {
+    if (text_is(osm_value, "city", 4) || text_is(osm_value, "town", 4) ||
+        text_is(osm_value, "village", 7)) {
+      return PHOTON_PLACE_ROLE_SETTLEMENT;
+    }
+    if (text_is(osm_value, "municipality", 12)) return PHOTON_PLACE_ROLE_ADMIN_AREA;
+    return PHOTON_PLACE_ROLE_NONE;
+  }
+  if (text_is(osm_key, "boundary", 8) && text_is(osm_value, "administrative", 14)) {
+    return PHOTON_PLACE_ROLE_ADMIN_AREA;
+  }
+  return PHOTON_PLACE_ROLE_NONE;
 }
 
 /**
@@ -515,6 +554,8 @@ static ResultType extract_place(
 
   PhotonString address_type = {NULL, 0};
   PhotonString entry_street = {NULL, 0};
+  PhotonString osm_key = {NULL, 0};
+  PhotonString osm_value = {NULL, 0};
   const arnm_json_value *names = NULL;
   const arnm_json_value *address = NULL;
   const arnm_json_value *centroid = NULL;
@@ -561,6 +602,12 @@ static ResultType extract_place(
     case ENTRY_FIELD_CENTROID:
       centroid = value;
       break;
+    case ENTRY_FIELD_OSM_KEY:
+      osm_key = string_of(value);
+      break;
+    case ENTRY_FIELD_OSM_VALUE:
+      osm_value = string_of(value);
+      break;
     case ENTRY_FIELD_NONE:
       break;
     }
@@ -570,6 +617,7 @@ static ResultType extract_place(
   if (!p->type) { return RESULT_ERROR_MISSING_TYPE; }
   p->typeEnum = detectTypeEnum(address_type.data, address_type.size);
   if (PHOTON_PLACE_TYPE_UNKNOWN == p->typeEnum) { return RESULT_ERROR_UNKNOWN_TYPE; }
+  p->role = (uint8_t)role_of(osm_key, osm_value);
 
   if (names) place_names(names, languages, p);
 
