@@ -43,3 +43,5 @@ regression.house_suffix	Lister Meile 29D Hannover	1	52.520000	13.405000	Lister M
 regression.house_range	Anderter Straße 1-3 Hannover	1	52.520000	13.405000	Anderter Straße	1-3				a range, one door written as two numbers
 regression.house_range	Woltmershauser Straße 161 Bremen	1	52.520000	13.405000	Woltmershauser Straße	161-163				one number of the range 161-163, as its residents type it
 regression.house_range	Heumadener Straße 76/1 Ostfildern	1	48.776000	9.180000	Heumadener Straße	76/1				the house behind the 76, not the 76
+regression.repeats	Heusenstamm	1	50.054700	8.799300	Heusenstamm		50.0547206	8.7993284	800	one town, written down twice 1.7 km apart: the nearer record answers
+regression.repeats	Kirchheim bei München	1	48.137400	11.575500	Kirchheim bei München		48.1757480	11.7562190	3000	not the nameless address blocks of its postcode

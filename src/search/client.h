@@ -196,9 +196,20 @@ GeoStatus geo_client_language(
  *
  *  Results are ordered by how far they answer what the query said about *where*
  *  — a postcode it named counts for more than a town — then, among places that
- *  answer equally, by whether the house number was actually found there, and
- *  last by the weight the dump gave the place.  A query that names no town and
- *  no postcode is answered by weight alone, heaviest first.
+ *  answer equally, by whether the house number was actually found there, then
+ *  by whether the place has a name at all, and last by the weight the dump gave
+ *  the place.  A query that names no town and no postcode is answered by weight
+ *  alone, heaviest first.
+ *
+ *  A place is answered once.  Where two results would carry the same name, town
+ *  and postal code — the same town filed as a town and as a district, or the
+ *  nameless address blocks the dump keeps per postal code — only the first of
+ *  them is given back, so `limit` results are `limit` different places.  Two
+ *  nameless lines are the same within two kilometres of each other, and so are
+ *  two named places where a position was given; the answer is then the record
+ *  nearer the searcher, which is the one standing in the town rather than in the
+ *  middle of its boundary.  Without a position two named places stay two, since
+ *  nothing says which of two records a kilometre apart was meant.
  *
  *  A postcode — four digits or more, standing on its own — narrows the search
  *  instead of only sorting it, which is what lets a quiet street outlive a

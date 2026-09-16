@@ -438,11 +438,26 @@ bool geo_index_house_estimate(
  *  silence an otherwise clear address.  If no word is known at all, nothing
  *  is found.
  *
- *  Three keys order the results.  First how far a place answers what the query
+ *  Four keys order the results.  First how far a place answers what the query
  *  said about *where*: a postcode it named weighs more than a town, and a place
  *  that answers neither scores nothing.  Then, among places that agree equally,
- *  the one carrying the house number that was asked for.  Weight decides only
- *  where the query described no place at all — as it always did.
+ *  the one carrying the house number that was asked for.  Then a place with a
+ *  name of its own before one the dump left nameless, which an answer can only
+ *  show as an empty line.  Weight decides only where the query described no
+ *  place at all — as it always did.
+ *
+ *  What the ranking has ordered is said once.  Two places of the same name, town
+ *  and postal code are one place written down twice — a town filed as a town and
+ *  as a district, the nameless address blocks of one postal code — and only the
+ *  first of them, the one the ranking put highest, is answered with.  How far
+ *  apart they may stand and still be one depends on what can tell them apart: a
+ *  nameless line says nothing but its town, so two of those are one within two
+ *  kilometres; two named places are one within two kilometres only where a
+ *  position was given, and then the record nearer the searcher is the one
+ *  answered with — a town's own point stands in the town, the middle of its
+ *  boundary a kilometre outside it.  Asked from nowhere, two named places are
+ *  two answers: the build has already joined what stood within 300 m of its
+ *  twin, and nothing else says which of the rest was meant.
  *
  *  A bare number of four digits or more is read as a postal code and narrows
  *  the answer like any other word.  A shorter one, or one carrying a letter, is

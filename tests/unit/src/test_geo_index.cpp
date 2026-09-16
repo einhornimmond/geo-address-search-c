@@ -1211,6 +1211,102 @@ TEST(GeoIndexHouseEstimate, AHouseLeftOutIsEstimatedFromTheOthers) {
   geo_index_close(&index);
 }
 
+// ---------------------------------------------------------------------------
+//  One place, said once
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A town and the nameless address blocks the dump files inside it. */
+std::vector<testsupport::MiniPlace> Kirchheim() {
+  std::vector<testsupport::MiniPlace> places = {
+      Placed(
+          "Kirchheim bei München", "", "", 48.1757, 11.7562, PHOTON_PLACE_TYPE_CITY, 20000, "de"
+      ),
+  };
+  // four streets of the same postcode that carry no name at all, each heavier
+  // than the town — an answer shows every one of them as an empty line
+  // spread over the town, the last of them a kilometre from the first
+  for (int i = 0; i < 4; ++i) {
+    places.push_back(Placed(
+        "", "Kirchheim bei München", "85551", 48.1750 + i * 0.003, 11.7550,
+        PHOTON_PLACE_TYPE_STREET, 30000, "de"
+    ));
+  }
+  return places;
+}
+
+} // namespace
+
+TEST(GeoIndexRepeats, ATownStandsBeforeTheNamelessBlocksInsideIt) {
+  TempPath path{"repeatsnameless"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), Kirchheim()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  size_t count = Query(index, "Kirchheim bei München ", hits, 8);
+  ASSERT_GE(count, 1u);
+  EXPECT_EQ(
+      DisplayWord(index, index.documents[hits[0].document].name_rank), "Kirchheim bei München"
+  ) << "a line nobody can read is the weakest answer there is";
+  EXPECT_EQ(count, 2u) << "the four nameless blocks are one line, not four";
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexRepeats, APositionSaysWhichOfTheTwoIsMeant) {
+  // the same Heusenstamm, asked from the town itself: one answer, and the
+  // record standing in the town rather than the middle of its boundary
+  TempPath path{"repeatspositioned"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(), {
+                        Placed(
+                            "Heusenstamm", "Heusenstamm", "63150", 50.0400, 8.7993,
+                            PHOTON_PLACE_TYPE_CITY, 30000, "de"
+                        ),
+                        Placed(
+                            "Heusenstamm", "Heusenstamm", "63150", 50.0547, 8.7993,
+                            PHOTON_PLACE_TYPE_INDEPENDENT_CITY, 29000, "de"
+                        ),
+                    }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Heusenstamm ", 50.0547, 8.7993, hits, 8), 1u);
+  EXPECT_EQ(index.documents[hits[0].document].lat_e7, E7(50.0547)) << "the nearer of the two";
+  EXPECT_EQ(index.documents[hits[0].document].type, PHOTON_PLACE_TYPE_INDEPENDENT_CITY);
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexRepeats, ATownWrittenDownInTwoPlacesStaysTwo) {
+  // Heusenstamm, as the planet holds it: the middle of its boundary and the
+  // point that carries its name, 1.7 km apart — and the lighter of the two is
+  // the one standing where the town is
+  TempPath path{"repeatstown"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(), {
+                        Placed(
+                            "Heusenstamm", "Heusenstamm", "63150", 50.0400, 8.7993,
+                            PHOTON_PLACE_TYPE_CITY, 30000, "de"
+                        ),
+                        Placed(
+                            "Heusenstamm", "Heusenstamm", "63150", 50.0547, 8.7993,
+                            PHOTON_PLACE_TYPE_INDEPENDENT_CITY, 29000, "de"
+                        ),
+                    }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  EXPECT_EQ(Query(index, "Heusenstamm ", hits, 8), 2u)
+      << "asked from nowhere, nothing says which of the two is meant";
+  // and the build has already joined whatever stood within 300 m of its twin
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
   // and lies nearer to the searcher than the street that is called that today

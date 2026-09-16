@@ -137,7 +137,13 @@ places in it, in any language the index holds, although no place in the dump car
 country's name; the dump only gives each entry its code, and the index keeps that code as a
 word nobody types. Results are ordered by
 Photon's own `importance`, and whoever asks for a house number gets the street that
-carries it first.
+carries it first. A place that has a name of its own comes before one the dump left
+nameless, and a place is answered once: two results of the same name, town and postal code
+are one place written down twice, and only the first of them is shown. Nameless lines count
+as the same within two kilometres; named places do too where a position was given, and the
+record nearer the searcher is the one shown — a town's own point stands in the town, the
+middle of its boundary a kilometre outside it. Without a position two named places stay two,
+since nothing says which of them was meant.
 
 A number in the query is a house number before it is a word: `Superstraße 8` looks for
 the street without the 8 and resolves the number there. Only if that finds nothing may
