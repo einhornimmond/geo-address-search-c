@@ -970,6 +970,21 @@ static int32_t longitude_shrink(int32_t lat_e7) {
   return COSINE[step];
 }
 
+/** How far a document lies from the searcher, squared, in degrees × 10⁷ — and
+ *  the width of a degree of longitude taken where the searcher stands. */
+static int64_t distance_squared(
+    const GeoIndex *index, uint32_t document, const GeoQueryOptions *options
+) {
+  const GeoDocument *record = &index->documents[document];
+  if (!(record->flags & GEO_DOCUMENT_HAS_POINT)) return INT64_MAX;
+  int64_t north = (int64_t)record->lat_e7 - options->latitude_e7;
+  int64_t east = (int64_t)record->lon_e7 - options->longitude_e7;
+  if (east > 1800000000) east -= 3600000000LL;
+  if (east < -1800000000) east += 3600000000LL;
+  east = east * longitude_shrink(options->latitude_e7) / 16;
+  return north * north + east * east;
+}
+
 /**
  * @brief Which band a document falls into, seen from where the searcher stands.
  *
@@ -1875,6 +1890,8 @@ typedef struct HitRank {
                           GEO_AGREEMENT_POSTCODE + GEO_AGREEMENT_CITY. */
   uint8_t door;      /**< The house found: 2 the number as asked or a range holding
                           it, 1 only the plain number in front of its suffix, 0 none. */
+  uint8_t has_name;  /**< 1 where the place carries a name of its own, 0 where the
+                          dump left it nameless and an answer shows an empty line. */
   uint8_t named;     /**< The place still goes by what was typed; 0 for everyone
                           when no position was given. */
   uint8_t band;      /**< How near the searcher stands, 0 = nearest; 0 for everyone
@@ -1884,9 +1901,19 @@ typedef struct HitRank {
 /**
  * @brief Does @p left stand before @p right?
  *
- *  Five keys, in this order: the place the query named; the house number it
- *  asked for; whether the place still goes by what was typed; how near it lies
- *  to the searcher; the weight the dump gave it.
+ *  Six keys, in this order: the place the query named; the house number it
+ *  asked for; whether it is a place with a name at all; whether it still goes
+ *  by what was typed; how near it lies to the searcher; the weight the dump
+ *  gave it.
+ *
+ *  ### Why a name at all is weighed
+ *
+ *  The dump files a nameless address block as a place of its own — a street
+ *  without a name, standing on a postal code and a town.  Four of them answered
+ *  *Kirchheim bei München* before the town itself, each shown as an empty line
+ *  with a postcode behind it, because they weighed more than the town did.  A
+ *  place nobody can read is the weakest answer there is, whatever its weight,
+ *  so it follows every place that has a name.
  *
  *  What was typed comes before where it was typed from.  A town or a postcode
  *  says outright which place is meant, and no coordinate may argue with that:
@@ -1922,6 +1949,7 @@ static bool ranks_before(
     return left_rank.agreement > right_rank.agreement;
   }
   if (left_rank.door != right_rank.door) return left_rank.door > right_rank.door;
+  if (left_rank.has_name != right_rank.has_name) return left_rank.has_name > right_rank.has_name;
   if (left_rank.named != right_rank.named) return left_rank.named > right_rank.named;
   if (left_rank.band != right_rank.band) return left_rank.band < right_rank.band;
   return left->importance > right->importance;
@@ -2304,6 +2332,110 @@ static bool country_in_a_name(
   return false;
 }
 
+/** Farthest two nameless places of one town may stand apart and still be one line. */
+#define GEO_QUERY_SAME_BLOCK_E7 180000
+
+/** Farthest two named places may stand apart and still be one place, with a
+ *  position to tell which of them is meant. */
+#define GEO_QUERY_SAME_PLACE_NEAR_E7 180000
+
+/**
+ * @brief Are these two places the same one, said twice?
+ *
+ *  The dump files a place once per kind, and a merge keeps apart what carries
+ *  different names — so *Halle (Westf.)* arrives as a town and as a district,
+ *  *Den Haag* twice with two weights, and a town's nameless address blocks as
+ *  one place each.  An answer shows a name, a town and a postal code, and where
+ *  two places agree in all three and stand near enough to each other — within
+ *  @ref GEO_QUERY_SAME_BLOCK_E7 while both are nameless, within
+ *  @ref GEO_QUERY_SAME_PLACE_NEAR_E7 while @p positioned says the searcher can
+ *  tell them apart — they are one line repeated.
+ *
+ *  A missing field counts as a field: two nameless places agree in their
+ *  namelessness, which is exactly what makes them look alike.  A place that
+ *  carries no coordinate cannot be told apart by distance, and is taken as the
+ *  same as its twin rather than shown beside it.
+ */
+static bool same_place(const GeoIndex *index, uint32_t left, uint32_t right, bool positioned) {
+  const GeoDocument *a = &index->documents[left];
+  const GeoDocument *b = &index->documents[right];
+  if (a->name_rank != b->name_rank) return false;
+  if (a->city_rank != b->city_rank) return false;
+  if (a->postcode_rank != b->postcode_rank) return false;
+  if (!(a->flags & GEO_DOCUMENT_HAS_POINT) || !(b->flags & GEO_DOCUMENT_HAS_POINT)) return true;
+
+  int64_t north = (int64_t)a->lat_e7 - b->lat_e7;
+  int64_t east = (int64_t)a->lon_e7 - b->lon_e7;
+  /* the shorter way round the world, for two places either side of the dateline */
+  if (east > 1800000000) east -= 3600000000LL;
+  if (east < -1800000000) east += 3600000000LL;
+  east = east * longitude_shrink(a->lat_e7) / 16;
+  /* A nameless line says nothing but its town, so two of them are one line
+     wherever in that town they stand.  Two places that *are* named are written
+     down twice in two places as often as not — the middle of a town's boundary
+     and the point that carries its name lie a kilometre or two apart — and
+     which of those is meant only a position can say.  So they are taken
+     together where one was given, and shown side by side where none was: the
+     build has already joined what stands within 300 m of its twin, and what
+     survived that is two answers until something says otherwise. */
+  if (a->name_rank != GEO_RANK_NONE && !positioned) return false;
+  int64_t reach =
+      a->name_rank == GEO_RANK_NONE ? GEO_QUERY_SAME_BLOCK_E7 : GEO_QUERY_SAME_PLACE_NEAR_E7;
+  return north * north + east * east <= reach * reach;
+}
+
+/**
+ * @brief Keep the first of every place that answers twice, in the order the
+ *        ranking left them.
+ *
+ *  The ranking has spoken by the time this runs, so the one kept is the one it
+ *  put first — the heaviest of them, or the one carrying the house number.
+ *  What follows only repeats it, and a list that repeats itself reads as
+ *  broken however right each line is.
+ *
+ *  @return How many hits remain at the front of @p hits.
+ *
+ *  @whisper One place says its name once, however many times it was written down
+ */
+static size_t drop_repeats(
+    const GeoIndex *index,
+    GeoHit *hits,
+    HitRank *ranks,
+    size_t count,
+    const GeoQueryOptions *options
+) {
+  bool positioned = options->has_position;
+  size_t kept = 0;
+  for (size_t h = 0; h < count; ++h) {
+    bool repeated = false;
+    for (size_t k = 0; k < kept && !repeated; ++k) {
+      repeated = same_place(index, hits[k].document, hits[h].document, positioned);
+      /* Of two ways of writing one place down, the one nearer the searcher is
+         the one they mean: a town's own point stands in the town, the middle of
+         its boundary a kilometre outside it.  The place keeps the rank the
+         ranking gave it and answers with the nearer of its two records.
+
+         Only where the two say the same about the house number, though.  One
+         record of a street may carry the number that was asked for while its
+         twin does not, and the door is worth more than the few hundred metres:
+         whoever asked for it means the record that has it. */
+      if (repeated && positioned && ranks[h].door == ranks[k].door &&
+          distance_squared(index, hits[h].document, options) <
+              distance_squared(index, hits[k].document, options)) {
+        GeoHit nearer = hits[h];
+        nearer.matched = hits[k].matched;
+        hits[k] = nearer;
+      }
+    }
+    if (!repeated) {
+      hits[kept] = hits[h];
+      ranks[kept] = ranks[h];
+      ++kept;
+    }
+  }
+  return kept;
+}
+
 size_t geo_index_query(
     const GeoIndex *index,
     TextTokenizer *tokenizer,
@@ -2527,6 +2659,7 @@ size_t geo_index_query_options(
     if (pool[h].house != GEO_RANK_NONE) {
       ranks[h].door = house_is_asked(index, pool[h].house, asked, asked_count) ? 2u : 1u;
     }
+    ranks[h].has_name = index->documents[pool[h].document].name_rank != GEO_RANK_NONE ? 1u : 0u;
     /* Nearness is weighed even where the ring found nothing and was dropped:
        the question "which of these is closest" still has an answer, and the
        band is the only key that can give it.  Its guard travels with it — see
@@ -2541,6 +2674,7 @@ size_t geo_index_query_options(
     }
   }
   rank_hits(pool, ranks, count);
+  count = drop_repeats(index, pool, ranks, count, options);
 
   if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;

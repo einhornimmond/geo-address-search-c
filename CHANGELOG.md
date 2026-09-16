@@ -40,6 +40,30 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **A place is answered once, and a place without a name comes last.** The dump files a town
+  as a town and again as a district, and the nameless address blocks of a postal code as a
+  place each. `Kirchheim bei München` therefore answered with four identical lines — an empty
+  name and `85551 Kirchheim bei München` behind it — before the town itself, and `Den Haag`
+  and `Halle (Westf.)` came back twice.
+  - **A name of its own is a ranking key,** weighed after the house number and before
+    nearness: a line nobody can read is the weakest answer there is, whatever weight the
+    dump gave it.
+  - **Two results of the same name, town and postal code are one place,** and only the one
+    the ranking put first is answered with. Two nameless lines count as the same within two
+    kilometres, since such a line says nothing but its town; two named places do too where a
+    position was given, and then the record nearer the searcher answers — a town's own point
+    stands in the town, the middle of its boundary a kilometre outside it. Asked from
+    nowhere two named places stay two: `Heusenstamm` is written down twice 1.7 km apart, and
+    without a position nothing says which of them was meant — what stood within 300 m of its
+    twin the build has joined already.
+    The documents stay as they are — the merge keeps them apart on purpose, since they carry
+    different kinds — so this is a rule of the answering, not of the build.
+  - **Measured on the planet** over 901 queries of the German suites: asked with a map
+    position, the answers repeating a line fall from 8.4 % to 3.0 % and the repeated lines
+    from 106 to 37, while nameless lines fall from 39 to 4. Over the 13 380 queries of the
+    regression file, the drawn queries and the external suites no query ranks worse and four
+    rank better. No format change and no rebuild.
+
 - **A house number is found the way people write it.** A letter written apart from its
   number was asked as a word of its own, and since no place carries the word *a*,
   `Osterstr. 42 A Hannover` and `Lister Meile 29 D Hannover` found nothing at all. A number
