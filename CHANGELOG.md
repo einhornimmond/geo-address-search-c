@@ -225,6 +225,22 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Changed
 
+- **The evaluation counts a town written otherwise as the same town, and asks each suite in
+  its own language.** Neither changes the library; both change what a measurement is worth.
+  - **A town holds where every word of the one stands in the other:** the dump files an
+    address in the village while a suite names the town it belongs to — `La Haye` against
+    `La Haye-du-Puits`, `Saint-Ouen-sur-Seine` against `Saint-Ouen`, `Stadtgebiet Bremen`
+    against `Bremen`. Spelled out in full, `Frankfurt am Main` and `Frankfurt (Oder)` still
+    fail against each other, which is what makes them two towns here.
+  - **`convert_geocoder_tester.py` gives every suite the language of its country** where the
+    test names none. An index built with several languages answers in the first of them, so
+    a German planet index called Strasbourg `Straßburg`, and every French test counted as a
+    miss over a spelling.
+  - **Measured on the planet** over 13 382 queries, the pass rate reads 74.8 % instead of
+    73.8 %: the language accounts for 0.8 points of that and the town for 0.2. 37 queries
+    change, 30 of them from a miss to a hit; the rest had been counted as *absent* and are
+    now counted as the misses they are.
+
 - **The place cache moves to layout 4.** A document record carries the batch it arrived in,
   four bytes, so that a pass replayed from the cache joins its documents in dump order too,
   and the two letters of its country code, so that the replay writes the country words as
