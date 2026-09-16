@@ -50,7 +50,9 @@
  *  - **street** — the answer's name, because an answer carrying a number is its street;
  *  - **number** — the number found on the answer;
  *  - **city** — the answer's town, or its name where it carries no town, because a
- *    city filed as a county is its own town;
+ *    city filed as a county is its own town; a town also holds where every word of
+ *    the one stands in the other, since the dump names the village and a suite the
+ *    town it belongs to — see town_is_one_of();
  *  - **postcode** — the answer's postcode, or one of them where the answer lists
  *    several separated by `;`;
  *  - **position** — within `radius_m` of `expect_lat/lon`.
@@ -383,6 +385,60 @@ static bool is_one_of(const char *text, size_t size, const char *alternatives) {
   }
 }
 
+/** Does every word of @p few stand among the words of @p many, both folded already?
+ *  Vacuously so where @p few holds no word — see town_is_one_of() for the guard. */
+static bool words_within(const char *few, const char *many) {
+  for (const char *word = few; *word;) {
+    size_t length = strcspn(word, " ");
+    bool found = false;
+    for (const char *at = many; *at && !found;) {
+      size_t held = strcspn(at, " ");
+      found = held == length && memcmp(at, word, length) == 0;
+      at += held;
+      while (*at == ' ') ++at;
+    }
+    if (!found) return false;
+    word += length;
+    while (*word == ' ') ++word;
+  }
+  return true;
+}
+
+/**
+ * @brief Is the town of @p size bytes one of @p alternatives, or one that holds it?
+ *
+ *  A town is written in more ways than a street is.  The dump files an address in
+ *  the village it stands in while the suite names the town that village belongs to
+ *  — *Steinfurth* against *Bad Nauheim* — and where the two do meet they meet with
+ *  a word to spare: *Stadtgebiet Bremen* for *Bremen*, *La Haye-du-Puits* for the
+ *  *La Haye* it was merged into, *Halle (Westf.)* for *Halle*.  So a town also
+ *  holds where every word of the one stands in the other, whichever is the longer.
+ *
+ *  What that gives up is the qualifier as a distinction: *Frankfurt* would hold
+ *  against *Frankfurt am Main* as well as against *Frankfurt (Oder)*.  Both spelled
+ *  out, they still fail against each other — neither holds every word of the other
+ *  — which is what the two of them being different towns comes down to here.
+ */
+static bool town_is_one_of(const char *text, size_t size, const char *alternatives) {
+  if (!text || !size) return false;
+  char folded[512], wanted[512];
+  size_t folded_size = fold_loose(text, size, folded, sizeof(folded));
+  const char *start = alternatives;
+  for (;;) {
+    const char *bar = strchr(start, '|');
+    size_t length = bar ? (size_t)(bar - start) : strlen(start);
+    size_t wanted_size = fold_loose(start, length, wanted, sizeof(wanted));
+    /* no words stand in every town — an empty alternative, or a name that folds
+       to nothing but punctuation, holds against nothing at all */
+    if (folded_size && wanted_size &&
+        (words_within(wanted, folded) || words_within(folded, wanted))) {
+      return true;
+    }
+    if (!bar) return false;
+    start = bar + 1;
+  }
+}
+
 /**
  * @brief Is the house number of @p size bytes one of @p alternatives, written alike?
  *
@@ -462,8 +518,8 @@ static bool is_expected(const GeoAddress *answer, const EvalQuery *query, bool r
     return false;
   }
   if (*query->expect_city && !(relaxed && named)) {
-    bool town = answer->city ? is_one_of(answer->city, answer->city_size, query->expect_city)
-                             : is_one_of(answer->name, answer->name_size, query->expect_city);
+    bool town = answer->city ? town_is_one_of(answer->city, answer->city_size, query->expect_city)
+                             : town_is_one_of(answer->name, answer->name_size, query->expect_city);
     if (!town) return false;
   }
   if (*query->expect_postcode && !(relaxed && named) &&

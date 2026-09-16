@@ -29,7 +29,9 @@ What the index cannot answer is left out, and counted on stderr with its reason:
     as places of their own.  --with-poi keeps them; they then mostly count as absent.
 
 Every query is asked with the last word read as a beginning as well, as the map in
-production asks it.  A position and a language are passed on where the test gives one.
+production asks it.  A position is passed on where the test gives one, and a language
+likewise — where a test names none, the suite's own country says which reading its
+expectations are written in (see SUITE_LANGUAGE).
 YAML tests need PyYAML; without it they are passed over, and stderr says so.
 
 Standard library otherwise.
@@ -62,6 +64,22 @@ CARRIED = {
 }
 # keys the index has no field for
 DROPPED = {"osm_id", "osm_key", "osm_value", "type", "country", "label", "state", "district", "county"}
+
+# The reading a suite writes its expectations in.  An index built with several
+# languages answers in the first of them — the German planet index calls
+# Strasbourg "Straßburg" — while the French suite expects "Strasbourg", so every
+# such test would count as a miss over a spelling.  A language the index does not
+# hold is passed over by the search, which then answers in its default reading,
+# so naming one here costs nothing where it is not there.
+SUITE_LANGUAGE = {
+    "france": "fr",
+    "germany": "de",
+    "italy": "it",
+    "netherlands": "nl",
+    "poland": "pl",
+    "usa": "en",
+    "world": "en",
+}
 
 POI_PARTS = {"poi"}
 POI_STEMS = {"test_airports", "test_museum", "test_wikivoyage_fr", "test_pois", "test_train_stations",
@@ -137,8 +155,7 @@ class Converter:
             return
         if clean(lat) and clean(lon):
             row["lat"], row["lon"] = clean(lat), clean(lon)
-        if clean(lang):
-            row["lang"] = clean(lang)
+        row["lang"] = clean(lang) or SUITE_LANGUAGE.get(country, "")
         if clean(limit):
             row["limit"] = clean(limit)
         self.rows[country].append(row)

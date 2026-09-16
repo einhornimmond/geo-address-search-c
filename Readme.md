@@ -452,7 +452,12 @@ well, and the centre of the map as the position — near the place, or in a larg
 answer, among the first three, among the first ten, the mean reciprocal rank, and how often a
 query *passed* — found within the number of answers its test allows, one where it names none.
 Names, streets and towns are compared loosely, as geocoder-tester's `--loose-compare` does:
-case, accents and punctuation aside.
+case, accents and punctuation aside. A town holds in addition where every word of the one
+stands in the other, because the dump files an address in the village and a suite names the
+town it belongs to — `La Haye` for `La Haye-du-Puits`, `Stadtgebiet Bremen` for `Bremen`.
+Each query is asked in the reading its file names, and an index built with several languages
+answers in the first of them, so a suite has to say which language its expectations are
+written in: a German planet index calls Strasbourg `Straßburg`.
 
 - **`queries.tsv`** — 589 queries drawn from the German dump by
   [`make_queries.py`](tests/eval/make_queries.py) with a fixed seed: 50 addresses, 30 streets,
@@ -468,7 +473,7 @@ A place the index does not hold at all — a street renamed between the dump the
 from and the one the index was built from — is reported as *absent* and left out of the
 rates; `--absent` lists them.
 
-Measured on the 2026 planet index at the commit that added the tool:
+Measured on the 2026 planet index, rebuilt with the country words:
 
 | group | queries | absent | top 1 | top 3 | top 10 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -476,8 +481,8 @@ Measured on the 2026 planet index at the commit that added the tool:
 | street | 86 | 0 | 93.0 % | 100 % | 100 % |
 | town | 160 | 0 | 60.6 % | 66.9 % | 69.4 % |
 | district | 40 | 2 | 81.6 % | 100 % | 100 % |
-| regression | 21 | 0 | 95.2 % | 95.2 % | 95.2 % |
-| **all** | **610** | **2** | **81.2 %** | **85.2 %** | **86.2 %** |
+| regression | 40 | 0 | 97.5 % | 97.5 % | 97.5 % |
+| **all** | **629** | **2** | **81.8 %** | **85.6 %** | **86.6 %** |
 
 Addresses in full, abbreviated, without postcode, by quarter and while typing all come first
 every time; the address group loses its points on the swapped letters alone (26 %). Towns lose
@@ -506,18 +511,23 @@ parameters like a bounded viewbox, and checks on output formats. Of Nominatim's 
 scenarios 21 remain, of geocoder-tester's tests 12 732, most of them French addresses; the
 YAML tests among them need PyYAML.
 
-Measured at the same commit, Germany and Nominatim's Liechtenstein:
+Measured on the same index, France, Germany and Nominatim's Liechtenstein:
 
 | suite | queries | absent | pass | top 3 | top 10 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| geocoder-tester, Germany | 318 | 24 | 78.2 % | 84.0 % | 87.8 % |
-| Nominatim | 21 | 4 | 70.6 % | 70.6 % | 76.5 % |
+| geocoder-tester, France | 11 886 | 5 238 | 74.2 % | 76.8 % | 78.0 % |
+| geocoder-tester, Germany | 318 | 18 | 80.3 % | 86.3 % | 89.7 % |
+| Nominatim | 21 | 4 | 76.5 % | 76.5 % | 82.4 % |
+
+Nearly half the French tests are absent: they come from the BAN address database, which
+knows more house numbers than OpenStreetMap does.
 
 What they found that the drawn queries did not: a house number whose letter stands apart —
-`Osterstr. 42 A` — found nothing at all (fixed since); a street still being typed in front of its town —
-`Hafenga Ulm` — is not read as a beginning; and cities stand 1.7 to 2.6 km from where the
-suites expect them (Kassel, Würzburg, Erlangen, Fürth), the centre of their boundary rather
-than their place node.
+`Osterstr. 42 A` — found nothing at all, and a range or a house behind a house — `1-3`,
+`12/1` — was cut into two numbers (both fixed since); a street still being typed in front of
+its town — `Hafenga Ulm` — is not read as a beginning; and cities stand 1.7 to 2.6 km from
+where the suites expect them (Kassel, Würzburg, Erlangen, Fürth), the centre of their
+boundary rather than their place node.
 
 ## Releases
 
