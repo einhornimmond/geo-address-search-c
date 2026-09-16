@@ -135,10 +135,16 @@ know are passed over rather than made to fail the whole query. A country named b
 the rest — `Domstraße 3, Würzburg, Deutschland`, `Hauptstraße Österreich` — narrows to the
 places in it, in any language the index holds, although no place in the dump carries its
 country's name; the dump only gives each entry its code, and the index keeps that code as a
-word nobody types. Results are ordered by
-Photon's own `importance`, and whoever asks for a house number gets the street that
-carries it first. A place that has a name of its own comes before one the dump left
-nameless, and a place is answered once: two results of the same name, town and postal code
+word nobody types.
+
+Results are ordered by six keys: what the query said about *where* — a postcode counts for
+more than a town — then the house number that was asked for, then a place with a name of its
+own before one the dump left nameless, then, where a position was given, whether the place
+still goes by what was typed and how near it lies, and last Photon's own `importance`. The
+two keys in the middle need a position: without one they are the same for every place and
+decide nothing, so such a query is ordered by place, house number, name and weight alone.
+
+A place is answered once: two results of the same name, town and postal code
 are one place written down twice, and only the first of them is shown. Nameless lines count
 as the same within two kilometres; named places do too where a position was given, and the
 record nearer the searcher is the one shown — a town's own point stands in the town, the

@@ -1254,6 +1254,25 @@ TEST(GeoIndexRepeats, ATownStandsBeforeTheNamelessBlocksInsideIt) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexRepeats, TheDatelineDoesNotPullTwoLinesApart) {
+  // two nameless blocks of one village, a few hundred metres and the 180th
+  // meridian apart — measured the long way round they lie half a world away
+  TempPath path{"repeatsdateline"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(),
+      {
+          Placed("", "Taveuni", "", -16.8000, 179.9990, PHOTON_PLACE_TYPE_STREET, 3000, "fj"),
+          Placed("", "Taveuni", "", -16.8000, -179.9990, PHOTON_PLACE_TYPE_STREET, 2900, "fj"),
+      }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  EXPECT_EQ(Query(index, "Taveuni ", hits, 8), 1u);
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexRepeats, APositionSaysWhichOfTheTwoIsMeant) {
   // the same Heusenstamm, asked from the town itself: one answer, and the
   // record standing in the town rather than the middle of its boundary
@@ -1277,6 +1296,32 @@ TEST(GeoIndexRepeats, APositionSaysWhichOfTheTwoIsMeant) {
   ASSERT_EQ(QueryFrom(index, "Heusenstamm ", 50.0547, 8.7993, hits, 8), 1u);
   EXPECT_EQ(index.documents[hits[0].document].lat_e7, E7(50.0547)) << "the nearer of the two";
   EXPECT_EQ(index.documents[hits[0].document].type, PHOTON_PLACE_TYPE_INDEPENDENT_CITY);
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexRepeats, TheRecordCarryingTheNumberIsTheOneKept) {
+  // one street written down twice, and only the farther record carries the 5
+  testsupport::MiniPlace with_door =
+      Placed("Hauptstraße", "Bonn", "53111", 50.7350, 7.0980, PHOTON_PLACE_TYPE_STREET, 3000, "de");
+  with_door.houses = {"5"};
+  TempPath path{"repeatsdoor"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(), {
+                        with_door,
+                        Placed(
+                            "Hauptstraße", "Bonn", "53111", 50.7420, 7.0980,
+                            PHOTON_PLACE_TYPE_LOCALITY, 9000, "de"
+                        ),
+                    }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // asked from beside the record without the number, half a kilometre away
+  ASSERT_EQ(QueryFrom(index, "Hauptstraße 5 Bonn ", 50.7420, 7.0980, hits, 8), 1u);
+  ASSERT_NE(hits[0].house, GEO_RANK_NONE) << "the door is worth more than a few hundred metres";
+  EXPECT_EQ(DisplayWord(index, index.houses[hits[0].house].number_rank), "5");
   geo_index_close(&index);
 }
 

@@ -438,13 +438,22 @@ bool geo_index_house_estimate(
  *  silence an otherwise clear address.  If no word is known at all, nothing
  *  is found.
  *
- *  Four keys order the results.  First how far a place answers what the query
- *  said about *where*: a postcode it named weighs more than a town, and a place
- *  that answers neither scores nothing.  Then, among places that agree equally,
- *  the one carrying the house number that was asked for.  Then a place with a
- *  name of its own before one the dump left nameless, which an answer can only
- *  show as an empty line.  Weight decides only where the query described no
- *  place at all — as it always did.
+ *  Six keys order the results, in this order:
+ *
+ *  1. How far a place answers what the query said about *where*: a postcode it
+ *     named weighs more than a town, and a place that answers neither scores
+ *     nothing.
+ *  2. The house number that was asked for, the number itself before the plain
+ *     number that stood in for a suffix.
+ *  3. A place with a name of its own before one the dump left nameless, which
+ *     an answer can only show as an empty line.
+ *  4. Whether the place still goes by what was typed, rather than carrying it
+ *     among its former names — 0 for every place where no position was given;
+ *     see ranks_before() for why it is weighed there and nowhere else.
+ *  5. How near it lies to the searcher, in bands — 0 for every place where no
+ *     position was given, so this key decides nothing then.
+ *  6. The weight the dump gave it, which is what decides where the query
+ *     described no place at all — as it always did.
  *
  *  What the ranking has ordered is said once.  Two places of the same name, town
  *  and postal code are one place written down twice — a town filed as a town and

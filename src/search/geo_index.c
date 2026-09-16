@@ -2346,8 +2346,10 @@ static bool country_in_a_name(
  *  different names — so *Halle (Westf.)* arrives as a town and as a district,
  *  *Den Haag* twice with two weights, and a town's nameless address blocks as
  *  one place each.  An answer shows a name, a town and a postal code, and where
- *  two places agree in all three and lie within
- *  @ref GEO_QUERY_SAME_PLACE_E7 of each other, they are one line repeated.
+ *  two places agree in all three and stand near enough to each other — within
+ *  @ref GEO_QUERY_SAME_BLOCK_E7 while both are nameless, within
+ *  @ref GEO_QUERY_SAME_PLACE_NEAR_E7 while @p positioned says the searcher can
+ *  tell them apart — they are one line repeated.
  *
  *  A missing field counts as a field: two nameless places agree in their
  *  namelessness, which is exactly what makes them look alike.  A place that
@@ -2363,7 +2365,11 @@ static bool same_place(const GeoIndex *index, uint32_t left, uint32_t right, boo
   if (!(a->flags & GEO_DOCUMENT_HAS_POINT) || !(b->flags & GEO_DOCUMENT_HAS_POINT)) return true;
 
   int64_t north = (int64_t)a->lat_e7 - b->lat_e7;
-  int64_t east = ((int64_t)a->lon_e7 - b->lon_e7) * longitude_shrink(a->lat_e7) / 16;
+  int64_t east = (int64_t)a->lon_e7 - b->lon_e7;
+  /* the shorter way round the world, for two places either side of the dateline */
+  if (east > 1800000000) east -= 3600000000LL;
+  if (east < -1800000000) east += 3600000000LL;
+  east = east * longitude_shrink(a->lat_e7) / 16;
   /* A nameless line says nothing but its town, so two of them are one line
      wherever in that town they stand.  Two places that *are* named are written
      down twice in two places as often as not — the middle of a town's boundary
@@ -2392,7 +2398,11 @@ static bool same_place(const GeoIndex *index, uint32_t left, uint32_t right, boo
  *  @whisper One place says its name once, however many times it was written down
  */
 static size_t drop_repeats(
-    const GeoIndex *index, GeoHit *hits, size_t count, const GeoQueryOptions *options
+    const GeoIndex *index,
+    GeoHit *hits,
+    HitRank *ranks,
+    size_t count,
+    const GeoQueryOptions *options
 ) {
   bool positioned = options->has_position;
   size_t kept = 0;
@@ -2403,8 +2413,13 @@ static size_t drop_repeats(
       /* Of two ways of writing one place down, the one nearer the searcher is
          the one they mean: a town's own point stands in the town, the middle of
          its boundary a kilometre outside it.  The place keeps the rank the
-         ranking gave it and answers with the nearer of its two records. */
-      if (repeated && positioned &&
+         ranking gave it and answers with the nearer of its two records.
+
+         Only where the two say the same about the house number, though.  One
+         record of a street may carry the number that was asked for while its
+         twin does not, and the door is worth more than the few hundred metres:
+         whoever asked for it means the record that has it. */
+      if (repeated && positioned && ranks[h].door == ranks[k].door &&
           distance_squared(index, hits[h].document, options) <
               distance_squared(index, hits[k].document, options)) {
         GeoHit nearer = hits[h];
@@ -2412,7 +2427,11 @@ static size_t drop_repeats(
         hits[k] = nearer;
       }
     }
-    if (!repeated) hits[kept++] = hits[h];
+    if (!repeated) {
+      hits[kept] = hits[h];
+      ranks[kept] = ranks[h];
+      ++kept;
+    }
   }
   return kept;
 }
@@ -2655,7 +2674,7 @@ size_t geo_index_query_options(
     }
   }
   rank_hits(pool, ranks, count);
-  count = drop_repeats(index, pool, count, options);
+  count = drop_repeats(index, pool, ranks, count, options);
 
   if (stats) stats->weighed = count; /* what the ranking held, before the limit trims */
   if (count > limit) count = limit;

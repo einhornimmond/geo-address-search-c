@@ -197,9 +197,13 @@ GeoStatus geo_client_language(
  *  Results are ordered by how far they answer what the query said about *where*
  *  — a postcode it named counts for more than a town — then, among places that
  *  answer equally, by whether the house number was actually found there, then
- *  by whether the place has a name at all, and last by the weight the dump gave
- *  the place.  A query that names no town and no postcode is answered by weight
- *  alone, heaviest first.
+ *  by whether the place has a name at all.  Where a position was given, two more
+ *  keys follow: whether the place still goes by what was typed rather than
+ *  carrying it among its former names, and how near it lies to the searcher.
+ *  Last comes the weight the dump gave the place, and that is what decides a
+ *  query naming no town and no postcode — heaviest first.  Without a position
+ *  the two middle keys are the same for everyone and decide nothing, so such a
+ *  query is ordered by place, house number, name and weight alone.
  *
  *  A place is answered once.  Where two results would carry the same name, town
  *  and postal code — the same town filed as a town and as a district, or the
