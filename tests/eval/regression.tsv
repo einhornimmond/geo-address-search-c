@@ -4,7 +4,7 @@
 # the centre of the map as the position.  The expected coordinates were read off the
 # planet index for the place meant (Würzburg the city, not the Landkreis), and the
 # radius is as wide as the drawn queries allow for the same kind of place.
-category	query	prefix	lat	lon	expect_name	expect_number	expect_lat	expect_lon	radius_m	context
+category	query	prefix	lat	lon	expect_name	expect_number	expect_lat	expect_lon	radius_m	context	limit
 regression.city_from_afar	Würzburg	1	52.520000	13.405000	Würzburg		49.7933723	9.9309779	8000	a city filed as a county, typed in Berlin
 regression.city_from_afar	München	1	52.520000	13.405000	München		48.1371079	11.5753822	8000	nearby Münchener Straße must not hide it
 regression.city_from_afar	Hamburg	1	48.137400	11.575500	Hamburg		53.5501721	10.0013165	8000	nearby Hamburger Straße must not hide it
@@ -49,3 +49,8 @@ regression.city_position	Würzburg	1	52.520000	13.405000	Würzburg		49.7933723	9
 regression.city_position	Erlangen	1	52.520000	13.405000	Erlangen		49.5977469	11.0037372	800	the town, not its boundary filed as a county
 regression.city_position	Hungen	1	52.520000	13.405000	Hungen		50.4752473	8.9009917	800	the town, not the municipality around it
 regression.city_position	Den Haag	1	48.137400	11.575500	Den Haag		52.0799838	4.3113461	8000	answered once, not twice
+regression.far_town	Gera	1	48.137400	11.575500	Gera		50.8766	12.0833	8000	a town lighter than a city, the Gerastraße near the searcher
+regression.far_town	Neustadt	1	50.938300	6.960000	Neustadt/Süd|Neustadt/Nord		50.9373	6.9407	3000	Cologne's own quarter, not Neustadt in Holstein
+regression.far_town	Brandenburg	1	48.137400	11.575500	Brandenburg an der Havel		52.4108	12.5498	8000	after the state, as Google Maps answers	2
+regression.far_town	Halle	1	52.520000	13.405000	Halle (Westf.)		52.0604	8.3616	8000	second after Halle (Saale), not Halle in Belgium	2
+regression.far_town	Venlo	1	51.180500	6.442800	Venlo		51.3702	6.1689	8000	across the border, 28 km	1

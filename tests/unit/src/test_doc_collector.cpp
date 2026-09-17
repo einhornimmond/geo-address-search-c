@@ -413,6 +413,39 @@ TEST(DocCollectorMerge, ATownsBoundaryJoinsTheTownItGoverns) {
   doc_set_free(&set);
 }
 
+TEST(DocCollectorMerge, ATownFiledLowerThanItsMunicipalityStaysATown) {
+  // Halle (Westf.): the dump files the town's point as a district and the
+  // boundary of the municipality as a city
+  DocSet set{};
+  MergeAll(
+      &set,
+      {
+          {Place(10, 52.0604, 8.3616, PHOTON_PLACE_TYPE_DISTRICT, GEO_DOCUMENT_SETTLEMENT, 20000),
+           {1}},
+          {Place(10, 52.0447, 8.3500, PHOTON_PLACE_TYPE_CITY, GEO_DOCUMENT_ADMIN_AREA, 32909), {2}},
+      }
+  );
+  ASSERT_EQ(set.document_count, 1u);
+  EXPECT_EQ(set.documents[0].type, PHOTON_PLACE_TYPE_CITY);
+  EXPECT_EQ(set.documents[0].lat_e7, (int32_t)(52.0604 * 1e7)) << "and still where the town is";
+  doc_set_free(&set);
+
+  // a quarter's boundary filed as a district leaves a village filed as one alone
+  DocSet quarter{};
+  MergeAll(
+      &quarter,
+      {
+          {Place(11, 50.0000, 8.0000, PHOTON_PLACE_TYPE_DISTRICT, GEO_DOCUMENT_SETTLEMENT, 9000),
+           {1}},
+          {Place(11, 50.0050, 8.0000, PHOTON_PLACE_TYPE_DISTRICT, GEO_DOCUMENT_ADMIN_AREA, 9500),
+           {2}},
+      }
+  );
+  ASSERT_EQ(quarter.document_count, 1u);
+  EXPECT_EQ(quarter.documents[0].type, PHOTON_PLACE_TYPE_DISTRICT);
+  doc_set_free(&quarter);
+}
+
 TEST(DocCollectorMerge, TheBoundarysPostalCodesSurviveATownWithoutOne) {
   // Paris: the point of the city carries no code, its boundary all twenty
   GeoDocument town =

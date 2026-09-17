@@ -235,6 +235,18 @@ static bool same_place(const MergeKey *a, const MergeKey *b) {
  *  Görlitz, the Landkreis Meißen — lies eight kilometres and more away. */
 #define MERGE_TOWN_REACH_M 5000.0
 
+/** Is @p type a town in its own right — a city, however it is filed? */
+static bool is_town_kind(uint8_t type) {
+  return type == PHOTON_PLACE_TYPE_CITY || type == PHOTON_PLACE_TYPE_STATE_COUNTY_CITY ||
+         type == PHOTON_PLACE_TYPE_INDEPENDENT_CITY;
+}
+
+/** Is @p type an area — a town, or one of the levels above it? */
+static bool is_area_kind(uint8_t type) {
+  return is_town_kind(type) || type == PHOTON_PLACE_TYPE_COUNTRY ||
+         type == PHOTON_PLACE_TYPE_STATE || type == PHOTON_PLACE_TYPE_COUNTY;
+}
+
 /** Metres between two records' points, on a sphere the size of the Earth, the
  *  shorter way round it — two points either side of the 180th meridian lie a few
  *  hundred metres apart, not most of the world. */
@@ -260,7 +272,8 @@ static double gap_m(const GeoDocument *a, const GeoDocument *b) {
  *  the town twice.
  *
  *  So a record drawn from a boundary takes the place, the town and the kind of
- *  the nearest settlement of its name within
+ *  the nearest settlement of its name — a city's kind where the settlement is
+ *  filed lower than the municipality it governs — within
  *  @ref MERGE_TOWN_REACH_M, and is then merged into it like any record of the
  *  same place: one document, standing where the town is, as heavy as the
  *  heavier of the two, answering to the words of both.  The postal code is the
@@ -290,10 +303,11 @@ static size_t join_land_to_its_town(GeoDocument *records, MergeKey *keys, size_t
       if (!(land->flags & GEO_DOCUMENT_ADMIN_AREA) || !(land->flags & GEO_DOCUMENT_HAS_POINT)) {
         continue;
       }
-      const GeoDocument *town = NULL;
+      GeoDocument *town = NULL;
+      size_t town_key = 0;
       double nearest = MERGE_TOWN_REACH_M;
       for (size_t s = i; s < end; ++s) {
-        const GeoDocument *candidate = &records[keys[s].record];
+        GeoDocument *candidate = &records[keys[s].record];
         if (!(candidate->flags & GEO_DOCUMENT_SETTLEMENT) ||
             !(candidate->flags & GEO_DOCUMENT_HAS_POINT)) {
           continue;
@@ -302,9 +316,21 @@ static size_t join_land_to_its_town(GeoDocument *records, MergeKey *keys, size_t
         if (gap < nearest || (!town && gap <= nearest)) {
           nearest = gap;
           town = candidate;
+          town_key = s;
         }
       }
       if (!town) continue;
+
+      /* The kind is the town's — Würzburg's boundary is filed as a county, the
+         city is a city — unless the dump files the town's point lower than the
+         municipality it governs: the point of Halle (Westf.) is a district, its
+         boundary a city, and so are 868 towns of the German dump.  A town is
+         never less than a town, so there the municipality's kind stands for
+         both records. */
+      if (is_town_kind(land->type) && !is_area_kind(town->type)) {
+        town->type = land->type;
+        keys[town_key].type = town->type;
+      }
 
       land->lat_e7 = town->lat_e7;
       land->lon_e7 = town->lon_e7;
