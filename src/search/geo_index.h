@@ -585,7 +585,14 @@ typedef struct GeoQueryOptions {
  *  place stays hidden behind a nearby one carrying its word: without the
  *  weight, every village called after a common word would be lifted too, and
  *  *Bahnhof* would answer with Gmünd-Bahnhof rather than with the stations
- *  around the searcher.
+ *  around the searcher.  A town down to 25000 comes in all the same where the
+ *  query typed the first word of its name and nothing near begins with what was
+ *  typed: *Gera* from Munich answers with Gera before the Gerastraße there, and
+ *  *Brandenburg* with the state and then Brandenburg an der Havel, while
+ *  *Neustadt* in Cologne keeps Neustadt/Süd first.  Such a town from another
+ *  country than the searcher's comes in only within about 100 km of them, so
+ *  *Halle* in Berlin passes over Halle in Belgium but *Venlo* in Mönchengladbach
+ *  finds Venlo.
  *
  *  @param[in]     index      Opened index; must not be NULL.
  *  @param[in,out] tokenizer  Scratch space; reset by this call.

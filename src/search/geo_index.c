@@ -1634,6 +1634,44 @@ static size_t query_words(
  */
 #define GEO_QUERY_FAR_WEIGHT_MIN 40000u
 
+/**
+ * The same, for a town whose own name the query begins, while nothing inside
+ * the ring carries that word as the first of its own name.
+ *
+ * Below @ref GEO_QUERY_FAR_WEIGHT_MIN weigh the middle-sized towns — Gera
+ * 38608, Brandenburg an der Havel 38396, Cottbus 39915 — and *Gera* asked from
+ * Munich found nothing but the Gerastraße there, *Brandenburg* nothing but the
+ * state and the Brandenburger Straße.  What the weight kept down is still kept
+ * down by the two conditions: *Gmünd-Bahnhof* and *Mitte-Ost* do not begin with
+ * *Bahnhof* and *Mitte*, and Neustadt an der Weinstraße or Neustadt in Holstein
+ * do not come up over Cologne's Neustadt/Süd, which carries the word first.
+ *
+ * Measured on the planet index with the 1 795 towns of Germany whose name no
+ * other settlement there bears, and 415 whose first word leads to them alone,
+ * each asked from Berlin, Munich, Cologne and Hamburg, and with 635 quarters and
+ * villages near those cities whose name a place far off bears or begins with:
+ * from 40000 down to this, 563 far towns come first that did not, the towns
+ * asked by their first word stand among the first three in 91.0 % instead of
+ * 76.3 %, and nothing near falls but one village of 635.  Below it nothing
+ * changes any more.
+ */
+#define GEO_QUERY_FAR_NAMED_WEIGHT_MIN 25000u
+
+/**
+ * How far from the searcher a lighter town may lie in another country than
+ * theirs, in degrees × 10⁷ of latitude — about 100 km.
+ *
+ * *Halle* asked in Berlin found Halle in Belgium and the Belgian district
+ * Halle-Vilvoorde before Halle (Westf.), where a map zoomed onto Germany shows
+ * the two German Halles and nothing else.  A lighter town abroad therefore
+ * comes in only near the searcher — the border towns a map would show: Venlo
+ * from Mönchengladbach, Kufstein from Rosenheim, Enschede from Münster at
+ * 58 km.  Measured with 23 of them, each asked from the German town nearest:
+ * without the exception 6 fell out of the first ten, from 75 km on none does.
+ * A town of weight — @ref GEO_QUERY_FAR_WEIGHT_MIN — comes in from anywhere.
+ */
+#define GEO_QUERY_FAR_ABROAD_E7 9000000
+
 /* The sample is what @ref GEO_QUERY_LIMIT_MAX measures — 256 hits are four
    kilobytes of stack — so the two are one number, kept in the header where a
    caller can read it. */
@@ -1979,11 +2017,81 @@ static void rank_hits(GeoHit *hits, HitRank *ranks, size_t count) {
 }
 
 /**
+ * @brief The places of the country @p document lies in, or NULL.
+ *
+ *  The country words — `#de`, `#at` — stand side by side in the dictionary, a
+ *  few hundred of them, and the one whose places hold @p document is its
+ *  country; see @ref geo_country.  An index built before the country words
+ *  holds none, and every document there lies in no country.
+ *
+ *  @return A view to release with roaring_bitmap_free(), or NULL.
+ */
+static const roaring_bitmap_t *country_of(const GeoIndex *index, uint32_t document) {
+  const char mark[1] = {GEO_COUNTRY_MARK};
+  size_t first = prefix_bound(&index->words, mark, 1, false);
+  size_t last = prefix_bound(&index->words, mark, 1, true);
+  for (size_t rank = first; rank < last; ++rank) {
+    size_t size = 0;
+    geo_dictionary_word(&index->words, rank, &size);
+    if (size != GEO_COUNTRY_TOKEN_SIZE) continue;
+    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
+    if (!documents) continue;
+    if (roaring_bitmap_contains(documents, document)) return documents;
+    roaring_bitmap_free((roaring_bitmap_t *)documents);
+  }
+  return NULL;
+}
+
+/**
+ * @brief Does the query name the spelling behind @p rank?
+ *
+ *  Only whole words count: the pieces a compound falls into are passed over, so
+ *  *Gerastraße* is not named by *Gera*, and neither is its first word.
+ *
+ *  @param[in]     index       Opened index.
+ *  @param[in]     rank        Display rank, or GEO_RANK_NONE.
+ *  @param[in]     kept        Words of the query.
+ *  @param[in,out] scratch     Tokenizer, overwritten.
+ *  @param[in]     first_only  Ask for the first word of the spelling alone
+ *                             rather than for every one of them.
+ *  @return Whether the query holds them; false for a spelling of more than 64
+ *          words, or none.
+ */
+static bool name_typed(
+    const GeoIndex *index,
+    uint32_t rank,
+    const QueryWords *kept,
+    TextTokenizer *scratch,
+    bool first_only
+) {
+  if (rank == GEO_RANK_NONE) return false;
+  size_t size = 0;
+  const char *text = geo_dictionary_word(&index->display, rank, &size);
+  if (!text || !size) return false;
+  size_t tokens = text_tokenize(scratch, text, size);
+  uint64_t words = 0, typed = 0;
+  for (size_t t = 0; t < tokens; ++t) {
+    const TextToken *token = &scratch->tokens[t];
+    if (token->group >= 64) return false;
+    uint64_t bit = UINT64_C(1) << token->group;
+    if (token->part) continue; /* the halves of Gerastraße do not name Gera */
+    words |= bit;
+    if (query_words_have(kept, token->data, token->size)) typed |= bit;
+  }
+  if (first_only) return (typed & UINT64_C(1)) != 0;
+  return words && (words & ~typed) == 0;
+}
+
+/**
  * @brief Take in the places beyond the ring that the query names outright.
  *
  *  A candidate of @p far joins the sample when all of these hold:
  *
- *  - it weighs at least @ref GEO_QUERY_FAR_WEIGHT_MIN;
+ *  - it weighs at least @ref GEO_QUERY_FAR_WEIGHT_MIN — or at least
+ *    @ref GEO_QUERY_FAR_NAMED_WEIGHT_MIN where it is a town (place_is_area()),
+ *    the query typed the first word of its own name, no candidate inside the
+ *    ring has a first word the query typed, and it lies in the searcher's
+ *    country or within @ref GEO_QUERY_FAR_ABROAD_E7 of them;
  *  - it is not already among the first @p count of @p pool;
  *  - agreement_of() reaches GEO_AGREEMENT_CITY: the query names its postcode,
  *    or names its town by name as town_agreement() reads it — the first word of
@@ -2007,6 +2115,19 @@ static void rank_hits(GeoHit *hits, HitRank *ranks, size_t count) {
  *  the word as its own name just as a city does.  What tells the two apart is
  *  not the name but how much the place weighs.
  *
+ *  Weight alone draws the line too high for towns, though: it kept *Gera* from
+ *  anyone asking in Munich, where a Gerastraße stands, and *Brandenburg* found
+ *  the state but not Brandenburg an der Havel.  A lighter town comes in where
+ *  the query begins its own name and nothing near begins with what was typed —
+ *  so *Mitte* does not reach *Mitte-Ost*, whose name begins otherwise, and a
+ *  quarter nearby that begins with the word, *Neustadt/Süd* in Cologne, keeps
+ *  *Neustadt* for itself.  Among the towns that come in, weight orders as it
+ *  does everywhere: *Kamen* from Berlin answers with Kamen am Ob before Kamen
+ *  in Westphalia, as *Halle* answers with Halle (Saale) before a village called
+ *  Halle.  And a lighter town abroad comes in only near the border: *Halle* in
+ *  Berlin answers with Halle (Saale) and Halle (Westf.), not with Halle in
+ *  Belgium, while *Venlo* in Mönchengladbach still finds Venlo.
+ *
  *  @param[in]     index     Opened index.
  *  @param[in]     kept      Words of the query.
  *  @param[in,out] scratch   Tokenizer, overwritten.
@@ -2023,6 +2144,7 @@ static size_t far_named_places(
     const GeoIndex *index,
     const QueryWords *kept,
     TextTokenizer *scratch,
+    const GeoQueryOptions *options,
     const GeoHit *far,
     size_t far_count,
     GeoHit *pool,
@@ -2030,9 +2152,12 @@ static size_t far_named_places(
     size_t count
 ) {
   const size_t near_count = count;
+  int near_named = -1;                 /* asked for once, where a light town first needs it */
+  const roaring_bitmap_t *home = NULL; /* the searcher's country, likewise */
+  bool home_asked = false;
   for (size_t f = 0; f < far_count && count < near_count + GEO_QUERY_FAR_MAX; ++f) {
     /* cheapest first: the weight is a field, the agreement folds two texts */
-    if (far[f].importance < GEO_QUERY_FAR_WEIGHT_MIN) continue;
+    if (far[f].importance < GEO_QUERY_FAR_NAMED_WEIGHT_MIN) continue;
 
     bool held = false;
     for (size_t h = 0; h < near_count && !held; ++h) held = pool[h].document == far[f].document;
@@ -2041,10 +2166,37 @@ static size_t far_named_places(
     unsigned agreement = agreement_of(index, far[f].document, kept, scratch);
     if (agreement < GEO_AGREEMENT_CITY) continue;
 
+    if (far[f].importance < GEO_QUERY_FAR_WEIGHT_MIN) {
+      const GeoDocument *record = &index->documents[far[f].document];
+      if (!place_is_area(record->type) ||
+          !name_typed(index, record->name_rank, kept, scratch, true)) {
+        continue;
+      }
+      if (near_named < 0) {
+        near_named = 0;
+        for (size_t h = 0; h < near_count && !near_named; ++h) {
+          uint32_t name = index->documents[pool[h].document].name_rank;
+          near_named = name_typed(index, name, kept, scratch, true) ? 1 : 0;
+        }
+      }
+      if (near_named) continue;
+      /* the searcher's country is the one the places around them lie in; an
+         index without country words knows none, and holds no one back */
+      if (!home_asked) {
+        home_asked = true;
+        for (size_t h = 0; h < near_count && !home; ++h) home = country_of(index, pool[h].document);
+      }
+      if (home && !roaring_bitmap_contains(home, far[f].document)) {
+        int64_t reach = GEO_QUERY_FAR_ABROAD_E7;
+        if (distance_squared(index, far[f].document, options) > reach * reach) continue;
+      }
+    }
+
     pool[count] = far[f];
     ranks[count].agreement = (uint8_t)agreement;
     ++count;
   }
+  if (home) roaring_bitmap_free((roaring_bitmap_t *)home);
   return count;
 }
 
@@ -2185,25 +2337,12 @@ static bool query_country(
   /* nothing but the country's name: that asks for the country itself */
   if (named == GEO_RANK_NONE || (asked & ~naming) == 0) return false;
 
-  /* The country's own code word is the one of the `#xx` words its document
-     carries.  They stand side by side in the dictionary, a few hundred of them,
-     and are walked only for a query that named a country. */
-  const char mark[1] = {GEO_COUNTRY_MARK};
-  size_t first = prefix_bound(&index->words, mark, 1, false);
-  size_t last = prefix_bound(&index->words, mark, 1, true);
-  for (size_t rank = first; rank < last; ++rank) {
-    size_t size = 0;
-    geo_dictionary_word(&index->words, rank, &size);
-    if (size != GEO_COUNTRY_TOKEN_SIZE) continue;
-    const roaring_bitmap_t *documents = geo_index_word_documents(index, rank);
-    if (!documents) continue;
-    if (roaring_bitmap_contains(documents, named)) {
-      out->documents = roaring_bitmap_copy(documents);
-      roaring_bitmap_free(documents);
-      break;
-    }
-    roaring_bitmap_free(documents);
-  }
+  /* the country's own code word is the one of the `#xx` words its document
+     carries, walked only for a query that named a country */
+  const roaring_bitmap_t *documents = country_of(index, named);
+  if (!documents) return false;
+  out->documents = roaring_bitmap_copy(documents);
+  roaring_bitmap_free((roaring_bitmap_t *)documents);
   if (!out->documents) return false;
   out->groups = naming;
   return true;
@@ -2647,7 +2786,7 @@ size_t geo_index_query_options(
      fits, always, and the ranking runs for every query rather than for most. */
   HitRank ranks[GEO_QUERY_LIMIT_MAX + GEO_QUERY_FAR_MAX];
   size_t near_count = count;
-  count = far_named_places(index, &kept, tokenizer, far, far_count, pool, ranks, count);
+  count = far_named_places(index, &kept, tokenizer, options, far, far_count, pool, ranks, count);
   for (size_t h = 0; h < count; ++h) {
     /* a place taken in from beyond the ring arrives with its agreement */
     if (h < near_count) {

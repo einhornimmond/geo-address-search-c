@@ -40,6 +40,38 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **A middle-sized town typed from afar is found behind a street named after it.** A place
+  beyond the searcher's surroundings was taken in only from a weight of 40000, which keeps
+  villages named after a common word down but hid towns of 90 000 people as well: `Gera`
+  asked from Munich answered with the Gerastraße there and nothing else, and `Brandenburg`
+  with the state and the Brandenburger Straße but not Brandenburg an der Havel.
+  - **A town down to 25000 comes in where the query typed the first word of its own name**
+    — whole words only, so the Gerastraße does not begin with Gera — **and nothing inside
+    the ring begins its own name with a word the query typed.** `Brandenburg` from Munich
+    now answers with the state and then Brandenburg an der Havel, as Google Maps does.
+    Cologne's Neustadt/Süd keeps `Neustadt` from Neustadt in Holstein and Neustadt an der
+    Weinstraße, and `Mitte` does not reach Mitte-Ost. Among the towns that come in, weight
+    orders, as `Halle` gives Halle (Saale) before a village called Halle.
+  - **A lighter town abroad comes in only within about 100 km of the searcher.** `Halle` in
+    Berlin answered with Halle in Belgium and the Belgian district Halle-Vilvoorde before
+    Halle (Westf.); it now answers with Halle (Saale) and Halle (Westf.), as a map zoomed
+    onto Germany does, while `Venlo` in Mönchengladbach still finds Venlo. The searcher's
+    country is the one the places around them lie in, read from the country words, so an
+    index built before those holds no one back. Of 23 border towns asked from the German
+    town nearest, 6 fell out of the first ten without the 100 km; with it none does, and
+    German towns whose name a lighter town abroad bears — Melle, Homburg, Kamen — come first
+    in 21 more queries.
+  - **Measured on the planet** with the 1 795 towns of Germany whose name no other
+    settlement there bears, each asked from Berlin, Munich, Cologne and Hamburg: 91.6 %
+    come first instead of 82.8 %. The 415 towns whose first word leads to them alone,
+    asked by that word, stand among the first three in 94.1 % instead of 76.3 %. Of 635
+    quarters and villages near those cities whose name a place far off bears or begins
+    with, one village falls behind. Lowering the weight alone had cost the quarters a
+    quarter of their first places at 30000, and ranking a town named in full before one
+    named by its first word put a village called Halle before Halle (Saale) again. Over the
+    13 388 queries of the regression file, the drawn queries and the external suites,
+    four rank higher and none lower. No format change and no rebuild.
+
 - **A town stands where the town is.** OpenStreetMap describes most towns twice — the point
   tagged `place=city`, `town` or `village`, and the boundary of the land the town governs —
   and the dump hands on both under one name. The boundary is the heavier of the two and its
@@ -60,6 +92,11 @@ summarise what the commits show rather than what was noted at the time.
     from its town, while a county sharing its town's name lies eight kilometres and more out
     — the Landkreise Görlitz and Meißen stay places of their own. The Landkreis Zwickau, 2.8 km
     from the town, joins it.
+  - **A town keeps the kind of a town.** The document takes the settlement's kind, except
+    where the dump files the settlement lower than the municipality it governs: the point
+    of Halle (Westf.) is a district and its boundary a city, and so are 868 towns of the
+    German dump. There the city's kind stands, so such a town still counts as a town for
+    what the query names and for being found from afar.
   - **Measured on the planet**, 45 965 documents fewer (34 604 821). Over 13 382 queries, 20
     rank higher and none lower: geocoder-tester's German suite passes 85.7 % instead of
     80.3 %, first place 84.0 % instead of 78.7 % — `Würzburg`, `Erlangen`, `Fürth` and

@@ -690,6 +690,71 @@ TEST(GeoIndexNear, ALightPlaceBeyondTheRingDoesNotPushAsideWhatIsNear) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexNear, ALighterTownTypedInFullIsTakenInFromBeyondTheRing) {
+  // Gera weighs less than a city has to, and asked from Munich the Gerastraße
+  // there held the ring; typed in full and named by nothing near, it comes in
+  std::vector<testsupport::MiniPlace> places = {
+      {"Gerastraße", "München", "80993", 481844000, 115192000, PHOTON_PLACE_TYPE_STREET, 3501},
+      {"Gera", "Gera", "", 508766000, 120833000, PHOTON_PLACE_TYPE_CITY, 38608},
+      // lighter still, a village stays out however fully it is typed
+      {"Tannastraße", "München", "80993", 481850000, 115200000, PHOTON_PLACE_TYPE_STREET, 3501},
+      {"Tanna", "Tanna", "", 504950000, 118580000, PHOTON_PLACE_TYPE_CITY, 21000},
+  };
+  TempPath path{"farlighttown"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Gera", 48.1374, 11.5755, hits, 8, nullptr, true), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Gera");
+  ASSERT_EQ(QueryFrom(index, "Tanna", 48.1374, 11.5755, hits, 8, nullptr, true), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Tannastraße");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, ANearbyPlaceThatBeginsWithTheWordKeepsItFromALighterTown) {
+  // Cologne's Neustadt/Süd carries the word first; Neustadt in Holstein, named
+  // by it but light, stays where it is
+  std::vector<testsupport::MiniPlace> places = {
+      {"Neustadt/Süd", "Köln", "", 509266000, 69404000, PHOTON_PLACE_TYPE_DISTRICT, 19678},
+      {"Neustadt", "Neustadt", "23730", 541070000, 108150000, PHOTON_PLACE_TYPE_CITY, 32000},
+  };
+  TempPath path{"farbeginning"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Neustadt", 50.9383, 6.9600, hits, 8, nullptr, true), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Neustadt/Süd");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, ALighterTownNamedByItsFirstWordComesInBehindTheState) {
+  // *Brandenburg* from Munich: the state, then Brandenburg an der Havel, as
+  // Google Maps answers — the Brandenburger Straße begins otherwise
+  std::vector<testsupport::MiniPlace> places = {
+      {"Brandenburger Straße", "München", "80805", 481719000, 115992000, PHOTON_PLACE_TYPE_STREET,
+       2627},
+      {"Brandenburg", "", "", 528455000, 132461000, PHOTON_PLACE_TYPE_STATE, 46464},
+      {"Brandenburg an der Havel", "Brandenburg an der Havel", "", 524108000, 125498000,
+       PHOTON_PLACE_TYPE_CITY, 38396},
+  };
+  TempPath path{"farfirstword"};
+  ASSERT_TRUE(BuildMiniIndex(path.c_str(), places));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(QueryFrom(index, "Brandenburg", 48.1374, 11.5755, hits, 8, nullptr, true), 3u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Brandenburg");
+  EXPECT_EQ(
+      DisplayWord(index, index.documents[hits[1].document].name_rank), "Brandenburg an der Havel"
+  );
+  geo_index_close(&index);
+}
+
 // ---------------------------------------------------------------------------
 //  A country named beside the town
 // ---------------------------------------------------------------------------
@@ -1349,6 +1414,48 @@ TEST(GeoIndexRepeats, ATownWrittenDownInTwoPlacesStaysTwo) {
   EXPECT_EQ(Query(index, "Heusenstamm ", hits, 8), 2u)
       << "asked from nowhere, nothing says which of the two is meant";
   // and the build has already joined whatever stood within 300 m of its twin
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexNear, ALighterTownAbroadComesInOnlyNearTheBorder) {
+  // *Halle* in Berlin: a map zoomed onto Germany shows the two German Halles,
+  // not the one in Belgium; *Venlo* in Mönchengladbach is across the border
+  TempPath path{"farabroad"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(),
+      {
+          Placed(
+              "Hallesches Ufer", "Berlin", "10963", 52.4991, 13.3841, PHOTON_PLACE_TYPE_STREET,
+              14452, "de"
+          ),
+          Placed(
+              "Halle (Saale)", "Halle (Saale)", "", 51.4824, 11.9713, PHOTON_PLACE_TYPE_CITY, 43648,
+              "de"
+          ),
+          Placed(
+              "Halle (Westf.)", "Halle (Westf.)", "33790", 52.0604, 8.3616, PHOTON_PLACE_TYPE_CITY,
+              32909, "de"
+          ),
+          Placed("Halle", "Halle", "1500", 50.7361, 4.2374, PHOTON_PLACE_TYPE_CITY, 34481, "be"),
+          Placed(
+              "Venloer Straße", "Willich", "47877", 51.2611, 6.4630, PHOTON_PLACE_TYPE_STREET, 3499,
+              "de"
+          ),
+          Placed("Venlo", "Venlo", "", 51.3702, 6.1689, PHOTON_PLACE_TYPE_CITY, 36848, "nl"),
+      }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  size_t count = QueryFrom(index, "Halle", 52.52, 13.405, hits, 8, nullptr, true);
+  ASSERT_EQ(count, 3u) << "Halle in Belgium lies 650 km off, in another country";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Halle (Saale)");
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[1].document].name_rank), "Halle (Westf.)");
+
+  ASSERT_GE(QueryFrom(index, "Venlo", 51.1805, 6.4428, hits, 8, nullptr, true), 2u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Venlo")
+      << "28 km across the border";
   geo_index_close(&index);
 }
 
