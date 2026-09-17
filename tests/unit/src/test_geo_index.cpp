@@ -304,6 +304,40 @@ TEST_F(GeoIndexTest, ThePrefixReadingFindsWhatIsStillBeingTyped) {
   EXPECT_GE(Query(index, "Marienpla", hits, 8, /*prefix_last=*/true), 1u);
 }
 
+TEST_F(GeoIndexTest, AWordLeftUnfinishedBeforeTheTownIsReadAsABeginning) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // the street was broken off and the town typed behind it: both words narrow
+  ASSERT_GE(QueryStats(index, "Marienpla München ", hits, 8, &stats), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Marienplatz");
+  EXPECT_EQ(stats.groups, 2u);
+}
+
+TEST_F(GeoIndexTest, AWordThatBeginsNothingIsStillPassedOver) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // a typo begins no word, so the query answers without it
+  ASSERT_GE(QueryStats(index, "Mxnchen Marienplatz ", hits, 8, &stats), 1u);
+  EXPECT_EQ(stats.groups, 1u);
+}
+
+TEST_F(GeoIndexTest, AWordJoinedByADashWasNotBrokenOff) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // written through to the next word, it is a typo, not a beginning
+  ASSERT_GE(QueryStats(index, "Marienpla-München ", hits, 8, &stats), 1u);
+  EXPECT_EQ(stats.groups, 1u);
+}
+
+TEST_F(GeoIndexTest, AKnownWordIsReadAsABeginningWhereNothingElseAnswers) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // no place in Potsdam carries *Berlin*, but the Berliner Straße there begins with it
+  ASSERT_GE(QueryStats(index, "Berlin Potsdam ", hits, 8, &stats), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Berliner Straße");
+  EXPECT_EQ(stats.groups, 2u);
+}
+
 TEST_F(GeoIndexTest, TheLimitIsCappedRatherThanTrusted) {
   std::vector<GeoHit> hits(GEO_QUERY_LIMIT_MAX + 64);
   TextTokenizer tok;

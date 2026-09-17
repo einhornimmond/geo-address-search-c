@@ -232,6 +232,11 @@ GeoStatus geo_client_language(
  *  index built before the country words existed holds none, and there the name
  *  is a plain word as it always was.
  *
+ *  A word left unfinished before the next one was begun — `Kurpfa 57
+ *  Bammental`, `Hafenga Ulm` — is read as a beginning, whatever @p prefix_last
+ *  says, since a word typed behind it shows it was not still being typed.
+ *  One that begins nothing either, a typo, is passed over.
+ *
  *  Safe to call from several threads on the same client.
  *
  *  @param[in]  client       Opened client; must not be NULL.

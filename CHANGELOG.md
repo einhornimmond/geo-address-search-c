@@ -40,6 +40,29 @@ summarise what the commits show rather than what was noted at the time.
 
 ### Fixed
 
+- **A street typed only in part before the town is found.** A word the index does not know
+  was passed over, so a street broken off while the town was typed behind it went missing:
+  `Kurpfa 57 Bammental` answered with Hauptstraße 57, and `Nidd 1 Aschaffenburg` or
+  `Hafenga Ulm` with nothing at all.
+  - **Such a word is read as a beginning first, and passed over only where that finds
+    nothing** — `Würzbrug` begins no word. The last word is left as it was: still being
+    typed, it is read as a beginning already, and closed by a space it is asked as it
+    stands. A word joined to the next by a dash or a slash was written through, not broken
+    off, so `Badne-Baden` still finds Baden-Baden and not the Badner Weg there.
+  - **Where the query then finds nothing at all, known words are read as beginnings too**:
+    `Gart 15 Bocholt` and `Rings 27 Borchen` stop at a word of their own. A query that
+    answers is never asked this way.
+  - **Each beginning is joined once per query.** Every reading asked for it again, with the
+    ring and without it, with the country and without it — up to 4096 posting lists joined
+    a dozen times over for a query that finds nothing.
+  - **Measured on the planet** with 338 queries made from addresses of the drawn queries,
+    their street cut to half or three quarters: 84.3 % come first instead of 21.9 %. Over
+    the 13 391 queries of the regression file, the drawn queries and the external suites,
+    twelve rank higher and none lower; the far-town, border and village sets are unchanged.
+    The 95th percentile of a search went from 1.6 to 3.5 ms, the slowest from 285 to 56 ms.
+    A street broken off inside a compound name, `Charlotte-S 8 Berlin`, is still not found.
+    No format change and no rebuild.
+
 - **A middle-sized town typed from afar is found behind a street named after it.** A place
   beyond the searcher's surroundings was taken in only from a weight of 40000, which keeps
   villages named after a common word down but hid towns of 90 000 people as well: `Gera`

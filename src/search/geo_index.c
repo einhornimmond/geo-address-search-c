@@ -879,6 +879,54 @@ static roaring_bitmap_t *prefix_documents(
   return joined;
 }
 
+/**
+ * The beginnings one query has joined, so that each is joined only once.
+ *
+ * A beginning is asked for by every reading, with the ring and without it, with
+ * the country and without it — the same union of up to
+ * @ref GEO_QUERY_PREFIX_TERMS posting lists, a dozen times over for a query
+ * that finds nothing.  Keyed by token, which stays where it is until the query
+ * is done.
+ */
+typedef struct PrefixCache {
+  roaring_bitmap_t *documents[TEXT_TOKEN_MAX]; /**< By token; NULL where nothing began. */
+  uint64_t joined; /**< Tokens whose beginning was joined, whatever it found. */
+} PrefixCache;
+
+/**
+ * @brief The documents whose words begin with token @p t, joined once per query.
+ *
+ *  @param[in]     prefixes  What this query has joined so far; grows here.
+ *  @param[in,out] stats     Counts of this query, or NULL; they count the
+ *                           posting lists read, so a beginning taken from
+ *                           @p prefixes adds nothing.
+ *  @return A copy the caller frees, or NULL — see prefix_documents().
+ */
+static roaring_bitmap_t *prefix_reading(
+    const GeoIndex *index,
+    PrefixCache *prefixes,
+    const TextTokenizer *tokenizer,
+    size_t t,
+    GeoQueryStats *stats
+) {
+  const TextToken *token = &tokenizer->tokens[t];
+  uint64_t bit = UINT64_C(1) << t;
+  if (!(prefixes->joined & bit)) {
+    prefixes->documents[t] = prefix_documents(index, token->data, token->size, stats);
+    prefixes->joined |= bit;
+  }
+  return prefixes->documents[t] ? roaring_bitmap_copy(prefixes->documents[t]) : NULL;
+}
+
+/** Let go of everything @p prefixes joined. */
+static void prefix_cache_free(PrefixCache *prefixes) {
+  for (size_t t = 0; t < TEXT_TOKEN_MAX; ++t) {
+    if (prefixes->documents[t]) roaring_bitmap_free(prefixes->documents[t]);
+    prefixes->documents[t] = NULL;
+  }
+  prefixes->joined = 0;
+}
+
 /* =========================================================================
  *  Where the searcher stands
  * ========================================================================= */
@@ -1411,6 +1459,10 @@ bool geo_index_house_estimate(
  *                        the same ring serves every reading.
  *  @param[in]     country  Documents of the country the query names, or NULL.
  *                        Narrows like @p near, and is borrowed like it.
+ *  @param[in]     unfinished  Words of the query, by token group, read as
+ *                        beginnings rather than passed over — see
+ *                        unfinished_words().  0 for none.
+ *  @param[in,out] prefixes  The beginnings this query has joined.
  *  @param[in]     skipped  Words of the query, by token group (bit @c group, for
  *                        groups below 64), that narrow nothing — the words that
  *                        named @p country.  0 for none.
@@ -1425,6 +1477,8 @@ static size_t query_words(
     const TextTokenizer *tokenizer,
     NumberReading reading,
     bool prefix_last,
+    uint64_t unfinished,
+    PrefixCache *prefixes,
     const roaring_bitmap_t *near,
     const roaring_bitmap_t *country,
     uint64_t skipped,
@@ -1478,7 +1532,11 @@ static size_t query_words(
       }
     }
     if (prefix_last && token->group == typing) {
-      readings[reading_count] = prefix_documents(index, token->data, token->size, stats);
+      readings[reading_count] = prefix_reading(index, prefixes, tokenizer, t, stats);
+      if (readings[reading_count]) ++reading_count;
+    } else if (token->group < 64 && (unfinished >> token->group) & 1u) {
+      /* a word left unfinished before the next one was begun: *Kurpfa 57 Bammental* */
+      readings[reading_count] = prefix_reading(index, prefixes, tokenizer, t, stats);
       if (readings[reading_count]) ++reading_count;
     }
     if (!reading_count) continue; /* a word nobody ever wrote cannot narrow anything down */
@@ -2393,7 +2451,61 @@ typedef struct ReadingsAnswer {
   NumberReading answered; /**< The reading that answered, or the last one asked. */
   bool numbered;          /**< Its numbers were held back as house numbers. */
   bool near_used;         /**< The ring still narrowed when it answered. */
+  uint64_t unfinished;    /**< The words read as beginnings, by token group; 0 for none. */
 } ReadingsAnswer;
+
+/**
+ * @brief Which words of the query were left unfinished before the next one
+ *        was begun?
+ *
+ *  A word the dictionary does not hold is passed over, so that a typo does not
+ *  silence an otherwise clear address.  But just as often it is a street left
+ *  unfinished while the town was typed behind it — *Kurpfa 57 Bammental*,
+ *  *Hafenga Ulm* — and then passing over it answers with any house 57 in
+ *  Bammental.  So the readings are asked with such a word read as a beginning
+ *  first, and passed over only where that finds nothing: *Würzbrug* begins no
+ *  word at all.
+ *
+ *  Not every unknown word counts.  One with a digit is a number, not a name.
+ *  The last word is either still being typed, and read as a beginning already,
+ *  or closed by a space, and asked exactly as it stands.  And a word joined to
+ *  the next by a dash or a slash was written through, not broken off:
+ *  *Badne-Baden* is a typo of Baden-Baden, and read as a beginning it answers
+ *  with the Badner Weg.
+ *
+ *  Where even that finds nothing, a word the dictionary does hold may have been
+ *  broken off too: *Gart 15 Bocholt* stops at a word of its own, and so does
+ *  *Rings 27 Borchen*.  Such a query answers nothing as it stands, so reading
+ *  those words as beginnings last takes nothing from a query that does.
+ *
+ *  @param[in] index      Opened index.
+ *  @param[in] tokenizer  Holding the query; left as it is.
+ *  @param[in] known_too  Count words the dictionary holds as well.
+ *  @return The unfinished words, by token group (bit @c group, for groups below
+ *          64); 0 for none.
+ *
+ *  @whisper A word broken off mid-breath still points where it was going
+ */
+static uint64_t unfinished_words(
+    const GeoIndex *index, const TextTokenizer *tokenizer, bool known_too
+) {
+  uint64_t unfinished = 0;
+  for (size_t t = 0; t < tokenizer->token_count; ++t) {
+    const TextToken *token = &tokenizer->tokens[t];
+    if (token->part || token->group >= 64 || token_has_digit(token)) continue;
+    /* the word after it, and what stood between the two */
+    const TextToken *next = NULL;
+    for (size_t n = t + 1; n < tokenizer->token_count && !next; ++n) {
+      const TextToken *candidate = &tokenizer->tokens[n];
+      if (!candidate->part && candidate->group > token->group) next = candidate;
+    }
+    if (!next || next->joint != TEXT_JOINT_NONE) continue;
+    size_t rank = 0;
+    if (!known_too && geo_dictionary_find(&index->words, token->data, token->size, &rank)) continue;
+    unfinished |= UINT64_C(1) << token->group;
+  }
+  return unfinished;
+}
 
 /**
  * @brief Ask the three readings in turn, first inside the ring and then without it.
@@ -2402,6 +2514,13 @@ typedef struct ReadingsAnswer {
  *  in this order is told where geo_index_query_options() asks for them.
  *
  *  @param[in]     numbers_present  The query holds a word with a digit.
+ *  @param[in]     unfinished  The unknown words unfinished_words() found, by
+ *                          token group; everything is asked with them read as
+ *                          beginnings first, and passed over only where that
+ *                          found nothing.
+ *  @param[in]     broken   The words it found counting known words too; asked
+ *                          as beginnings last, where nothing else answered.
+ *  @param[in,out] prefixes The beginnings this query has joined.
  *  @param[in]     near     Documents around the searcher, or NULL; borrowed.
  *  @param[in]     country  Documents of the country named, or NULL; borrowed.
  *  @param[in]     skipped  The words that named @p country, by token group.
@@ -2415,6 +2534,9 @@ static size_t ask_readings(
     const TextTokenizer *tokenizer,
     bool prefix_last,
     bool numbers_present,
+    uint64_t unfinished,
+    uint64_t broken,
+    PrefixCache *prefixes,
     const roaring_bitmap_t *near,
     const roaring_bitmap_t *country,
     uint64_t skipped,
@@ -2426,43 +2548,52 @@ static size_t ask_readings(
   size_t count = 0;
   out->answered = NUMBERS_AS_WORDS;
   out->numbered = numbers_present;
-  out->near_used = near != NULL;
-  /* a position let go of by an earlier call is taken up again by this one */
-  if (stats && near) stats->position_dropped = 0;
-  for (int attempt = 0; attempt < 2 && !count; ++attempt) {
-    /* The position is the first thing let go of.  A search that finds nothing
-       nearby was asking about somewhere else — that is a plain reading of the
-       words, while returning nothing at all is not.  Whoever named a town or a
-       postcode said so outright, and those readings come after. */
-    if (attempt) {
-      if (!near) break; /* there was nothing to let go of; the chain already ran */
-      out->near_used = false;
-      if (stats) stats->position_dropped = 1;
-    }
-    const roaring_bitmap_t *carried_near = out->near_used ? near : NULL;
-    out->numbered = numbers_present;
+  /* unknown words as beginnings, then passed over, then every word as one */
+  uint64_t rounds[3];
+  int round_count = 0;
+  if (unfinished) rounds[round_count++] = unfinished;
+  rounds[round_count++] = 0;
+  if (broken != unfinished) rounds[round_count++] = broken;
+  for (int round = 0; round < round_count && !count; ++round) {
+    out->unfinished = rounds[round];
+    out->near_used = near != NULL;
+    /* a position let go of by an earlier call is taken up again by this one */
+    if (stats && near) stats->position_dropped = 0;
+    for (int attempt = 0; attempt < 2 && !count; ++attempt) {
+      /* The position is the first thing let go of.  A search that finds nothing
+         nearby was asking about somewhere else — that is a plain reading of the
+         words, while returning nothing at all is not.  Whoever named a town or a
+         postcode said so outright, and those readings come after. */
+      if (attempt) {
+        if (!near) break; /* there was nothing to let go of; the chain already ran */
+        out->near_used = false;
+        if (stats) stats->position_dropped = 1;
+      }
+      const roaring_bitmap_t *carried_near = out->near_used ? near : NULL;
+      out->numbered = numbers_present;
 
-    if (out->numbered) {
-      out->answered = NUMBERS_BUT_CODES;
-      count = query_words(
-          index, tokenizer, NUMBERS_BUT_CODES, prefix_last, carried_near, country, skipped, pool,
-          pool_limit, stats
-      );
-      if (!count) {
-        out->answered = NUMBERS_AS_HOUSES;
+      if (out->numbered) {
+        out->answered = NUMBERS_BUT_CODES;
         count = query_words(
-            index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, carried_near, country, skipped, pool,
-            pool_limit, stats
+            index, tokenizer, NUMBERS_BUT_CODES, prefix_last, out->unfinished, prefixes,
+            carried_near, country, skipped, pool, pool_limit, stats
+        );
+        if (!count) {
+          out->answered = NUMBERS_AS_HOUSES;
+          count = query_words(
+              index, tokenizer, NUMBERS_AS_HOUSES, prefix_last, out->unfinished, prefixes,
+              carried_near, country, skipped, pool, pool_limit, stats
+          );
+        }
+      }
+      if (!count) {
+        out->numbered = false;
+        out->answered = NUMBERS_AS_WORDS;
+        count = query_words(
+            index, tokenizer, NUMBERS_AS_WORDS, prefix_last, out->unfinished, prefixes,
+            carried_near, country, skipped, pool, pool_limit, stats
         );
       }
-    }
-    if (!count) {
-      out->numbered = false;
-      out->answered = NUMBERS_AS_WORDS;
-      count = query_words(
-          index, tokenizer, NUMBERS_AS_WORDS, prefix_last, carried_near, country, skipped, pool,
-          pool_limit, stats
-      );
     }
   }
   return count;
@@ -2725,17 +2856,20 @@ size_t geo_index_query_options(
          narrow the answer to nothing — *Atlanta Georgia* names a state, not the
          country — the plain answer is asked for again, since the pass that
          answers is the one the counts describe. --- */
+  uint64_t unfinished = unfinished_words(index, tokenizer, false);
+  uint64_t broken = unfinished_words(index, tokenizer, true);
+  PrefixCache prefixes = {0};
   ReadingsAnswer answer;
   size_t count = ask_readings(
-      index, tokenizer, prefix_last, numbers_present, near, NULL, 0, pool, pool_limit, stats,
-      &answer
+      index, tokenizer, prefix_last, numbers_present, unfinished, broken, &prefixes, near, NULL, 0,
+      pool, pool_limit, stats, &answer
   );
   bool country_used = false;
   if (has_country && !country_in_a_name(index, pool, count, tokenizer, country.groups)) {
     ReadingsAnswer narrowed;
     size_t found = ask_readings(
-        index, tokenizer, prefix_last, numbers_present, near, country.documents, country.groups,
-        pool, pool_limit, stats, &narrowed
+        index, tokenizer, prefix_last, numbers_present, unfinished, broken, &prefixes, near,
+        country.documents, country.groups, pool, pool_limit, stats, &narrowed
     );
     if (found) {
       count = found;
@@ -2743,8 +2877,8 @@ size_t geo_index_query_options(
       country_used = true;
     } else if (count) {
       count = ask_readings(
-          index, tokenizer, prefix_last, numbers_present, near, NULL, 0, pool, pool_limit, stats,
-          &answer
+          index, tokenizer, prefix_last, numbers_present, unfinished, broken, &prefixes, near, NULL,
+          0, pool, pool_limit, stats, &answer
       );
     }
   }
@@ -2754,6 +2888,7 @@ size_t geo_index_query_options(
   if (near) roaring_bitmap_free(near);
   if (!count) {
     if (has_country) roaring_bitmap_free(country.documents);
+    prefix_cache_free(&prefixes);
     return 0;
   }
 
@@ -2772,8 +2907,9 @@ size_t geo_index_query_options(
     uint32_t groups = stats ? stats->groups : 0;
     uint64_t narrowed = stats ? stats->narrowed : 0;
     far_count = query_words(
-        index, tokenizer, answered, prefix_last, NULL, country_used ? country.documents : NULL,
-        country_used ? country.groups : 0, far, pool_limit, stats
+        index, tokenizer, answered, prefix_last, answer.unfinished, &prefixes, NULL,
+        country_used ? country.documents : NULL, country_used ? country.groups : 0, far, pool_limit,
+        stats
     );
     if (stats) {
       stats->groups = groups;
@@ -2781,6 +2917,7 @@ size_t geo_index_query_options(
     }
   }
   if (has_country) roaring_bitmap_free(country.documents);
+  prefix_cache_free(&prefixes);
 
   /* --- and now the number finds its door.  The number as it was asked for
          first; only where the street has no such door does the plain number
