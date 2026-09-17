@@ -1459,6 +1459,35 @@ TEST(GeoIndexNear, ALighterTownAbroadComesInOnlyNearTheBorder) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexNear, TheSearchersCountryIsTheNearestPlacesNotTheHeaviests) {
+  // asked in Aachen: the weightiest place around is a district of Vaals across
+  // the border, the nearest a square in Aachen; Linden in Hesse, 180 km off,
+  // is a German town for someone standing in Germany
+  TempPath path{"farhome"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(),
+      {
+          Placed(
+              "Am Lindenplatz", "Aachen", "52062", 50.7760, 6.0850, PHOTON_PLACE_TYPE_STREET, 3000,
+              "de"
+          ),
+          Placed(
+              "Vaals-Linden", "Vaals", "6291", 50.7700, 6.0200, PHOTON_PLACE_TYPE_DISTRICT, 20000,
+              "nl"
+          ),
+          Placed("Linden", "Linden", "35440", 50.5300, 8.6500, PHOTON_PLACE_TYPE_CITY, 30000, "de"),
+      }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  size_t count = QueryFrom(index, "Linden", 50.7753, 6.0839, hits, 8, nullptr, true);
+  ASSERT_EQ(count, 3u) << "the town joins the two places the ring found";
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Linden");
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexNear, AFormerNameDoesNotOutrunTheCurrentOneJustByStandingCloser) {
   // exactly the Bonn case: the Friedrich-Breuer-Straße was once the Hauptstraße
   // and lies nearer to the searcher than the street that is called that today

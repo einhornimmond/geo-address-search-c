@@ -306,11 +306,13 @@ typedef struct GeoSearchOptions {
  *  word — or, for a town whose name begins with what was typed while nothing
  *  near does, at least 25000: *Gera* from Munich, where a Gerastraße stands, and
  *  Brandenburg an der Havel after the state for *Brandenburg* — and, if it lies
- *  in another country than the searcher, only within about 100 km of them.  At
- *  most 16 such places are lifted per search, the heaviest first.  A smaller town may
- *  therefore still stand behind a nearby street that carries its name.  And where nothing at all stands near
- *  the given point, the position is dropped and the search runs without it — a
- *  wrong position costs a place its order, never its presence.
+ *  in another country than the searcher, only within about 100 km of them.  An
+ *  index built without country words knows no one's country, and there such a
+ *  town comes in from any country as before.  At most 16 such places are lifted
+ *  per search, the heaviest first.  A smaller town may therefore still stand
+ *  behind a nearby street that carries its name.  And where nothing at all
+ *  stands near the given point, the position is dropped and the search runs
+ *  without it — a wrong position costs a place its order, never its presence.
  *
  *  ### The counts
  *

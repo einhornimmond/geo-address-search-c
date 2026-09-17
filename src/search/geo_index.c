@@ -2043,6 +2043,48 @@ static const roaring_bitmap_t *country_of(const GeoIndex *index, uint32_t docume
 }
 
 /**
+ * @brief The country the searcher stands in, as the places nearest them tell it.
+ *
+ *  The nearest of @p near that lies in a country decides — not the heaviest,
+ *  which is the order @p near is kept in.  At a border the heaviest place of the
+ *  ring is as likely to stand across it as not: someone asking in Aachen may
+ *  well have a district of Vaals as the weightiest candidate around them, and
+ *  counted from it every German town beyond 100 km would lie abroad.  Where the
+ *  nearest place lies in no country, the next nearest is asked, and so on.
+ *
+ *  @param[in] index       Opened index.
+ *  @param[in] near        The candidates found inside the ring.
+ *  @param[in] near_count  Entries in @p near, at most @ref GEO_QUERY_LIMIT_MAX.
+ *  @param[in] options     Query options; a position must be set.
+ *  @return The places of that country, a view to release with
+ *          roaring_bitmap_free(), or NULL where no candidate with a point lies
+ *          in a country — in an index built without country words, never.
+ */
+static const roaring_bitmap_t *searcher_country(
+    const GeoIndex *index, const GeoHit *near, size_t near_count, const GeoQueryOptions *options
+) {
+  bool asked[GEO_QUERY_LIMIT_MAX] = {false};
+  if (near_count > GEO_QUERY_LIMIT_MAX) near_count = GEO_QUERY_LIMIT_MAX;
+  for (size_t round = 0; round < near_count; ++round) {
+    size_t nearest = SIZE_MAX;
+    int64_t nearest_gap = INT64_MAX;
+    for (size_t h = 0; h < near_count; ++h) {
+      if (asked[h]) continue;
+      int64_t gap = distance_squared(index, near[h].document, options);
+      if (gap < nearest_gap) {
+        nearest_gap = gap;
+        nearest = h;
+      }
+    }
+    if (nearest == SIZE_MAX) return NULL; /* nothing left that stands anywhere */
+    asked[nearest] = true;
+    const roaring_bitmap_t *country = country_of(index, near[nearest].document);
+    if (country) return country;
+  }
+  return NULL;
+}
+
+/**
  * @brief Does the query name the spelling behind @p rank?
  *
  *  Only whole words count: the pieces a compound falls into are passed over, so
@@ -2180,11 +2222,9 @@ static size_t far_named_places(
         }
       }
       if (near_named) continue;
-      /* the searcher's country is the one the places around them lie in; an
-         index without country words knows none, and holds no one back */
       if (!home_asked) {
         home_asked = true;
-        for (size_t h = 0; h < near_count && !home; ++h) home = country_of(index, pool[h].document);
+        home = searcher_country(index, pool, near_count, options);
       }
       if (home && !roaring_bitmap_contains(home, far[f].document)) {
         int64_t reach = GEO_QUERY_FAR_ABROAD_E7;

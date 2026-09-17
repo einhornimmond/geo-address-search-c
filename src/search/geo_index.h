@@ -592,7 +592,9 @@ typedef struct GeoQueryOptions {
  *  *Neustadt* in Cologne keeps Neustadt/Süd first.  Such a town from another
  *  country than the searcher's comes in only within about 100 km of them, so
  *  *Halle* in Berlin passes over Halle in Belgium but *Venlo* in Mönchengladbach
- *  finds Venlo.
+ *  finds Venlo.  The searcher's country is read from the country words of the
+ *  place nearest them; an index built without those knows none, and there the
+ *  distance does not apply.
  *
  *  @param[in]     index      Opened index; must not be NULL.
  *  @param[in,out] tokenizer  Scratch space; reset by this call.

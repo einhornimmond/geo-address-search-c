@@ -56,8 +56,9 @@ summarise what the commits show rather than what was noted at the time.
     Berlin answered with Halle in Belgium and the Belgian district Halle-Vilvoorde before
     Halle (Westf.); it now answers with Halle (Saale) and Halle (Westf.), as a map zoomed
     onto Germany does, while `Venlo` in Mönchengladbach still finds Venlo. The searcher's
-    country is the one the places around them lie in, read from the country words, so an
-    index built before those holds no one back. Of 23 border towns asked from the German
+    country is the one the nearest place around them lies in — not the heaviest, which at a
+    border stands across it as often as not — read from the country words, so an index built
+    before those holds no one back. Of 23 border towns asked from the German
     town nearest, 6 fell out of the first ten without the 100 km; with it none does, and
     German towns whose name a lighter town abroad bears — Melle, Homburg, Kamen — come first
     in 21 more queries.
