@@ -20,7 +20,7 @@ summarise what the commits show rather than what was noted at the time.
 ## 1.3.0 -- 2026-09-18
 
 The first release with a measurement behind it. `zig build eval` asks a fixed set of queries
-— 638 drawn from the German dump and kept by hand, plus 12 753 from geocoder-tester and
+— 589 drawn from the German dump and 49 kept by hand, plus 12 753 from geocoder-tester and
 Nominatim — and everything under *Fixed* is what asking them found: a country named beside
 the address, house numbers written the way people write them, a town answered at the point
 the town is known by rather than in the middle of the land it governs, a middle-sized town
@@ -36,7 +36,7 @@ library's surface is untouched: `client.h` says more than it did and asks for no
 ### Added
 
 - **`zig build eval` and `tests/eval/`: a fixed set of queries to measure the search
-  against.** 589 queries drawn from the German dump with a fixed seed plus 21 regression
+  against.** 589 queries drawn from the German dump with a fixed seed plus 49 regression
   queries kept by hand, each asked with a map position and the last word read as a beginning,
   as production asks. `geo_eval` reports how often the expected place comes first, among the
   first three and among the first ten, per category, prints what went wrong with
