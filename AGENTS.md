@@ -4,6 +4,19 @@ Everything in this repository is yours to edit — src, tests, the build files, 
 The one exception is third_party: leave those files exactly as they are. A bug in a
 vendored library is worked around in our own code, never patched at the source.
 
+## Building an Index
+
+An index is always built **with `--cache=<dir>`**. The cache is what keeps a planet build
+short, and whether it can be used is the builder's decision, never the agent's:
+
+- The builder checks the cache against the dump and its own layout. A cache that no longer
+  answers for either is removed and written anew — which still costs far less than three
+  passes over the dump.
+- Where the room does not suffice even after removing an unusable cache, the builder walks
+  the dump three times on its own and says so.
+- So do not reason about a cache's age or layout, do not delete one by hand, and do not
+  build without the option to "be safe". Pass `--cache` and let the builder decide.
+
 ## C Modules (Doxygen)
 
 - Every public C header MUST define exactly one module using `@defgroup`.

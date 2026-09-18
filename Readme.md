@@ -493,10 +493,15 @@ Measured on the 2026 planet index, rebuilt with each town joined to its boundary
 | --- | ---: | ---: | ---: | ---: | ---: |
 | address | 303 | 0 | 87.8 % | 88.1 % | 88.8 % |
 | street | 86 | 0 | 93.0 % | 100 % | 100 % |
-| town | 160 | 0 | 60.6 % | 66.9 % | 69.4 % |
+| town | 160 | 0 | 61.2 % | 68.8 % | 71.2 % |
 | district | 40 | 2 | 81.6 % | 100 % | 100 % |
-| regression | 44 | 0 | 97.7 % | 97.7 % | 97.7 % |
-| **all** | **633** | **2** | **81.9 %** | **85.7 %** | **86.7 %** |
+| regression | 49 | 0 | 93.9 % | 98.0 % | 98.0 % |
+| **all** | **638** | **2** | **81.9 %** | **86.3 %** | **87.3 %** |
+
+Five of the regression queries allow more than one answer, because more than one place
+answers the name rightly — `Brandenburg` is a state as well as a city. They count as passed
+where the expected place stands within the number they allow, which is what the *pass* rate
+reports; the table above asks for the first place alone.
 
 Addresses in full, abbreviated, without postcode, by quarter and while typing all come first
 every time; the address group loses its points on the swapped letters alone (26 %). Towns lose
@@ -529,8 +534,8 @@ Measured on the same index, France, Germany and Nominatim's Liechtenstein:
 
 | suite | queries | absent | pass | top 3 | top 10 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| geocoder-tester, France | 11 886 | 5 238 | 74.2 % | 76.8 % | 78.0 % |
-| geocoder-tester, Germany | 318 | 18 | 85.7 % | 89.0 % | 91.3 % |
+| geocoder-tester, France | 11 886 | 5 238 | 74.5 % | 77.1 % | 78.2 % |
+| geocoder-tester, Germany | 318 | 18 | 86.7 % | 90.0 % | 92.3 % |
 | Nominatim | 21 | 4 | 76.5 % | 76.5 % | 82.4 % |
 
 Nearly half the French tests are absent: they come from the BAN address database, which
@@ -545,7 +550,7 @@ than their place node (fixed since).
 
 ## Releases
 
-Version 1.2.1. What each release changed, and what it asks of a build that had the one
+Version 1.3.0. What each release changed, and what it asks of a build that had the one
 before it, is in [CHANGELOG.md](CHANGELOG.md). The number lives in `build.zig.zon` and,
 a second time, in `Doxyfile`.
 
