@@ -17,7 +17,21 @@ summarise what the commits show rather than what was noted at the time.
 1.2.0 is tagged but cannot be fetched as a Zig package; 1.2.1 is the first that can, and
 1.2.2 the first that builds once fetched.
 
-## Unreleased
+## 1.3.0 -- 2026-09-18
+
+The first release with a measurement behind it. `zig build eval` asks a fixed set of queries
+— 638 drawn from the German dump and kept by hand, plus 12 753 from geocoder-tester and
+Nominatim — and everything under *Fixed* is what asking them found: a country named beside
+the address, house numbers written the way people write them, a town answered at the point
+the town is known by rather than in the middle of the land it governs, a middle-sized town
+typed from afar, a place answered once instead of four times, and a street typed only in
+part before the town.
+
+The file format stays at version 9, so an index built by 1.2.x opens and answers as it did.
+What the builder learned — the point a town stands on, the country of an entry, the role a
+record plays — is written while the index is built, so those need a rebuild to show. The
+library's surface is untouched: `client.h` says more than it did and asks for nothing new.
+
 
 ### Added
 
@@ -356,6 +370,27 @@ summarise what the commits show rather than what was noted at the time.
   2026 planet dump with its 64 M segments about 250 MB, for the length of the join.
 - `doc_collector_add_document()` takes the batch as a third argument, `place_cache_write()`
   and `place_cache_read()` take and return it. None of these are part of `client.h`.
+
+### Notes
+
+- **Nothing a program linking the library has to change.** `client.h` keeps every function,
+  every struct and every field it had in 1.2.x; what changed there is what the comments
+  explain. The version in `build.zig.zon` is the only line a consumer moves.
+- **An index from 1.2.x is read as it always was** — the format stays at version 9 — and
+  every fix that lives in the search alone reaches it: the ranking, the readings a query is
+  asked in, the house numbers it finds, the words a tokenizer makes of a long text. Each
+  entry above says which it is. What the builder writes does not follow: `Würzburg` keeps
+  answering 1.9 km from the market square, an address followed by its country finds nothing,
+  and a town written down twice stays two places, until the index is built again.
+- **A place cache left by an earlier build is thrown away**, whatever layout it holds, and
+  written again as layout 5. A build with `--cache` on the planet dump takes about 6 minutes
+  from a cache of its own dump and 16.9 minutes without one, so the first build after this
+  release pays that difference once.
+- **Measured on the 2026 planet index**, rebuilt with this release: of the 638 drawn and kept
+  queries 81.9 % answer with the expected place first, 86.3 % within the first three; of
+  geocoder-tester's 11 886 French tests 74.5 % pass, of its 318 German ones 86.7 %. What each
+  change was worth on its own is written where the change is; the numbers per group are in
+  the Readme, under *Measuring search quality*.
 
 ## 1.2.2 -- 2026-08-25
 
