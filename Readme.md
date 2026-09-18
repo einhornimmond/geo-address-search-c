@@ -139,8 +139,13 @@ A query walks the same folding as the index did: `Superstr.`, `superstrasse` and
 `SUPERSTRASSE` meet the same word, and `München` is also found as `Muenchen` or
 `Munchen`. The folding covers every language written in Latin letters — `București` is
 found as `Bucuresti` whichever of its two s-letters the dump used, `Hồ Chí Minh` as
-`Ho Chi Minh` — and it does not matter whether a name arrives composed or decomposed. A place is found where all words of the query meet; words the index does not
-know are passed over rather than made to fail the whole query. A country named beside
+`Ho Chi Minh` — and it does not matter whether a name arrives composed or decomposed. A place is found where all words of the query meet. A word
+left unfinished before the next was begun — `Kurpfa 57 Bammental`, `Hafenga Ulm` — is read
+as a beginning; a word the index does not know and that begins none either, like the typo in
+`Würzbrug Domstraße`, is passed over rather than made to fail the whole query. Where a query
+finds nothing at all, a beginning too short or too common to look up — `Cottbusser St 26
+Düsseldorf`, `1 Rue J B Drapier` — is held against the name and town of what the other words
+leave standing. A country named beside
 the rest — `Domstraße 3, Würzburg, Deutschland`, `Hauptstraße Österreich` — narrows to the
 places in it, in any language the index holds, although no place in the dump carries its
 country's name; the dump only gives each entry its code, and the index keeps that code as a

@@ -433,10 +433,16 @@ bool geo_index_house_estimate(
  *  *superstrasse* arrive as the same word.  Order is irrelevant: the words
  *  are sets, and the answer is where the sets meet — an intersection of
  *  bitmaps, which is cheap even when one of the words stands on millions of
- *  places.  Words the dictionary does not know are passed over rather than
- *  made to fail the whole query — a country name or a filler word should not
- *  silence an otherwise clear address.  If no word is known at all, nothing
- *  is found.
+ *  places.  A word the dictionary does not know, with another typed behind
+ *  it, is read as a beginning first — a street left unfinished while the town
+ *  was typed, *Kurpfa 57 Bammental* — and passed over where that finds
+ *  nothing, so a typo does not silence an otherwise clear address.  Where the
+ *  query still finds nothing, such words the dictionary does know are read as
+ *  beginnings too: *Gart 15 Bocholt*.  And a beginning of one or two letters,
+ *  or one that stands in front of thousands of words, is let go of last and
+ *  held against the name and the town of what the other words leave standing —
+ *  *Cottbusser St 26 Düsseldorf*, *1 Rue J B Drapier*.  If no word is known at
+ *  all, nothing is found.
  *
  *  Six keys order the results, in this order:
  *

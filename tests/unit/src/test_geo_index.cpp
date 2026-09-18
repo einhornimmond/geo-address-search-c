@@ -304,6 +304,40 @@ TEST_F(GeoIndexTest, ThePrefixReadingFindsWhatIsStillBeingTyped) {
   EXPECT_GE(Query(index, "Marienpla", hits, 8, /*prefix_last=*/true), 1u);
 }
 
+TEST_F(GeoIndexTest, AWordLeftUnfinishedBeforeTheTownIsReadAsABeginning) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // the street was broken off and the town typed behind it: both words narrow
+  ASSERT_GE(QueryStats(index, "Marienpla München ", hits, 8, &stats), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Marienplatz");
+  EXPECT_EQ(stats.groups, 2u);
+}
+
+TEST_F(GeoIndexTest, AWordThatBeginsNothingIsStillPassedOver) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // a typo begins no word, so the query answers without it
+  ASSERT_GE(QueryStats(index, "Mxnchen Marienplatz ", hits, 8, &stats), 1u);
+  EXPECT_EQ(stats.groups, 1u);
+}
+
+TEST_F(GeoIndexTest, AWordJoinedByADashWasNotBrokenOff) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // written through to the next word, it is a typo, not a beginning
+  ASSERT_GE(QueryStats(index, "Marienpla-München ", hits, 8, &stats), 1u);
+  EXPECT_EQ(stats.groups, 1u);
+}
+
+TEST_F(GeoIndexTest, AKnownWordIsReadAsABeginningWhereNothingElseAnswers) {
+  GeoHit hits[8];
+  GeoQueryStats stats{};
+  // no place in Potsdam carries *Berlin*, but the Berliner Straße there begins with it
+  ASSERT_GE(QueryStats(index, "Berlin Potsdam ", hits, 8, &stats), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Berliner Straße");
+  EXPECT_EQ(stats.groups, 2u);
+}
+
 TEST_F(GeoIndexTest, TheLimitIsCappedRatherThanTrusted) {
   std::vector<GeoHit> hits(GEO_QUERY_LIMIT_MAX + 64);
   TextTokenizer tok;
@@ -1387,6 +1421,78 @@ TEST(GeoIndexRepeats, TheRecordCarryingTheNumberIsTheOneKept) {
   ASSERT_EQ(QueryFrom(index, "Hauptstraße 5 Bonn ", 50.7420, 7.0980, hits, 8), 1u);
   ASSERT_NE(hits[0].house, GEO_RANK_NONE) << "the door is worth more than a few hundred metres";
   EXPECT_EQ(DisplayWord(index, index.houses[hits[0].house].number_rank), "5");
+  geo_index_close(&index);
+}
+
+// ---------------------------------------------------------------------------
+//  A word broken off too short to look up
+// ---------------------------------------------------------------------------
+
+/** Two streets in one town, one of them putting *Sankt* into the dictionary. */
+bool WriteSaintAndMain(const char *path) {
+  testsupport::MiniPlace main =
+      Placed("Hauptstraße", "Bonn", "53111", 50.7350, 7.0980, PHOTON_PLACE_TYPE_STREET, 3000, "de");
+  main.houses = {"5"};
+  return BuildMiniIndex(
+      path, {
+                main,
+                Placed(
+                    "Sankt-Peter-Weg", "Bonn", "53111", 50.7360, 7.0990, PHOTON_PLACE_TYPE_STREET,
+                    2000, "de"
+                ),
+            }
+  );
+}
+
+TEST(GeoIndexBrokenOff, AnAbbreviationBrokenOffIsHeldAgainstTheName) {
+  TempPath path{"brokenoff"};
+  ASSERT_TRUE(WriteSaintAndMain(path.c_str()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // *St* folds to *Sankt*, a word of this index, and the street it names is
+  // another one — the query means the Hauptstraße, broken off inside *Straße*
+  ASSERT_EQ(Query(index, "Haupt St 5 Bonn ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Hauptstraße");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexBrokenOff, TheWordItselfStillAnswersWhereItCan) {
+  TempPath path{"brokenoff"};
+  ASSERT_TRUE(WriteSaintAndMain(path.c_str()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // here *St* was meant as the word it stands for, and the name check never runs
+  ASSERT_GE(Query(index, "St Peter Bonn ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Sankt-Peter-Weg");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexBrokenOff, OneReadingOfTheWordIsEnoughForTheName) {
+  // *Ö* folds twice, to `oe` and to `o`, and the Ostweg carries only the second
+  testsupport::MiniPlace way =
+      Placed("Ostweg", "Bonn", "53111", 50.7350, 7.0980, PHOTON_PLACE_TYPE_STREET, 3000, "de");
+  way.houses = {"5"};
+  TempPath path{"tworeadings"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(), {
+                        way,
+                        // puts both readings of the letter into the dictionary
+                        Placed(
+                            "Ö-Bahn", "Bonn", "53111", 50.7360, 7.0990, PHOTON_PLACE_TYPE_STREET,
+                            2000, "de"
+                        ),
+                    }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Ostweg Ö 5 Bonn ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Ostweg");
   geo_index_close(&index);
 }
 
