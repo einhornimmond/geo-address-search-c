@@ -1471,6 +1471,31 @@ TEST(GeoIndexBrokenOff, TheWordItselfStillAnswersWhereItCan) {
   geo_index_close(&index);
 }
 
+TEST(GeoIndexBrokenOff, OneReadingOfTheWordIsEnoughForTheName) {
+  // *Ö* folds twice, to `oe` and to `o`, and the Ostweg carries only the second
+  testsupport::MiniPlace way =
+      Placed("Ostweg", "Bonn", "53111", 50.7350, 7.0980, PHOTON_PLACE_TYPE_STREET, 3000, "de");
+  way.houses = {"5"};
+  TempPath path{"tworeadings"};
+  ASSERT_TRUE(BuildMiniIndex(
+      path.c_str(), {
+                        way,
+                        // puts both readings of the letter into the dictionary
+                        Placed(
+                            "Ö-Bahn", "Bonn", "53111", 50.7360, 7.0990, PHOTON_PLACE_TYPE_STREET,
+                            2000, "de"
+                        ),
+                    }
+  ));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  ASSERT_EQ(Query(index, "Ostweg Ö 5 Bonn ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Ostweg");
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexRepeats, ATownWrittenDownInTwoPlacesStaysTwo) {
   // Heusenstamm, as the planet holds it: the middle of its boundary and the
   // point that carries its name, 1.7 km apart — and the lighter of the two is

@@ -947,7 +947,8 @@ static void prefix_cache_free(PrefixCache *prefixes) {
  *  @param[in]     tokenizer  Holding the query; left as it is.
  *  @param[in]     by_name    The words to look for, by token group.
  *  @param[in,out] scratch    Tokenizer, overwritten by this call.
- *  @return Whether the name begins a word with each of them.
+ *  @return Whether the name or the town begins a word with each of them, any
+ *          one reading of a word answering for it.
  */
 static bool name_begins_with(
     const GeoIndex *index,
@@ -975,9 +976,13 @@ static bool name_begins_with(
   size_t towns = text && size ? text_tokenize(scratch, text, size) : 0;
   if (!names && !towns) return false;
 
+  /* A word may arrive in more than one reading — *München* as `muenchen` and as
+     `munchen` — and either of them standing in the name answers for the word. */
+  uint64_t found = 0;
   for (size_t t = 0; t < tokenizer->token_count; ++t) {
     const TextToken *word = &tokenizer->tokens[t];
     if (word->part || word->group >= 64 || !((by_name >> word->group) & 1u)) continue;
+    if ((found >> word->group) & 1u) continue;
     const char *written = NULL;
     size_t written_size = text_written_form(word->data, word->size, &written);
     bool begins = false;
@@ -988,9 +993,9 @@ static bool name_begins_with(
         begins = name->size >= written_size && memcmp(name->data, written, written_size) == 0;
       }
     }
-    if (!begins) return false;
+    if (begins) found |= UINT64_C(1) << word->group;
   }
-  return true;
+  return (by_name & ~found) == 0;
 }
 
 /* =========================================================================
@@ -1690,10 +1695,14 @@ static size_t query_words(
   }
 
   size_t count = 0;
-  /* holding a beginning against this many names costs more than it is worth,
-     and what the words narrowed to stands unfiltered instead */
+  /* Holding a beginning against this many names costs more than the answer is
+     worth, and answering without it would answer a query nobody typed: the
+     word is one the query brought, and the check is the only thing that still
+     honours it.  So the round ends here with nothing, as it would have without
+     ever being asked. */
   if (carried && by_name && roaring_bitmap_get_cardinality(carried) > GEO_QUERY_NAME_CHECKED) {
-    by_name = 0;
+    roaring_bitmap_free(carried);
+    carried = NULL;
   }
   if (carried) {
     if (stats) stats->narrowed = roaring_bitmap_get_cardinality(carried);
