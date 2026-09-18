@@ -377,6 +377,18 @@ static const Abbreviation ABBREVIATIONS[] = {
     ABBREVIATION("pl", "platz"),
 };
 
+size_t text_written_form(const char *word, size_t size, const char **shortened) {
+  if (!word || !size || !shortened) return 0;
+  for (size_t i = 0; i < sizeof(ABBREVIATIONS) / sizeof(ABBREVIATIONS[0]); ++i) {
+    const Abbreviation *abbreviation = &ABBREVIATIONS[i];
+    if (size != abbreviation->full_size) continue;
+    if (memcmp(word, abbreviation->full, size) != 0) continue;
+    *shortened = abbreviation->shortened;
+    return abbreviation->shortened_size;
+  }
+  return 0;
+}
+
 /** Abbreviations grown onto a compound: `Bahnhofstr.` is one word, not two. */
 static const Abbreviation TAIL_ABBREVIATIONS[] = {
     ABBREVIATION("str", "strasse"),

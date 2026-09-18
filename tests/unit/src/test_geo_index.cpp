@@ -1424,6 +1424,53 @@ TEST(GeoIndexRepeats, TheRecordCarryingTheNumberIsTheOneKept) {
   geo_index_close(&index);
 }
 
+// ---------------------------------------------------------------------------
+//  A word broken off too short to look up
+// ---------------------------------------------------------------------------
+
+/** Two streets in one town, one of them putting *Sankt* into the dictionary. */
+bool WriteSaintAndMain(const char *path) {
+  testsupport::MiniPlace main =
+      Placed("Hauptstraße", "Bonn", "53111", 50.7350, 7.0980, PHOTON_PLACE_TYPE_STREET, 3000, "de");
+  main.houses = {"5"};
+  return BuildMiniIndex(
+      path, {
+                main,
+                Placed(
+                    "Sankt-Peter-Weg", "Bonn", "53111", 50.7360, 7.0990, PHOTON_PLACE_TYPE_STREET,
+                    2000, "de"
+                ),
+            }
+  );
+}
+
+TEST(GeoIndexBrokenOff, AnAbbreviationBrokenOffIsHeldAgainstTheName) {
+  TempPath path{"brokenoff"};
+  ASSERT_TRUE(WriteSaintAndMain(path.c_str()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // *St* folds to *Sankt*, a word of this index, and the street it names is
+  // another one — the query means the Hauptstraße, broken off inside *Straße*
+  ASSERT_EQ(Query(index, "Haupt St 5 Bonn ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Hauptstraße");
+  geo_index_close(&index);
+}
+
+TEST(GeoIndexBrokenOff, TheWordItselfStillAnswersWhereItCan) {
+  TempPath path{"brokenoff"};
+  ASSERT_TRUE(WriteSaintAndMain(path.c_str()));
+  GeoIndex index{};
+  ASSERT_EQ(geo_index_open(&index, path.c_str()), ARNM_SUCCESS);
+
+  GeoHit hits[8];
+  // here *St* was meant as the word it stands for, and the name check never runs
+  ASSERT_GE(Query(index, "St Peter Bonn ", hits, 8), 1u);
+  EXPECT_EQ(DisplayWord(index, index.documents[hits[0].document].name_rank), "Sankt-Peter-Weg");
+  geo_index_close(&index);
+}
+
 TEST(GeoIndexRepeats, ATownWrittenDownInTwoPlacesStaysTwo) {
   // Heusenstamm, as the planet holds it: the middle of its boundary and the
   // point that carries its name, 1.7 km apart — and the lighter of the two is

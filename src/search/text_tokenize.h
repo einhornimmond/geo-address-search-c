@@ -136,6 +136,21 @@ typedef struct TextTokenizer {
 void text_tokenizer_init(TextTokenizer *tokenizer);
 
 /**
+ * @brief The abbreviation a folded word was expanded from, if it was one.
+ *
+ *  A word typed short stands for the long one here — `St` for *Sankt*, `Str`
+ *  for *Straße*, `Pl` for *Platz* — and only the long one survives folding.
+ *  Whoever needs the letters as they were typed asks for them back here.
+ *
+ *  @param[in]  word       Folded word, not NUL-terminated; may be NULL.
+ *  @param[in]  size       Byte length of @p word.
+ *  @param[out] shortened  Receives the written form, borrowed and not
+ *                         terminated; untouched where there is none.
+ *  @return Bytes of the written form, or 0 where @p word is no expansion.
+ */
+size_t text_written_form(const char *word, size_t size, const char **shortened);
+
+/**
  * @brief Fold @p text and split it into the words a query would carry.
  *
  *  The words are left in @c tokenizer->tokens and stay valid until the next

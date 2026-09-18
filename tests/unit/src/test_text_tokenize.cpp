@@ -331,3 +331,20 @@ TEST(TextTokenizeLimits, NullTokenizerIsAnswered) {
   EXPECT_EQ(text_tokenize(nullptr, "Berlin", 6), 0u);
   text_tokenizer_init(nullptr); // must not fall over
 }
+
+TEST(TextTokenize, AnExpansionGivesBackTheLettersItWasWrittenWith) {
+  const char *written = nullptr;
+  EXPECT_EQ(text_written_form("sankt", 5, &written), 2u);
+  EXPECT_EQ(std::string(written, 2), "st");
+  EXPECT_EQ(text_written_form("strasse", 7, &written), 3u);
+  EXPECT_EQ(std::string(written, 3), "str");
+  EXPECT_EQ(text_written_form("platz", 5, &written), 2u);
+  EXPECT_EQ(std::string(written, 2), "pl");
+}
+
+TEST(TextTokenize, AWordThatWasNeverShortenedGivesNothingBack) {
+  const char *written = nullptr;
+  EXPECT_EQ(text_written_form("bonn", 4, &written), 0u);
+  EXPECT_EQ(text_written_form(nullptr, 0, &written), 0u);
+  EXPECT_EQ(written, nullptr);
+}

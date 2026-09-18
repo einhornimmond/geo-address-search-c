@@ -235,7 +235,10 @@ GeoStatus geo_client_language(
  *  A word left unfinished before the next one was begun — `Kurpfa 57
  *  Bammental`, `Hafenga Ulm` — is read as a beginning, whatever @p prefix_last
  *  says, since a word typed behind it shows it was not still being typed.
- *  One that begins nothing either, a typo, is passed over.
+ *  One that begins nothing either, a typo, is passed over.  Where the query
+ *  finds nothing whatever, a beginning too short or too common to look up —
+ *  `Cottbusser St 26`, `1 Rue J B Drapier` — is held against the name and town
+ *  of what the other words leave standing.
  *
  *  Safe to call from several threads on the same client.
  *

@@ -438,8 +438,11 @@ bool geo_index_house_estimate(
  *  was typed, *Kurpfa 57 Bammental* — and passed over where that finds
  *  nothing, so a typo does not silence an otherwise clear address.  Where the
  *  query still finds nothing, such words the dictionary does know are read as
- *  beginnings too: *Gart 15 Bocholt*.  If no word is known at all, nothing is
- *  found.
+ *  beginnings too: *Gart 15 Bocholt*.  And a beginning of one or two letters,
+ *  or one that stands in front of thousands of words, is let go of last and
+ *  held against the name and the town of what the other words leave standing —
+ *  *Cottbusser St 26 Düsseldorf*, *1 Rue J B Drapier*.  If no word is known at
+ *  all, nothing is found.
  *
  *  Six keys order the results, in this order:
  *
